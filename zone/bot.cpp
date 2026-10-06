@@ -4747,8 +4747,8 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 						++client_search_general;
 						client_search_bag = invbag::SLOT_BEGIN;
 					} else {
-						client_search_general = InventoryProfile::CalcSlotId(client_test_slot);
-						client_search_bag = InventoryProfile::CalcBagIdx(client_test_slot);
+						client_search_general = EQ::InventoryProfile::CalcSlotId(client_test_slot, GetInv().SlotVersion());
+						client_search_bag = EQ::InventoryProfile::CalcBagIdx(client_test_slot, GetInv().SlotVersion());
 						++client_search_bag;
 						if (client_search_bag >= invbag::SLOT_COUNT) {
 							// incrementing this past legacy::GENERAL_END triggers the (client_test_slot == legacy::SLOT_INVALID) at the beginning of the search loop

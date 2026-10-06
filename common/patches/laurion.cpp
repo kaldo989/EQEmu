@@ -85,19 +85,23 @@ namespace Laurion
 	static inline int LaurionToServerBuffSlot(int index);
 
 	// Laurion numbers its inventory window as 23 equipment slots (0-22), 12 general slots (23-34) and a
-	// cursor at 35.  EQEmu's canonical slot-id space is RoF2 based: 10 general slots (23-32) and cursor 33,
-	// and the bag ranges / DB slot ids are laid out from that, so only the cursor number differs here.
-	// Client slots 33 and 34 have no canonical representation and are rejected.
+	// cursor at 35.  EQEmu's canonical slot-id space is RoF2 based: 10 general slots (23-32) and cursor 33.
+	// Laurion's two extra general slots are carried on the otherwise unused canonical ids 34 and 35, which
+	// keeps every existing RoF2/UF/Ti slot id (and the DB rows) untouched - see EQ::invslot::IsGeneralSlot
+	// and EQ::invbag::IsGeneralBagSlot.
 	static inline int16 LaurionGeneralSlotToServer(int16 client_slot)
 	{
 		if (client_slot == invslot::slotCursor) return EQ::invslot::slotCursor;
-		if (client_slot == invslot::slotGeneral11 || client_slot == invslot::slotGeneral12) return EQ::invslot::SLOT_INVALID;
+		if (client_slot == invslot::slotGeneral11) return 34;
+		if (client_slot == invslot::slotGeneral12) return 35;
 		return client_slot;
 	}
 
 	static inline int16 ServerGeneralSlotToLaurion(int16 server_slot)
 	{
 		if (server_slot == EQ::invslot::slotCursor) return invslot::slotCursor;
+		if (server_slot == 34) return invslot::slotGeneral11;
+		if (server_slot == 35) return invslot::slotGeneral12;
 		return server_slot;
 	}
 
@@ -616,6 +620,39 @@ namespace Laurion
 		//later we should change the underlying server to use this more accurate value
 		//and encode the 330 in the other patches
 		eq->exp = emu->exp * 100000 / 330;
+
+		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_FeatureList)
+	{
+		// Variable length packet: flag byte, entry count, then count * (feature id, value) pairs.
+		if ((*p)->size < sizeof(FeatureList_Struct)) {
+			LogNetcode("Wrong size on outbound [{}] (FeatureList_Struct): Got [{}], expected at least [{}]", opcodes->EmuToName((*p)->GetOpcode()), (*p)->size, sizeof(FeatureList_Struct));
+			delete *p;
+			*p = nullptr;
+			return;
+		}
+
+		uint32 count = ((FeatureList_Struct*)(*p)->pBuffer)->count;
+		if ((*p)->size < sizeof(FeatureList_Struct) + count * sizeof(FeatureEntry_Struct)) {
+			LogNetcode("Truncated feature list on outbound [{}]: Got [{}], expected [{}]", opcodes->EmuToName((*p)->GetOpcode()), (*p)->size, sizeof(FeatureList_Struct) + count * sizeof(FeatureEntry_Struct));
+			delete *p;
+			*p = nullptr;
+			return;
+		}
+
+		SETUP_VAR_ENCODE(FeatureList_Struct);
+		ALLOC_LEN_ENCODE(sizeof(FeatureList_Struct) + count * sizeof(structs::FeatureEntry_Struct));
+
+		// Laurion reads the payload as a byte packed stream, which is exactly EQEmu's layout.
+		__packet->SetWritePosition(0);
+		__packet->WriteUInt8(emu->refresh_ui);
+		__packet->WriteUInt32(count);
+		for (uint32 i = 0; i < count; ++i) {
+			__packet->WriteUInt32(emu->entries[i].feature_id);
+			__packet->WriteUInt32(emu->entries[i].value);
+		}
 
 		FINISH_ENCODE();
 	}
@@ -3923,6 +3960,10 @@ namespace Laurion
 
 	DECODE(OP_LootItem) // 0x0856
 	{
+		// Laurion widened slot_id to a uint32, which shifts everything after it by two bytes.  EQEmu's
+		// auto_loot lives at wire offset 12 (CLootWnd__RequestLootSlot param_3 - 1 for a loot window click
+		// and for LootAll, 0 when the client is happy to leave the item on the cursor).  Laurion's extra
+		// uint32 at offset 16 is the requested stack quantity, which EQEmu has no room for and ignores.
 		DECODE_LENGTH_EXACT(structs::LootingItem_Struct);
 		SETUP_DIRECT_DECODE(LootingItem_Struct, structs::LootingItem_Struct);
 
@@ -4749,8 +4790,8 @@ namespace Laurion
 
 		int16 SubSlotNumber = EQ::invbag::SLOT_INVALID;
 		
-		if (slot_id_in <= EQ::invslot::GENERAL_END && slot_id_in >= EQ::invslot::GENERAL_BEGIN)
-			SubSlotNumber = EQ::invbag::GENERAL_BAGS_BEGIN + ((slot_id_in - EQ::invslot::GENERAL_BEGIN) * EQ::invbag::SLOT_COUNT);
+		if (EQ::invslot::IsGeneralSlot(EQ::versions::ClientVersion::Laurion, slot_id_in))
+			SubSlotNumber = EQ::invbag::GeneralBagSlotId(EQ::versions::ClientVersion::Laurion, slot_id_in, 0);
 		else if (slot_id_in == EQ::invslot::slotCursor)
 			SubSlotNumber = EQ::invbag::CURSOR_BAG_BEGIN;
 		else if (slot_id_in <= EQ::invslot::BANK_END && slot_id_in >= EQ::invslot::BANK_BEGIN)
@@ -5036,12 +5077,13 @@ namespace Laurion
 			LaurionSlot.Slot = ServerGeneralSlotToLaurion(static_cast<int16>(server_slot));
 		}
 
-		else if (server_slot <= EQ::invbag::CURSOR_BAG_END && server_slot >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-			TempSlot = server_slot - EQ::invbag::GENERAL_BAGS_BEGIN;
-
+		else if (
+			EQ::invbag::IsGeneralBagSlot(EQ::versions::ClientVersion::Laurion, server_slot) ||
+			(server_slot >= EQ::invbag::CURSOR_BAG_BEGIN && server_slot <= EQ::invbag::CURSOR_BAG_END)
+		) {
 			LaurionSlot.Type = invtype::typePossessions;
-			LaurionSlot.Slot = ServerGeneralSlotToLaurion(static_cast<int16>(EQ::invslot::GENERAL_BEGIN + (TempSlot / EQ::invbag::SLOT_COUNT)));
-			LaurionSlot.SubIndex = TempSlot % EQ::invbag::SLOT_COUNT;
+			LaurionSlot.Slot = ServerGeneralSlotToLaurion(static_cast<int16>(EQ::invbag::GeneralBagParentSlot(EQ::versions::ClientVersion::Laurion, server_slot)));
+			LaurionSlot.SubIndex = static_cast<int16>(EQ::invbag::GeneralBagIndex(EQ::versions::ClientVersion::Laurion, server_slot));
 		}
 
 		else if (server_slot <= EQ::invslot::TRIBUTE_END && server_slot >= EQ::invslot::TRIBUTE_BEGIN) {
@@ -5195,8 +5237,7 @@ namespace Laurion
 					if (server_parent == EQ::invslot::SLOT_INVALID)
 						return EQ::invslot::SLOT_INVALID;
 
-					temp_slot = (server_parent - EQ::invslot::GENERAL_BEGIN) * EQ::invbag::SLOT_COUNT;
-					server_slot = EQ::invbag::GENERAL_BAGS_BEGIN + temp_slot + laurion_slot.SubIndex;
+					server_slot = EQ::invbag::GeneralBagSlotId(EQ::versions::ClientVersion::Laurion, server_parent, static_cast<uint8>(laurion_slot.SubIndex));
 				}
 			}
 
@@ -5349,8 +5390,7 @@ namespace Laurion
 					if (laurion_slot.Slot < invslot::GENERAL_BEGIN)
 						return EQ::invslot::SLOT_INVALID;
 
-					TempSlot = (laurion_slot.Slot - invslot::GENERAL_BEGIN) * EQ::invbag::SLOT_COUNT;
-					ServerSlot = EQ::invbag::GENERAL_BAGS_BEGIN + TempSlot + laurion_slot.SubIndex;
+					ServerSlot = EQ::invbag::GeneralBagSlotId(EQ::versions::ClientVersion::Laurion, LaurionGeneralSlotToServer(laurion_slot.Slot), static_cast<uint8>(laurion_slot.SubIndex));
 				}
 			}
 

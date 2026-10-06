@@ -355,7 +355,7 @@ Corpse::Corpse(Client *c, int32 rez_exp, KilledByTypes in_killed_by) : Mob(
 		// ..then regress and process invslot::EQUIPMENT_BEGIN through invslot::EQUIPMENT_END...
 		// without additional work to database loading of player corpses, this order is not
 		// currently preserved and a re-work of this processing loop is not warranted.
-		for (int i = EQ::invslot::POSSESSIONS_BEGIN; i <= EQ::invslot::POSSESSIONS_END; ++i) {
+		for (int i = EQ::invslot::POSSESSIONS_BEGIN; i <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); ++i) {
 			item = c->GetInv().GetItem(i);
 			if (!item) {
 				continue;
@@ -442,7 +442,7 @@ void Corpse::MoveItemToCorpse(Client *client, EQ::ItemInstance *inst, int16 equi
 		if (equipSlot < EQ::invslot::GENERAL_BEGIN || equipSlot > EQ::invslot::slotCursor) { break; }
 
 		for (int16 sub_index = EQ::invbag::SLOT_BEGIN; sub_index <= EQ::invbag::SLOT_END; ++sub_index) {
-			int16 real_bag_slot = EQ::InventoryProfile::CalcSlotId(equipSlot, sub_index);
+			int16 real_bag_slot = EQ::InventoryProfile::CalcSlotId(equipSlot, sub_index, GetInv().SlotVersion());
 			auto  bag_inst      = client->GetInv().GetItem(real_bag_slot);
 			if (bag_inst == nullptr) { continue; }
 
@@ -864,8 +864,8 @@ LootItem *Corpse::GetItem(uint16 lootslot, LootItem **bag_item_data)
 		}
 	}
 
-	if (sitem && bag_item_data && EQ::InventoryProfile::SupportsContainers(sitem->equip_slot)) {
-		int16 bagstart = EQ::InventoryProfile::CalcSlotId(sitem->equip_slot, EQ::invbag::SLOT_BEGIN);
+	if (sitem && bag_item_data && EQ::InventoryProfile::SupportsContainers(sitem->equip_slot, GetInv().SlotVersion())) {
+		int16 bagstart = EQ::InventoryProfile::CalcSlotId(sitem->equip_slot, EQ::invbag::SLOT_BEGIN, GetInv().SlotVersion());
 
 		// convert above code to for loop
 		for (const auto &item: m_item_list) {
@@ -1363,7 +1363,7 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 			}
 
 			if (i->equip_slot < EQ::invslot::POSSESSIONS_BEGIN ||
-				i->equip_slot > EQ::invslot::POSSESSIONS_END) {
+				i->equip_slot > EQ::invslot::PossessionsEnd(GetInv().SlotVersion())) {
 				continue;
 			}
 		}
@@ -2120,7 +2120,7 @@ void Corpse::UpdateEquipmentLight()
 	uint8 general_light_type = 0;
 
 	for (auto &i: m_item_list) {
-		if (i->equip_slot < EQ::invslot::GENERAL_BEGIN || i->equip_slot > EQ::invslot::GENERAL_END) {
+		if (i->equip_slot < EQ::invslot::GENERAL_BEGIN || i->equip_slot > EQ::invslot::GeneralEnd(GetInv().SlotVersion())) {
 			continue;
 		}
 

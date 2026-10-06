@@ -660,15 +660,15 @@ bool SharedDatabase::GetInventory(Client *c)
 			row.augment_six
 		};
 
-		if (EQ::ValueWithin(slot_id, EQ::invslot::POSSESSIONS_BEGIN, EQ::invslot::POSSESSIONS_END)) {
+		if (EQ::ValueWithin(slot_id, EQ::invslot::POSSESSIONS_BEGIN, EQ::invslot::PossessionsEnd(inv.SlotVersion()))) {
 			// Titanium thru UF check
 			if (((static_cast<uint64>(1) << slot_id) & pmask) == 0) {
 				cv_conflict = true;
 				continue;
 			}
-		} else if (EQ::ValueWithin(slot_id, EQ::invbag::GENERAL_BAGS_BEGIN, EQ::invbag::GENERAL_BAGS_END)) {
+		} else if (EQ::invbag::IsGeneralBagSlot(inv.SlotVersion(), slot_id)) {
 			// Titanium thru UF check
-			const auto parent_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+			const auto parent_slot = EQ::invbag::GeneralBagParentSlot(inv.SlotVersion(), slot_id);
 			if (((static_cast<uint64>(1) << parent_slot) & pmask) == 0) {
 				cv_conflict = true;
 				continue;

@@ -210,6 +210,25 @@ namespace EQ
 		using RoF2::invslot::GetInvPossessionsSlotName;
 		using RoF2::invslot::GetInvSlotName;
 
+		// Laurion's inventory window is 23 equipment slots (0-22), 12 general slots (client 23-34) and a
+		// cursor at client slot 35.  EQEmu's canonical slot-id space is RoF2 based (10 general slots,
+		// cursor = 33) and the bag ranges plus the DB slot_id values are laid out from it, so Laurion's two
+		// extra general slots are carried on the otherwise unused canonical ids 34 and 35.  Anything that
+		// iterates or validates "general inventory" for a client has to go through these helpers instead of
+		// the RoF2 constants.
+		inline int16 GeneralEnd(versions::ClientVersion client_version) {
+			return client_version == versions::ClientVersion::Laurion ? 35 : RoF2::invslot::GENERAL_END;
+		}
+
+		inline int16 PossessionsEnd(versions::ClientVersion client_version) {
+			return client_version == versions::ClientVersion::Laurion ? 35 : RoF2::invslot::POSSESSIONS_END;
+		}
+
+		inline bool IsGeneralSlot(versions::ClientVersion client_version, int16 slot) {
+			if (slot < GENERAL_BEGIN || slot > GeneralEnd(client_version)) return false;
+			return slot != slotCursor; // canonical slot 33 is the cursor for every client version
+		}
+
 	} // namespace invslot
 
 	namespace invbag {
@@ -247,6 +266,52 @@ namespace EQ
 		const int16 TRADE_BAGS_END   = (TRADE_BAGS_BEGIN + TRADE_BAGS_COUNT) - 1;
 
 		using RoF2::invbag::GetInvBagIndexName;
+
+		// Laurion's two extra general slots (canonical ids 34/35) need their own bag ranges.  Every existing
+		// range is derived from RoF2's 10 general slots and the DB stores these canonical ids, so the extra
+		// ranges are appended after the existing ones - nothing that is already stored moves.
+		const int16 LAURION_EXTRA_GENERAL_BAGS_BEGIN = TRADE_BAGS_END + 1;
+		const int16 LAURION_EXTRA_GENERAL_BAGS_COUNT = 2 * SLOT_COUNT;
+		const int16 LAURION_EXTRA_GENERAL_BAGS_END = (LAURION_EXTRA_GENERAL_BAGS_BEGIN + LAURION_EXTRA_GENERAL_BAGS_COUNT) - 1;
+
+		inline bool IsLaurionExtraGeneralBagSlot(int16 slot_id) {
+			return slot_id >= LAURION_EXTRA_GENERAL_BAGS_BEGIN && slot_id <= LAURION_EXTRA_GENERAL_BAGS_END;
+		}
+
+		inline bool IsGeneralBagSlot(versions::ClientVersion client_version, int16 slot_id) {
+			if (slot_id >= GENERAL_BAGS_BEGIN && slot_id <= GENERAL_BAGS_END) return true;
+			if (client_version == versions::ClientVersion::Laurion && IsLaurionExtraGeneralBagSlot(slot_id)) return true;
+			return false;
+		}
+
+		// Upper bound for iterating the general bag space.  Laurion's is not contiguous, so pair this with
+		// IsGeneralBagSlot() to skip the ranges in between.
+		inline int16 GeneralBagsEnd(versions::ClientVersion client_version) {
+			return client_version == versions::ClientVersion::Laurion ? LAURION_EXTRA_GENERAL_BAGS_END : GENERAL_BAGS_END;
+		}
+
+		// Resolve a bag slot_id back to its parent general slot and bag index.
+		inline int16 GeneralBagParentSlot(versions::ClientVersion client_version, int16 slot_id) {
+			if (client_version == versions::ClientVersion::Laurion && IsLaurionExtraGeneralBagSlot(slot_id)) {
+				return 34 + (slot_id - LAURION_EXTRA_GENERAL_BAGS_BEGIN) / SLOT_COUNT;
+			}
+			return invslot::GENERAL_BEGIN + (slot_id - GENERAL_BAGS_BEGIN) / SLOT_COUNT;
+		}
+
+		inline uint8 GeneralBagIndex(versions::ClientVersion client_version, int16 slot_id) {
+			if (client_version == versions::ClientVersion::Laurion && IsLaurionExtraGeneralBagSlot(slot_id)) {
+				return static_cast<uint8>((slot_id - LAURION_EXTRA_GENERAL_BAGS_BEGIN) % SLOT_COUNT);
+			}
+			return static_cast<uint8>((slot_id - GENERAL_BAGS_BEGIN) % SLOT_COUNT);
+		}
+
+		// Forward direction: bag slot_id for an item inside a bag sitting in a general slot.
+		inline int16 GeneralBagSlotId(versions::ClientVersion client_version, int16 general_slot, uint8 bagidx) {
+			if (client_version == versions::ClientVersion::Laurion && general_slot > RoF2::invslot::GENERAL_END) {
+				return LAURION_EXTRA_GENERAL_BAGS_BEGIN + (general_slot - 34) * SLOT_COUNT + bagidx;
+			}
+			return GENERAL_BAGS_BEGIN + (general_slot - invslot::GENERAL_BEGIN) * SLOT_COUNT + bagidx;
+		}
 
 	} // namespace invbag
 

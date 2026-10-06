@@ -1051,6 +1051,8 @@ RULE_BOOL(Inventory, TransformSummonedBags, false, "Transforms summoned bags int
 RULE_BOOL(Inventory, AllowMultipleOfSameAugment, false, "Allows multiple of the same augment to be placed in an item via #augmentitem or MQ2, set to true to allow")
 RULE_INT(Inventory, AlternateAugmentationSealer, 53, "Allows RoF+ clients to augment items from a special container type")
 RULE_BOOL(Inventory, LazyLoadBank, true, "Don't load bank during zoning, only when in proximinity to a banker. May increase zone speed and stability")
+RULE_BOOL(Inventory, SendFeatureList, true, "Send the feature/entitlement list packet to clients that read it (Laurion). The Laurion client gates general inventory slots 11 and 12 on a feature entry, so without this the last two inventory slots stay disabled in the client UI")
+RULE_STRING(Inventory, FeatureList, "2012274=1", "Feature id=value pairs sent in the feature list packet, comma separated (id=value,id=value). The id is the client feature key, decimal or 0x hex. 2012274 (0x1eb472) is the Laurion inventory slot feature that enables general slots 11 and 12")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Client)

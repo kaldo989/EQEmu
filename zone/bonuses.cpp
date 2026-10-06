@@ -551,7 +551,7 @@ void Client::CalcEdibleBonuses(StatBonuses* newbon) {
 
 	bool food = false;
 	bool drink = false;
-	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++)
+	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++)
 	{
 		if (food && drink)
 			break;
@@ -567,8 +567,12 @@ void Client::CalcEdibleBonuses(StatBonuses* newbon) {
 			AddItemBonuses(inst, newbon);
 		}
 	}
-	for (i = EQ::invbag::GENERAL_BAGS_BEGIN; i <= EQ::invbag::GENERAL_BAGS_END; i++)
+	for (int16 i = EQ::invbag::GENERAL_BAGS_BEGIN; i <= EQ::invbag::GeneralBagsEnd(GetInv().SlotVersion()); i++)
 	{
+		if (!EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), i)) {
+			continue;
+		}
+
 		if (food && drink)
 			break;
 		const EQ::ItemInstance* inst = GetInv().GetItem(i);
@@ -3910,7 +3914,7 @@ void Client::CalcItemScale() {
 	if (CalcItemScale(EQ::invslot::EQUIPMENT_BEGIN, EQ::invslot::EQUIPMENT_END)) // original coding excluded MainAmmo (< 21)
 		changed = true;
 
-	if (CalcItemScale(EQ::invslot::GENERAL_BEGIN, EQ::invslot::GENERAL_END)) // original coding excluded MainCursor (< 30)
+	if (CalcItemScale(EQ::invslot::GENERAL_BEGIN, EQ::invslot::GeneralEnd(GetInv().SlotVersion()))) // original coding excluded MainCursor (< 30)
 		changed = true;
 
 	// I excluded cursor bag slots here because cursor was excluded above..if this is incorrect, change 'slot_y' here to CURSOR_BAG_END
@@ -3942,8 +3946,8 @@ bool Client::CalcItemScale(uint32 slot_x, uint32 slot_y) {
 
 		// TEST CODE: test for bazaar trader crashing with charm items
 		if (IsTrader())
-			if (i >= EQ::invbag::GENERAL_BAGS_BEGIN && i <= EQ::invbag::GENERAL_BAGS_END) {
-				EQ::ItemInstance* parent_item = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(i));
+			if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), i)) {
+				EQ::ItemInstance* parent_item = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(i, GetInv().SlotVersion()));
 				if (parent_item && parent_item->GetItem()->BagType == EQ::item::BagTypeTradersSatchel)
 					continue;
 			}
@@ -4003,7 +4007,7 @@ void Client::DoItemEnterZone() {
 	if (DoItemEnterZone(EQ::invslot::EQUIPMENT_BEGIN, EQ::invslot::EQUIPMENT_END)) // original coding excluded MainAmmo (< 21)
 		changed = true;
 
-	if (DoItemEnterZone(EQ::invslot::GENERAL_BEGIN, EQ::invslot::GENERAL_END)) // original coding excluded MainCursor (< 30)
+	if (DoItemEnterZone(EQ::invslot::GENERAL_BEGIN, EQ::invslot::GeneralEnd(GetInv().SlotVersion()))) // original coding excluded MainCursor (< 30)
 		changed = true;
 
 	// I excluded cursor bag slots here because cursor was excluded above..if this is incorrect, change 'slot_y' here to CURSOR_BAG_END
@@ -4034,8 +4038,8 @@ bool Client::DoItemEnterZone(uint32 slot_x, uint32 slot_y) {
 
 		// TEST CODE: test for bazaar trader crashing with charm items
 		if (IsTrader())
-			if (i >= EQ::invbag::GENERAL_BAGS_BEGIN && i <= EQ::invbag::GENERAL_BAGS_END) {
-				EQ::ItemInstance* parent_item = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(i));
+			if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), i)) {
+				EQ::ItemInstance* parent_item = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(i, GetInv().SlotVersion()));
 				if (parent_item && parent_item->GetItem()->BagType == EQ::item::BagTypeTradersSatchel)
 					continue;
 			}

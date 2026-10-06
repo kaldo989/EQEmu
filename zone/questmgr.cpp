@@ -3256,14 +3256,24 @@ int QuestManager::collectitems_processSlot(
 // If remove is true, items are removed as they are counted.
 int QuestManager::collectitems(uint32 item_id, bool remove)
 {
+	QuestManagerCurrentQuestVars();
+
 	int quantity = 0;
 	int slot_id;
 
-	for (slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GENERAL_END; ++slot_id) {
+	for (slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GeneralEnd(initiator->GetInv().SlotVersion()); ++slot_id) {
+		if (!EQ::invslot::IsGeneralSlot(initiator->GetInv().SlotVersion(), slot_id)) {
+			continue;
+		}
+
 		quantity += collectitems_processSlot(slot_id, item_id, remove);
 	}
 
-	for (slot_id = EQ::invbag::GENERAL_BAGS_BEGIN; slot_id <= EQ::invbag::GENERAL_BAGS_END; ++slot_id) {
+	for (slot_id = EQ::invbag::GENERAL_BAGS_BEGIN; slot_id <= EQ::invbag::GeneralBagsEnd(initiator->GetInv().SlotVersion()); ++slot_id) {
+		if (!EQ::invbag::IsGeneralBagSlot(initiator->GetInv().SlotVersion(), slot_id)) {
+			continue;
+		}
+
 		quantity += collectitems_processSlot(slot_id, item_id, remove);
 	}
 

@@ -175,7 +175,7 @@ void Trade::SendItemData(const EQ::ItemInstance* inst, int16 dest_slot_id)
 		with->SendItemPacket(dest_slot_id - EQ::invslot::TRADE_BEGIN, inst, ItemPacketTradeView);
 		if (inst->GetItem()->ItemClass == 1) {
 			for (uint16 i = EQ::invbag::SLOT_BEGIN; i <= EQ::invbag::SLOT_END; i++) {
-				uint16 bagslot_id = EQ::InventoryProfile::CalcSlotId(dest_slot_id, i);
+				uint16 bagslot_id = EQ::InventoryProfile::CalcSlotId(dest_slot_id, i, trader->GetInv().SlotVersion());
 				const EQ::ItemInstance* bagitem = trader->GetInv().GetItem(bagslot_id);
 				if (bagitem) {
 					with->SendItemPacket(bagslot_id - EQ::invslot::TRADE_BEGIN, bagitem, ItemPacketTradeView);
@@ -1040,12 +1040,12 @@ uint32 Client::FindTraderItemSerialNumber(int32 ItemID) {
 
 	EQ::ItemInstance* item = nullptr;
 	uint16 SlotID = 0;
-	for (int i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++){
+	for (int i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++){
 		item = GetInv().GetItem(i);
 		if (item && item->GetItem()->BagType == EQ::item::BagTypeTradersSatchel){
 			for (int x = EQ::invbag::SLOT_BEGIN; x <= EQ::invbag::SLOT_END; x++) {
 				// we already have the parent bag and a contents iterator..why not just iterate the bag!??
-				SlotID = EQ::InventoryProfile::CalcSlotId(i, x);
+				SlotID = EQ::InventoryProfile::CalcSlotId(i, x, GetInv().SlotVersion());
 				item = GetInv().GetItem(SlotID);
 				if (item) {
 					if (item->GetID() == ItemID)
@@ -1064,12 +1064,12 @@ EQ::ItemInstance *Client::FindTraderItemBySerialNumber(int32 SerialNumber)
 	EQ::ItemInstance *item   = nullptr;
 	int16            slot_id = 0;
 
-	for (int16 i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (int16 i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		item = GetInv().GetItem(i);
 		if (item && item->GetItem()->BagType == EQ::item::BagTypeTradersSatchel) {
 			for (int16 x = EQ::invbag::SLOT_BEGIN; x <= EQ::invbag::SLOT_END; x++) {
 				// we already have the parent bag and a contents iterator..why not just iterate the bag!??
-				slot_id = EQ::InventoryProfile::CalcSlotId(i, x);
+				slot_id = EQ::InventoryProfile::CalcSlotId(i, x, GetInv().SlotVersion());
 				item    = GetInv().GetItem(slot_id);
 				if (item) {
 					if (item->GetSerialNumber() == SerialNumber) {
@@ -1093,7 +1093,7 @@ GetItems_Struct *Client::GetTraderItems()
 	auto                   gis     = new GetItems_Struct{0};
 	uint8                  ndx     = 0;
 
-	for (int16 i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (int16 i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		if (ndx >= GetInv().GetLookup()->InventoryTypeSize.Bazaar) {
 			break;
 		}
@@ -1104,7 +1104,7 @@ GetItems_Struct *Client::GetTraderItems()
 					break;
 				}
 
-				slot_id = EQ::InventoryProfile::CalcSlotId(i, x);
+				slot_id = EQ::InventoryProfile::CalcSlotId(i, x, GetInv().SlotVersion());
 				item    = GetInv().GetItem(slot_id);
 
 				if (item) {
@@ -1123,11 +1123,11 @@ uint16 Client::FindTraderItem(int32 SerialNumber, uint16 Quantity){
 
 	const EQ::ItemInstance* item= nullptr;
 	uint16 SlotID = 0;
-	for (int i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (int i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		item = GetInv().GetItem(i);
 		if (item && item->GetItem()->BagType == EQ::item::BagTypeTradersSatchel){
 			for (int x = EQ::invbag::SLOT_BEGIN; x <= EQ::invbag::SLOT_END; x++){
-				SlotID = EQ::InventoryProfile::CalcSlotId(i, x);
+				SlotID = EQ::InventoryProfile::CalcSlotId(i, x, GetInv().SlotVersion());
 
 				item = GetInv().GetItem(SlotID);
 

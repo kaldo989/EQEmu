@@ -745,6 +745,74 @@ void Client::OnDisconnect(bool hard_disconnect) {
 	Disconnect();
 }
 
+// Sends the client's feature/entitlement map. The Laurion client gates general inventory slots 11
+// and 12 on feature 0x1eb472 (1298034), so without this the last two inventory slots stay disabled
+// in the UI even though EQEmu's canonical slot ids already cover all 12.
+void Client::SendFeatureList()
+{
+	// Only the Laurion client has a handler for this packet.
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	if (!RuleB(Inventory, SendFeatureList)) {
+		return;
+	}
+
+	std::vector<std::pair<uint32, uint32>> features;
+
+	// Accepts both decimal and 0x hex feature ids - the client keys are usually quoted in hex.
+	auto parse_id = [](const std::string& s) -> uint32 {
+		try {
+			return static_cast<uint32>(std::stoul(s, nullptr, 0));
+		} catch (...) {
+			return 0;
+		}
+	};
+
+	for (const std::string& entry : Strings::Split(RuleS(Inventory, FeatureList), ',')) {
+		if (entry.empty()) {
+			continue;
+		}
+
+		std::vector<std::string> parts = Strings::Split(entry, '=');
+		if (parts.size() != 2) {
+			LogInventory("Malformed feature entry [{}] in Inventory:FeatureList, expected id=value", entry);
+			continue;
+		}
+
+		features.emplace_back(parse_id(parts[0]), parse_id(parts[1]));
+	}
+
+	if (features.empty()) {
+		return;
+	}
+
+	uint32 size = static_cast<uint32>(sizeof(FeatureList_Struct) + features.size() * sizeof(FeatureEntry_Struct));
+
+	std::string feature_dump;
+	for (const auto& feature : features) {
+		if (!feature_dump.empty()) {
+			feature_dump += ", ";
+		}
+		feature_dump += StringFormat("%u (0x%x)=%u", feature.first, feature.first, feature.second);
+	}
+	LogInfo("Sending feature list to [{}]: [{}]", GetCleanName(), feature_dump);
+	auto outapp = new EQApplicationPacket(OP_FeatureList, size);
+	FeatureList_Struct* fl = (FeatureList_Struct*)outapp->pBuffer;
+	fl->refresh_ui = 1;
+	fl->count = static_cast<uint32>(features.size());
+
+	FeatureEntry_Struct* entries = (FeatureEntry_Struct*)(outapp->pBuffer + sizeof(FeatureList_Struct));
+	for (size_t i = 0; i < features.size(); ++i) {
+		entries[i].feature_id = features[i].first;
+		entries[i].value = features[i].second;
+	}
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
 // Sends the client complete inventory used in character login
 void Client::BulkSendInventoryItems()
 {
@@ -778,7 +846,13 @@ void Client::BulkSendInventoryItems()
 	EQ::OutBuffer::pos_type last_pos = ob.tellp();
 
 	// Possessions items
-	for (int16 slot_id = EQ::invslot::POSSESSIONS_BEGIN; slot_id <= EQ::invslot::POSSESSIONS_END; slot_id++) {
+	for (int16 slot_id = EQ::invslot::POSSESSIONS_BEGIN; slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); slot_id++) {
+		// The cursor is sent separately (SendCursorSlotPacket), and for Laurion it sits inside the
+		// possessions range, so skip it here.
+		if (slot_id == EQ::invslot::slotCursor) {
+			continue;
+		}
+
 		const EQ::ItemInstance* inst = m_inv[slot_id];
 		if (!inst) {
 			continue;

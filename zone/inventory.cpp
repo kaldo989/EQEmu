@@ -81,7 +81,7 @@ uint32 Client::NukeItem(uint32 itemnum, uint8 where_to_check) {
 	}
 
 	if(where_to_check & invWherePersonal) {
-		for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+		for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 			if (GetItemIDAt(i) == itemnum || (itemnum == 0xFFFE && GetItemIDAt(i) != INVALID_ID)) {
 				cur = m_inv.GetItem(i);
 				if(cur && cur->GetItem()->Stackable) {
@@ -94,7 +94,11 @@ uint32 Client::NukeItem(uint32 itemnum, uint8 where_to_check) {
 			}
 		}
 
-		for (i = EQ::invbag::GENERAL_BAGS_BEGIN; i <= EQ::invbag::GENERAL_BAGS_END; i++) {
+		for (int16 i = EQ::invbag::GENERAL_BAGS_BEGIN; i <= EQ::invbag::GeneralBagsEnd(GetInv().SlotVersion()); i++) {
+			if (!EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), i)) {
+				continue;
+			}
+
 			if (GetItemIDAt(i) == itemnum || (itemnum == 0xFFFE && GetItemIDAt(i) != INVALID_ID)) {
 				cur = m_inv.GetItem(i);
 				if(cur && cur->GetItem()->Stackable) {
@@ -103,7 +107,7 @@ uint32 Client::NukeItem(uint32 itemnum, uint8 where_to_check) {
 					x++;
 				}
 
-				DeleteItemInInventory(i, 0, ((((uint64)1 << (EQ::invslot::GENERAL_BEGIN + ((i - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT))) & GetInv().GetLookup()->PossessionsBitmask) != 0));
+				DeleteItemInInventory(i, 0, ((((uint64)1 << (EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), i))) & GetInv().GetLookup()->PossessionsBitmask) != 0));
 			}
 		}
 	}
@@ -855,12 +859,12 @@ void Client::DropInst(const EQ::ItemInstance* inst)
 
 // Returns a slot's item ID (returns INVALID_ID if not found)
 int32 Client::GetItemIDAt(int16 slot_id) {
-	if (slot_id <= EQ::invslot::POSSESSIONS_END && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
+	if (slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			return INVALID_ID;
 	}
-	else if (slot_id <= EQ::invbag::GENERAL_BAGS_END && slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+	else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot_id)) {
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 		if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			return INVALID_ID;
 	}
@@ -885,12 +889,12 @@ int32 Client::GetItemIDAt(int16 slot_id) {
 // Returns an augment's ID that's in an item (returns INVALID_ID if not found)
 // Pass in the slot ID of the item and which augslot you want to check (0-5)
 int32 Client::GetAugmentIDAt(int16 slot_id, uint8 augslot) {
-	if (slot_id <= EQ::invslot::POSSESSIONS_END && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
+	if (slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			return INVALID_ID;
 	}
-	else if (slot_id <= EQ::invbag::GENERAL_BAGS_END && slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+	else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot_id)) {
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 		if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			return INVALID_ID;
 	}
@@ -1138,7 +1142,7 @@ void Client::PutLootInInventory(int16 slot_id, const EQ::ItemInstance &inst, Loo
 				PutLootInInventory(EQ::invslot::slotCursor, *bagitem);
 			}
 			else {
-				auto bag_slot = EQ::InventoryProfile::CalcSlotId(slot_id, index);
+				auto bag_slot = EQ::InventoryProfile::CalcSlotId(slot_id, index, GetInv().SlotVersion());
 
 				LogInventory("Putting bag loot item [{}] ([{}]) into slot [{}] (bag slot [{}])",
 					inst.GetItem()->Name, inst.GetItem()->ID, bag_slot, index);
@@ -1156,7 +1160,7 @@ bool Client::TryStacking(EQ::ItemInstance* item, uint8 type, bool try_worn, bool
 		return false;
 	int16 i;
 	uint32 item_id = item->GetItem()->ID;
-	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		if ((((uint64)1 << i) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
@@ -1170,12 +1174,12 @@ bool Client::TryStacking(EQ::ItemInstance* item, uint8 type, bool try_worn, bool
 			return true;
 		}
 	}
-	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		if ((((uint64)1 << i) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
 		for (uint8 j = EQ::invbag::SLOT_BEGIN; j <= EQ::invbag::SLOT_END; j++) {
-			uint16 slotid = EQ::InventoryProfile::CalcSlotId(i, j);
+			uint16 slotid = EQ::InventoryProfile::CalcSlotId(i, j, GetInv().SlotVersion());
 			EQ::ItemInstance* tmp_inst = m_inv.GetItem(slotid);
 
 			if(tmp_inst && tmp_inst->GetItem()->ID == item_id && tmp_inst->GetCharges() < tmp_inst->GetItem()->StackSize) {
@@ -1552,11 +1556,11 @@ void Client::SendLootItemInPacket(const EQ::ItemInstance* inst, int16 slot_id)
 }
 
 bool Client::IsValidSlot(uint32 slot) {
-	if (slot <= EQ::invslot::POSSESSIONS_END && slot >= EQ::invslot::POSSESSIONS_BEGIN) {
+	if (slot <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot >= EQ::invslot::POSSESSIONS_BEGIN) {
 		return ((((uint64)1 << slot) & GetInv().GetLookup()->PossessionsBitmask) != 0);
 	}
-	else if (slot <= EQ::invbag::GENERAL_BAGS_END && slot >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+	else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot)) {
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot);
 		return ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) != 0);
 	}
 	else if (slot <= EQ::invslot::BANK_END && slot >= EQ::invslot::BANK_BEGIN) {
@@ -1782,13 +1786,13 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		uint32 srcbagid =0;
 		uint32 dstbagid = 0;
 
-		if (src_slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN && src_slot_id <= EQ::invbag::GENERAL_BAGS_END) {
-			srcbag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(src_slot_id));
+		if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), src_slot_id)) {
+			srcbag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(src_slot_id, GetInv().SlotVersion()));
 			if (srcbag)
 				srcbagid = srcbag->GetItem()->ID;
 		}
-		if (dst_slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN && dst_slot_id <= EQ::invbag::GENERAL_BAGS_END) {
-			dstbag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(dst_slot_id));
+		if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), dst_slot_id)) {
+			dstbag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(dst_slot_id, GetInv().SlotVersion()));
 			if (dstbag)
 				dstbagid = dstbag->GetItem()->ID;
 		}
@@ -1833,8 +1837,8 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		if (EQ::ValueWithin(src_slot_id, EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END) && src_inst->IsClassBag()){
 			for (uint8 idx = EQ::invbag::SLOT_BEGIN; idx <= EQ::invbag::SLOT_END; idx++) {
 				const EQ::ItemInstance* baginst = src_inst->GetItem(idx);
-				if (baginst && !database.VerifyInventory(account_id, EQ::InventoryProfile::CalcSlotId(src_slot_id, idx), baginst)){
-					DeleteItemInInventory(EQ::InventoryProfile::CalcSlotId(src_slot_id, idx), 0, false);
+				if (baginst && !database.VerifyInventory(account_id, EQ::InventoryProfile::CalcSlotId(src_slot_id, idx, GetInv().SlotVersion()), baginst)){
+					DeleteItemInInventory(EQ::InventoryProfile::CalcSlotId(src_slot_id, idx, GetInv().SlotVersion()), 0, false);
 				}
 			}
 		}
@@ -1856,8 +1860,8 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		if (EQ::ValueWithin(dst_slot_id, EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END) && dst_inst->IsClassBag()){
 			for (uint8 idx = EQ::invbag::SLOT_BEGIN; idx <= EQ::invbag::SLOT_END; idx++) {
 				const EQ::ItemInstance* baginst = dst_inst->GetItem(idx);
-				if (baginst && !database.VerifyInventory(account_id, EQ::InventoryProfile::CalcSlotId(dst_slot_id, idx), baginst)){
-					DeleteItemInInventory(EQ::InventoryProfile::CalcSlotId(dst_slot_id, idx), 0, false);
+				if (baginst && !database.VerifyInventory(account_id, EQ::InventoryProfile::CalcSlotId(dst_slot_id, idx, GetInv().SlotVersion()), baginst)){
+					DeleteItemInInventory(EQ::InventoryProfile::CalcSlotId(dst_slot_id, idx, GetInv().SlotVersion()), 0, false);
 				}
 			}
 		}
@@ -1909,7 +1913,7 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 	if(m_tradeskill_object != nullptr) {
 		if (src_slot_id >= EQ::invslot::WORLD_BEGIN && src_slot_id <= EQ::invslot::WORLD_END) {
 			// Picking up item from world container
-			EQ::ItemInstance* inst = m_tradeskill_object->PopItem(EQ::InventoryProfile::CalcBagIdx(src_slot_id));
+			EQ::ItemInstance* inst = m_tradeskill_object->PopItem(EQ::InventoryProfile::CalcBagIdx(src_slot_id, GetInv().SlotVersion()));
 			if (inst) {
 				PutItemInInventory(dst_slot_id, *inst, false);
 				safe_delete(inst);
@@ -1919,7 +1923,7 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		}
 		else if (dst_slot_id >= EQ::invslot::WORLD_BEGIN && dst_slot_id <= EQ::invslot::WORLD_END) {
 			// Putting item into world container, which may swap (or pile onto) with existing item
-			uint8 world_idx = EQ::InventoryProfile::CalcBagIdx(dst_slot_id);
+			uint8 world_idx = EQ::InventoryProfile::CalcBagIdx(dst_slot_id, GetInv().SlotVersion());
 			EQ::ItemInstance* world_inst = m_tradeskill_object->PopItem(world_idx);
 
 			// Case 1: No item in container, unidirectional "Put"
@@ -2108,11 +2112,10 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 
 		LogInventory("Moving entire item from slot [{}] to slot [{}]", src_slot_id, dst_slot_id);
 		if (src_inst->IsStackable() &&
-			dst_slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN &&
-			dst_slot_id <= EQ::invbag::GENERAL_BAGS_END
+			EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), dst_slot_id)
 			)	{
 			EQ::ItemInstance *bag = nullptr;
-			bag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(dst_slot_id));
+			bag = m_inv.GetItem(EQ::InventoryProfile::CalcSlotId(dst_slot_id, GetInv().SlotVersion()));
 			if (bag) {
 				if (bag->GetItem()->BagType == EQ::item::BagTypeTradersSatchel) {
 					PutItemInInventory(dst_slot_id, *src_inst, true);
@@ -2245,7 +2248,7 @@ void Client::SwapItemResync(MoveItem_Struct* move_slots) {
 	Message(Chat::Yellow, "Inventory Desyncronization detected: Resending slot data...");
 
 	if (move_slots->from_slot >= EQ::invslot::EQUIPMENT_BEGIN && move_slots->from_slot <= EQ::invbag::CURSOR_BAG_END) {
-		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->from_slot) == INVALID_INDEX) ? move_slots->from_slot : EQ::InventoryProfile::CalcSlotId(move_slots->from_slot);
+		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->from_slot, GetInv().SlotVersion()) == INVALID_INDEX) ? move_slots->from_slot : EQ::InventoryProfile::CalcSlotId(move_slots->from_slot, GetInv().SlotVersion());
 		if (IsValidSlot(resync_slot) && resync_slot != INVALID_INDEX) {
 			// This prevents the client from crashing when closing any 'phantom' bags
 			const EQ::ItemData* token_struct = database.GetItem(22292); // 'Copper Coin'
@@ -2270,7 +2273,7 @@ void Client::SwapItemResync(MoveItem_Struct* move_slots) {
 		else { Message(Chat::Red, "Could not resyncronize source slot %i.", move_slots->from_slot); }
 	}
 	else {
-		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->from_slot) == INVALID_INDEX) ? move_slots->from_slot : EQ::InventoryProfile::CalcSlotId(move_slots->from_slot);
+		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->from_slot, GetInv().SlotVersion()) == INVALID_INDEX) ? move_slots->from_slot : EQ::InventoryProfile::CalcSlotId(move_slots->from_slot, GetInv().SlotVersion());
 		if (IsValidSlot(resync_slot) && resync_slot != INVALID_INDEX) {
 			if(m_inv[resync_slot]) {
 				const EQ::ItemData* token_struct = database.GetItem(22292); // 'Copper Coin'
@@ -2288,7 +2291,7 @@ void Client::SwapItemResync(MoveItem_Struct* move_slots) {
 	}
 
 	if (move_slots->to_slot >= EQ::invslot::EQUIPMENT_BEGIN && move_slots->to_slot <= EQ::invbag::CURSOR_BAG_END) {
-		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->to_slot) == INVALID_INDEX) ? move_slots->to_slot : EQ::InventoryProfile::CalcSlotId(move_slots->to_slot);
+		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->to_slot, GetInv().SlotVersion()) == INVALID_INDEX) ? move_slots->to_slot : EQ::InventoryProfile::CalcSlotId(move_slots->to_slot, GetInv().SlotVersion());
 		if (IsValidSlot(resync_slot) && resync_slot != INVALID_INDEX) {
 			const EQ::ItemData* token_struct = database.GetItem(22292); // 'Copper Coin'
 			EQ::ItemInstance* token_inst = database.CreateItem(token_struct, 1);
@@ -2312,7 +2315,7 @@ void Client::SwapItemResync(MoveItem_Struct* move_slots) {
 		else { Message(Chat::Red, "Could not resyncronize destination slot %i.", move_slots->to_slot); }
 	}
 	else {
-		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->to_slot) == INVALID_INDEX) ? move_slots->to_slot : EQ::InventoryProfile::CalcSlotId(move_slots->to_slot);
+		int16 resync_slot = (EQ::InventoryProfile::CalcSlotId(move_slots->to_slot, GetInv().SlotVersion()) == INVALID_INDEX) ? move_slots->to_slot : EQ::InventoryProfile::CalcSlotId(move_slots->to_slot, GetInv().SlotVersion());
 		if (IsValidSlot(resync_slot) && resync_slot != INVALID_INDEX) {
 			if(m_inv[resync_slot]) {
 				const EQ::ItemData* token_struct = database.GetItem(22292); // 'Copper Coin'
@@ -2388,7 +2391,11 @@ bool Client::DecreaseByID(uint32 type, int16 quantity) {
 	int x;
 	int num = 0;
 
-	for (x = EQ::invslot::POSSESSIONS_BEGIN; x <= EQ::invslot::POSSESSIONS_END; ++x) {
+	for (x = EQ::invslot::POSSESSIONS_BEGIN; x <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); ++x) {
+		if (x == EQ::invslot::slotCursor) {
+			continue;
+		}
+
 		if (num >= quantity)
 			break;
 		if ((((uint64)1 << x) & GetInv().GetLookup()->PossessionsBitmask) == 0)
@@ -2402,10 +2409,14 @@ bool Client::DecreaseByID(uint32 type, int16 quantity) {
 			num += ins->GetCharges();
 	}
 
-	for (x = EQ::invbag::GENERAL_BAGS_BEGIN; x <= EQ::invbag::GENERAL_BAGS_END; ++x) {
+	for (int16 x = EQ::invbag::GENERAL_BAGS_BEGIN; x <= EQ::invbag::GeneralBagsEnd(GetInv().SlotVersion()); ++x) {
+		if (!EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), x)) {
+			continue;
+		}
+
 		if (num >= quantity)
 			break;
-		if ((((uint64)1 << (EQ::invslot::GENERAL_BEGIN + ((x - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT))) & GetInv().GetLookup()->PossessionsBitmask) == 0)
+		if ((((uint64)1 << (EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), x))) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
 		TempItem = nullptr;
@@ -2432,7 +2443,11 @@ bool Client::DecreaseByID(uint32 type, int16 quantity) {
 		return false;
 
 
-	for (x = EQ::invslot::POSSESSIONS_BEGIN; x <= EQ::invslot::POSSESSIONS_END; ++x) {
+	for (x = EQ::invslot::POSSESSIONS_BEGIN; x <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); ++x) {
+		if (x == EQ::invslot::slotCursor) {
+			continue;
+		}
+
 		if (quantity < 1)
 			break;
 		if ((((uint64)1 << x) & GetInv().GetLookup()->PossessionsBitmask) == 0)
@@ -2455,10 +2470,14 @@ bool Client::DecreaseByID(uint32 type, int16 quantity) {
 		}
 	}
 
-	for (x = EQ::invbag::GENERAL_BAGS_BEGIN; x <= EQ::invbag::GENERAL_BAGS_END; ++x) {
+	for (int16 x = EQ::invbag::GENERAL_BAGS_BEGIN; x <= EQ::invbag::GeneralBagsEnd(GetInv().SlotVersion()); ++x) {
+		if (!EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), x)) {
+			continue;
+		}
+
 		if (quantity < 1)
 			break;
-		if ((((uint64)1 << (EQ::invslot::GENERAL_BEGIN + ((x - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT))) & GetInv().GetLookup()->PossessionsBitmask) == 0)
+		if ((((uint64)1 << (EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), x))) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
 		TempItem = nullptr;
@@ -2574,7 +2593,7 @@ static bool CopyBagContents(EQ::ItemInstance* new_bag, const EQ::ItemInstance* o
 
 void Client::DisenchantSummonedBags(bool client_update)
 {
-	for (auto slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GENERAL_END; ++slot_id) {
+	for (auto slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); ++slot_id) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue; // not usable this session - will be disenchanted once player logs in on client that doesn't exclude affected slots
 
@@ -2702,7 +2721,7 @@ void Client::RemoveNoRent(bool client_update)
 		}
 	}
 
-	for (auto slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GENERAL_END; ++slot_id) {
+	for (auto slot_id = EQ::invslot::GENERAL_BEGIN; slot_id <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); ++slot_id) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
@@ -2714,7 +2733,7 @@ void Client::RemoveNoRent(bool client_update)
 	}
 
 	for (auto slot_id = EQ::invbag::GENERAL_BAGS_BEGIN; slot_id <= EQ::invbag::CURSOR_BAG_END; ++slot_id) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 		if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
@@ -2910,7 +2929,7 @@ void Client::MoveSlotNotAllowed(bool client_update)
 	}
 
 	// added this check to move any client-based excluded slots
-	//for (auto slot_id = EQ::invslot::POSSESSIONS_BEGIN; slot_id <= EQ::invslot::POSSESSIONS_END; ++slot_id) {
+	//for (auto slot_id = EQ::invslot::POSSESSIONS_BEGIN; slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); ++slot_id) {
 	//	if (((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask != 0)
 	//		continue;
 
@@ -2978,14 +2997,14 @@ void Client::SendItemPacket(int16 slot_id, const EQ::ItemInstance* inst, ItemPac
 	}
 
 	if (packet_type != ItemPacketMerchant) {
-		if (slot_id <= EQ::invslot::POSSESSIONS_END && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
+		if (slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
 			if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 				LogError("Item not sent to merchant : slot [{}]", slot_id);
 				return;
 			}
 		}
-		else if (slot_id <= EQ::invbag::GENERAL_BAGS_END && slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-			auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+		else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot_id)) {
+			auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 			if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 				LogError("Item not sent to merchant2 : slot [{}]", slot_id);
 				return;
@@ -3302,7 +3321,7 @@ bool Client::MoveItemToInventory(EQ::ItemInstance *ItemToReturn, bool UpdateClie
 			//
 			if (InvItem && InvItem->IsClassBag()) {
 
-				int16 BaseSlotID = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN);
+				int16 BaseSlotID = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN, GetInv().SlotVersion());
 
 				uint8 BagSize=InvItem->GetItem()->BagSlots;
 
@@ -3356,7 +3375,7 @@ bool Client::MoveItemToInventory(EQ::ItemInstance *ItemToReturn, bool UpdateClie
 		}
 		if (InvItem->IsClassBag() && EQ::InventoryProfile::CanItemFitInContainer(ItemToReturn->GetItem(), InvItem->GetItem())) {
 
-			int16 BaseSlotID = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN);
+			int16 BaseSlotID = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN, GetInv().SlotVersion());
 
 			uint8 BagSize=InvItem->GetItem()->BagSlots;
 
@@ -3398,7 +3417,11 @@ bool Client::InterrogateInventory(Client* requester, bool log, bool silent, bool
 	std::map<int16, const EQ::ItemInstance*> instmap;
 
 	// build reference map
-	for (int16 index = EQ::invslot::POSSESSIONS_BEGIN; index <= EQ::invslot::POSSESSIONS_END; ++index) {
+	for (int16 index = EQ::invslot::POSSESSIONS_BEGIN; index <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()); ++index) {
+		if (index == EQ::invslot::slotCursor) {
+			continue;
+		}
+
 		auto inst = m_inv[index];
 		if (inst == nullptr) { continue; }
 		instmap[index] = inst;
@@ -3572,7 +3595,7 @@ bool Client::InterrogateInventory_error(int16 head, int16 index, const EQ::ItemI
 		}
 	}
 	else if (
-		(head >= EQ::invslot::GENERAL_BEGIN && head <= EQ::invslot::GENERAL_END) ||
+		(head >= EQ::invslot::GENERAL_BEGIN && head <= EQ::invslot::GeneralEnd(GetInv().SlotVersion())) ||
 		(head == EQ::invslot::slotCursor) ||
 		(head >= EQ::invslot::BANK_BEGIN && head <= EQ::invslot::BANK_END) ||
 		(head >= EQ::invslot::SHARED_BANK_BEGIN && head <= EQ::invslot::SHARED_BANK_END) ||
@@ -4361,13 +4384,13 @@ const int EQ::InventoryProfile::GetItemStatValue(uint32 item_id, const std::stri
 
 // Returns a slot's item ID (returns INVALID_ID if not found)
 int32 Bot::GetItemIDAt(int16 slot_id) {
-	if (slot_id <= EQ::invslot::POSSESSIONS_END && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
+	if (slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 			return INVALID_ID;
 		}
 	}
-	else if (slot_id <= EQ::invbag::GENERAL_BAGS_END && slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+	else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot_id)) {
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 		if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 			return INVALID_ID;
 		}
@@ -4395,13 +4418,13 @@ int32 Bot::GetItemIDAt(int16 slot_id) {
 // Returns an augment's ID that's in an item (returns INVALID_ID if not found)
 // Pass in the slot ID of the item and which augslot you want to check (0-5)
 int32 Bot::GetAugmentIDAt(int16 slot_id, uint8 augslot) {
-	if (slot_id <= EQ::invslot::POSSESSIONS_END && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
+	if (slot_id <= EQ::invslot::PossessionsEnd(GetInv().SlotVersion()) && slot_id >= EQ::invslot::POSSESSIONS_BEGIN) {
 		if ((((uint64)1 << slot_id) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 			return INVALID_ID;
 		}
 	}
-	else if (slot_id <= EQ::invbag::GENERAL_BAGS_END && slot_id >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-		auto temp_slot = EQ::invslot::GENERAL_BEGIN + ((slot_id - EQ::invbag::GENERAL_BAGS_BEGIN) / EQ::invbag::SLOT_COUNT);
+	else if (EQ::invbag::IsGeneralBagSlot(GetInv().SlotVersion(), slot_id)) {
+		auto temp_slot = EQ::invbag::GeneralBagParentSlot(GetInv().SlotVersion(), slot_id);
 		if ((((uint64)1 << temp_slot) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 			return INVALID_ID;
 		}
@@ -4690,7 +4713,7 @@ bool Client::PutItemInInventoryWithStacking(EQ::ItemInstance *inst)
 bool Client::FindNumberOfFreeInventorySlotsWithSizeCheck(std::vector<BuyerLineTradeItems_Struct> items)
 {
 	uint32 count = 0;
-	for (int16         i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GENERAL_END; i++) {
+	for (int16         i = EQ::invslot::GENERAL_BEGIN; i <= EQ::invslot::GeneralEnd(GetInv().SlotVersion()); i++) {
 		if ((((uint64) 1 << i) & GetInv().GetLookup()->PossessionsBitmask) == 0) {
 			continue;
 		}
@@ -4710,7 +4733,7 @@ bool Client::FindNumberOfFreeInventorySlotsWithSizeCheck(std::vector<BuyerLineTr
 			for (auto const& item:items) {
 				auto item_tmp = database.GetItem(item.item_id);
 				if (EQ::InventoryProfile::CanItemFitInContainer(item_tmp, inv_item->GetItem())) {
-					int16 base_slot_id = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN);
+					int16 base_slot_id = EQ::InventoryProfile::CalcSlotId(i, EQ::invbag::SLOT_BEGIN, GetInv().SlotVersion());
 					uint8 bag_size     = inv_item->GetItem()->BagSlots;
 
 					for (uint8 bag_slot = EQ::invbag::SLOT_BEGIN; bag_slot < bag_size; bag_slot++) {

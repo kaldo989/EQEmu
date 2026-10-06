@@ -575,6 +575,25 @@ namespace Laurion {
 			/*0004*/ MultiMoveItemSub_Struct moves[0];
 		};
 
+		// OP_FeatureList (0x4451) - feature/entitlement list.
+		// Client dispatcher: FUN_1401d5140 case 0x4451. Reads a flag byte, an entry count, then
+		// count * (feature id, value) pairs into the feature map at pinstLocalPC + 0x26b0.
+		// Feature 0x1eb472 (1298034) is what lets the client use general inventory slots 11 and 12.
+		// The wire layout is byte packed, so it matches EQEmu's FeatureList_Struct exactly.
+		struct FeatureEntry_Struct
+		{
+			/*0000*/ uint32				feature_id;
+			/*0004*/ uint32				value;
+			/*0008*/
+		};
+
+		struct FeatureList_Struct
+		{
+			/*0000*/ uint8				refresh_ui;
+			/*0001*/ uint32				count;
+			/*0005*/ FeatureEntry_Struct	entries[0];
+		};
+
 		struct Consider_Struct {
 			/*000*/ uint32	playerid;               // PlayerID
 			/*004*/ uint32	targetid;               // TargetID
@@ -1147,8 +1166,8 @@ namespace Laurion {
 			/*00*/	uint32	lootee;         // corpse entity id
 			/*04*/	uint32	looter;         // player entity id
 			/*08*/	uint32	slot_id;        // loot window slot index (widened from uint16)
-			/*12*/	uint32	unknown12;      // param_3 flag
-			/*16*/	uint32	auto_loot;      // quantity / auto-loot flag (shift or ctrl held)
+			/*12*/	uint32	auto_loot;      // EQEmu's auto_loot flag sits here (CLootWnd__RequestLootSlot param_3)
+			/*16*/	uint32	quantity;       // Laurion-only: requested stack quantity (shift/ctrl held)
 			/*20*/
 		};
 

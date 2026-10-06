@@ -265,7 +265,7 @@ void ShowInventory(Client *c, const Seperator *sep)
 						(
 							(scope_bit & peekWorld) ?
 							INVALID_INDEX :
-							EQ::InventoryProfile::CalcSlotId(index_main, sub_index)
+							EQ::InventoryProfile::CalcSlotId(index_main, sub_index, c->GetInv().SlotVersion())
 						),
 						((scope_bit & peekWorld) ? (EQ::invslot::WORLD_BEGIN + index_main) : index_main),
 						sub_index,
@@ -300,7 +300,7 @@ void ShowInventory(Client *c, const Seperator *sep)
 								(
 									(scope_bit & peekWorld) ?
 									INVALID_INDEX :
-									EQ::InventoryProfile::CalcSlotId(index_main,sub_index)
+									EQ::InventoryProfile::CalcSlotId(index_main,sub_index, c->GetInv().SlotVersion())
 								),
 								sub_index,
 								augment_index,

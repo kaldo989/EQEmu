@@ -661,6 +661,7 @@ luabind::scope lua_register_packet_opcodes() {
 		luabind::value("DeleteCharacter", static_cast<int>(OP_DeleteCharacter)),
 		luabind::value("SendCharInfo", static_cast<int>(OP_SendCharInfo)),
 		luabind::value("ExpansionInfo", static_cast<int>(OP_ExpansionInfo)),
+		luabind::value("FeatureList", static_cast<int>(OP_FeatureList)),
 		luabind::value("CharacterCreate", static_cast<int>(OP_CharacterCreate)),
 		luabind::value("CharacterCreateRequest", static_cast<int>(OP_CharacterCreateRequest)),
 		luabind::value("RandomNameGenerator", static_cast<int>(OP_RandomNameGenerator)),

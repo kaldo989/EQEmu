@@ -2240,6 +2240,7 @@ private:
 	std::chrono::steady_clock::time_point m_last_moved = std::chrono::steady_clock::now();
 
 	void BulkSendInventoryItems();
+	void SendFeatureList();
 
 	faction_map factionvalues;
 

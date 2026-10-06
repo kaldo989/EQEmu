@@ -103,6 +103,13 @@ namespace EQ
 
 		const inventory::LookupEntry* GetLookup() const { return m_lookup; }
 
+		// Client version this profile belongs to.  EQEmu's canonical slot ids are RoF2 based; Laurion
+		// differs (12 general slots + cursor at client slot 35), so slot ranges must be resolved per client.
+		versions::ClientVersion SlotVersion() const { return versions::ConvertMobVersionToClientVersion(m_mob_version); }
+		int16 GeneralEnd() const { return invslot::GeneralEnd(SlotVersion()); }
+		bool IsGeneralSlot(int16 slot_id) const { return invslot::IsGeneralSlot(SlotVersion(), slot_id); }
+		bool IsGeneralBagSlot(int16 slot_id) const { return invbag::IsGeneralBagSlot(SlotVersion(), slot_id); }
+
 		static void CleanDirty();
 		static void MarkDirty(ItemInstance *inst);
 
@@ -178,9 +185,9 @@ namespace EQ
 		int16 FindFirstFreeSlotThatFitsItemWithStacking(ItemInstance *inst) const;
 
 		// Calculate slot_id for an item within a bag
-		static int16 CalcSlotId(int16 slot_id); // Calc parent bag's slot_id
-		static int16 CalcSlotId(int16 bagslot_id, uint8 bagidx); // Calc slot_id for item inside bag
-		static uint8 CalcBagIdx(int16 slot_id); // Calc bagidx for slot_id
+		static int16 CalcSlotId(int16 slot_id, versions::ClientVersion client_version = versions::ClientVersion::RoF2); // Calc parent bag's slot_id
+		static int16 CalcSlotId(int16 bagslot_id, uint8 bagidx, versions::ClientVersion client_version = versions::ClientVersion::RoF2); // Calc slot_id for item inside bag
+		static uint8 CalcBagIdx(int16 slot_id, versions::ClientVersion client_version = versions::ClientVersion::RoF2); // Calc bagidx for slot_id
 		static int16 CalcSlotFromMaterial(uint8 material);
 		static uint8 CalcMaterialFromSlot(int16 equipslot);
 
@@ -191,7 +198,7 @@ namespace EQ
 		bool SupportsPotionBeltCasting(int16 slot_id);
 
 		// Test whether a given slot can support a container item
-		static bool SupportsContainers(int16 slot_id);
+		static bool SupportsContainers(int16 slot_id, versions::ClientVersion client_version = versions::ClientVersion::RoF2);
 
 		int GetSlotByItemInst(ItemInstance *inst);
 

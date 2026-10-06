@@ -65,6 +65,20 @@ struct ExpansionInfo_Struct {
 /*0000*/	uint32	Expansions;
 };
 
+// Feature/entitlement list. The client keeps a feature id -> value map which gates parts of the UI,
+// most notably the last two general inventory slots in the Laurion client. The payload is byte
+// packed: a flag byte, an entry count, then count * (feature id, value) pairs.
+struct FeatureEntry_Struct {
+/*0000*/	uint32	feature_id;
+/*0004*/	uint32	value;			// the client treats any value > 0 as "feature present"
+};
+
+struct FeatureList_Struct {
+/*0000*/	uint8	refresh_ui;		// non-zero makes the client refresh the windows that read features
+/*0001*/	uint32	count;
+/*0005*/	FeatureEntry_Struct entries[0];
+};
+
 /* Name Approval Struct */
 /* Len: */
 /* Opcode: 0x8B20*/
