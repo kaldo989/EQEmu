@@ -63,6 +63,7 @@ namespace AppearanceType {
 	constexpr uint32 AntiCheat             = 51; // Sent by the client randomly telling the server how long since last action has occurred
 	constexpr uint32 GuildShow             = 52;
 	constexpr uint32 OfflineMode           = 53; // Offline Mode
+	constexpr uint32 AdvLootSettings       = 54; // Laurion appearance type 40: advanced looting settings flag
 }
 
 namespace Animation {

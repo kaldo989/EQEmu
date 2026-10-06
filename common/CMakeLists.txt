@@ -88,6 +88,8 @@ set(common_sources
     packet_dump.cpp
     packet_functions.cpp
     patches/patches.cpp
+    patches/laurion_limits.cpp
+    patches/laurion.cpp
     patches/rof_limits.cpp
     patches/rof.cpp
     patches/rof2_limits.cpp
@@ -654,6 +656,10 @@ set(common_headers
     packet_dump.h
     packet_functions.h
     patches/patches.h
+    patches/laurion_limits.h
+    patches/laurion_ops.h
+    patches/laurion_structs.h
+    patches/laurion.h
     patches/rof_limits.h
     patches/rof_ops.h
     patches/rof_structs.h

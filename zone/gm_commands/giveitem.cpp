@@ -37,11 +37,14 @@ void command_giveitem(Client *c, const Seperator *sep)
 	size_t       link_open     = cmd_msg.find('\x12');
 	size_t       link_close    = cmd_msg.find_last_of('\x12');
 
-	if (link_open != link_close && (cmd_msg.length() - link_open) > EQ::constants::SAY_LINK_BODY_SIZE) {
+	const size_t   link_body_size = EQ::constants::GetSayLinkBodySize(c->ClientVersion());
+
+	if (link_open != link_close && (cmd_msg.length() - link_open) > link_body_size) {
 		EQ::SayLinkBody_Struct link_body;
 		EQ::saylink::DegenerateLinkBody(
 			link_body,
-			cmd_msg.substr(link_open + 1, EQ::constants::SAY_LINK_BODY_SIZE)
+			cmd_msg.substr(link_open + 1, link_body_size),
+			c->ClientVersion()
 		);
 		item_id       = link_body.item_id;
 		augment_one   = link_body.augment_1;

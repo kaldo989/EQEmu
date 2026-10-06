@@ -17,6 +17,7 @@
 */
 #include "patches.h"
 
+#include "common/patches/laurion.h"
 #include "common/patches/rof.h"
 #include "common/patches/rof2.h"
 #include "common/patches/sod.h"
@@ -33,6 +34,7 @@ void RegisterAllPatches(EQStreamIdentifier &into)
 	UF::Register(into);
 	RoF::Register(into);
 	RoF2::Register(into);
+	Laurion::Register(into);
 }
 
 void ReloadAllPatches()
@@ -43,4 +45,5 @@ void ReloadAllPatches()
 	UF::Reload();
 	RoF::Reload();
 	RoF2::Reload();
+	Laurion::Reload();
 }

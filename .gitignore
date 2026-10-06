@@ -61,6 +61,26 @@ bin/
 compile_flags.txt
 .cache/
 
+# Build output (never pushed)
+/build/
+
+# Reverse-engineering notes (local only - not part of the public repo)
+/advloot.md
+/base.md
+/charselect.md
+/crashfix.md
+/docs_unknown_opcodes.md
+
+# Local tooling / scratch artifacts
+/.mcp.json
+/.mcp.json.backup
+/.pi-tmp/
+/.pi-tmp*
+/__pycache__/
+/_confbak/
+/_d*.txt
+/savedChanges.patch
+
 # Build pipeline
 !utils/scripts/build/
 !utils/scripts/build/should-release/should-release

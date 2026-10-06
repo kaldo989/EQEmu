@@ -49,6 +49,10 @@ public:
 	void	SendLogServer();
 	void	SendApproveWorld();
 	void	SendPostEnterWorld();
+	void	SendServerList();			// 0x6a0 - 19 length-prefixed strings
+	void	SendCharListReady();			// 0x1b2b - char-list ready flag
+	void	SendCharListWindowUpdate();		// 0x40a - char-list window refresh
+	void	SendLaurionPing();			// 0x2049 - heartbeat
 	void    SendGuildTributeFavorAndTimer(uint32 favor, uint32 time_remaining);
 	void    SendGuildTributeOptInToggle(const GuildTributeMemberToggle* in);
 
@@ -104,6 +108,10 @@ private:
 	bool HandlePacket(const EQApplicationPacket *app);
 	bool HandleNameApprovalPacket(const EQApplicationPacket *app);
 	bool HandleSendLoginInfoPacket(const EQApplicationPacket *app);
+	bool HandleLaurionLoginInfo(const EQApplicationPacket *app);
+	void SendLaurionLoginAccept();
+	void SendLaurionLoginReject();
+	uint32 GetExpansionSettings();
 	bool HandleGenerateRandomNamePacket(const EQApplicationPacket *app);
 	bool HandleCharacterCreateRequestPacket(const EQApplicationPacket *app);
 	bool HandleCharacterCreatePacket(const EQApplicationPacket *app);

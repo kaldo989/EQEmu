@@ -25,6 +25,7 @@
 #include "common/patches/sof_limits.h"
 #include "common/patches/titanium_limits.h"
 #include "common/patches/uf_limits.h"
+#include "common/patches/laurion_limits.h"
 #include "common/types.h"
 
 
@@ -65,6 +66,9 @@ namespace EQ
 		const LookupEntry* DynamicNonGMLookup(versions::ClientVersion client_version);
 		const LookupEntry* DynamicGMLookup(versions::ClientVersion client_version);
 		const LookupEntry* StaticLookup(versions::ClientVersion client_version);
+
+		// Version-aware say link body size (RoF2 = 56, Laurion = 91)
+		size_t GetSayLinkBodySize(versions::ClientVersion client_version);
 
 	} /*constants*/
 	

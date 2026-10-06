@@ -72,6 +72,7 @@ public:
 	ClientListEntry* FindCharacter(const char* name);
 	ClientListEntry* FindCLEByAccountID(uint32 iAccID);
 	ClientListEntry* FindCLEByCharacterID(uint32 iCharID);
+	ClientListEntry* FindCLEByAccountName(const char* account_name);
 	void	GetCLEIP(uint32 in_ip);
 	void	DisconnectByIP(uint32 in_ip);
 	void	CLCheckStale();

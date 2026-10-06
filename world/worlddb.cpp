@@ -64,6 +64,18 @@ void WorldDatabase::GetCharSelectInfo(uint32 account_id, EQApplicationPacket **o
 	);
 
 	size_t character_count = characters.size();
+
+	std::vector<std::string> char_names;
+	for (auto &e: characters) {
+		char_names.push_back(e.name);
+	}
+
+	LogInfo(
+		"Char select packet for account [{}]: [{}] character(s) [{}]",
+		account_id,
+		character_count,
+		Strings::Join(char_names, ", ")
+	);
 	if (characters.empty()) {
 		*out_app = new EQApplicationPacket(OP_SendCharInfo, sizeof(CharacterSelect_Struct));
 		auto *cs = (CharacterSelect_Struct *) (*out_app)->pBuffer;
@@ -382,6 +394,21 @@ void WorldDatabase::GetCharSelectInfo(uint32 account_id, EQApplicationPacket **o
 	}
 }
 
+// 0x832 character list in the Laurion wire format.
+//
+// The client entry decoder FUN_1401f0d90 (called from the 0x832 handler FUN_140200f40) is a
+// bounds-guarded stream reader, so entries are VARIABLE length:
+//   [null-terminated name][23 byte head][9 x 24 byte armor/tint][52 byte tail]
+//   = 292 + strlen(name)
+//
+// Two things the generic struct gets wrong for this client:
+//   - there is no TotalChars field on the wire, the client goes straight from the count to the
+//     entries, and reads one trailing byte after the last entry into DAT_140e3bee4
+//   - the wire order is not the memory order: the armor block is permuted (per slot dwords
+//     0,2,1,3,4 then the tint) and the tail skips memory offsets 0x135, 0x136 and 0x161
+//
+// The generic packet is still used as the data source - all of the database work (binds, start
+// zones, materials, inventory) already fills it.
 int WorldDatabase::MoveCharacterToBind(int character_id, uint8 bind_number)
 {
 	/*  if an invalid bind point is specified, use the primary bind */

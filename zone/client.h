@@ -37,6 +37,7 @@ namespace EQ
 	struct ItemData;
 }
 
+#include "zone/advloot.h"
 #include "zone/aggromanager.h"
 #include "zone/bot_structs.h"
 #include "zone/cheat_manager.h"
@@ -1012,6 +1013,18 @@ public:
 	inline bool AutoConsentGroupEnabled() const { return m_pp.groupAutoconsent != 0; }
 	inline bool AutoConsentRaidEnabled() const { return m_pp.raidAutoconsent != 0; }
 	inline bool AutoConsentGuildEnabled() const { return m_pp.guildAutoconsent != 0; }
+
+	// Advanced Loot (OP_AdvLoot). The client gates every sub-command on its filter set having been
+	// received for this character, so the reply below is what actually unlocks the window.
+	std::vector<AdvLoot::Filter> advloot_filters;
+	uint32_t advloot_mode = AdvLoot::ModeSolo;
+	bool advloot_enabled = false;
+	bool advloot_master_looter_candidate = false;
+
+	void LoadAdvLootFilters();
+	void LoadAdvLootSettings();
+	void SendAdvLootFilterSet();
+	void SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t icon, const std::string& name);
 
 	void SummonHorse(uint16 spell_id);
 	void SetHorseId(uint16 horseid_in);

@@ -40,8 +40,15 @@
 	/* Connected opcode handlers*/
 	void Handle_0x0193(const EQApplicationPacket *app);
 	void Handle_0x01e7(const EQApplicationPacket *app);
+	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
+	void Handle_0x59bd(const EQApplicationPacket *app);
+	void Handle_0x5e4a(const EQApplicationPacket *app);
+	void Handle_0x6b80(const EQApplicationPacket *app);
+	void Handle_0x7340(const EQApplicationPacket *app);
+	void Handle_0x798e(const EQApplicationPacket *app);
 	void Handle_OP_AAAction(const EQApplicationPacket *app);
 	void Handle_OP_AcceptNewTask(const EQApplicationPacket *app);
+	void Handle_OP_AdvLoot(const EQApplicationPacket *app);
 	void Handle_OP_AdventureInfoRequest(const EQApplicationPacket *app);
 	void Handle_OP_AdventureLeaderboardRequest(const EQApplicationPacket *app);
 	void Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app);
@@ -90,6 +97,8 @@
 	void Handle_OP_ClickObjectAction(const EQApplicationPacket *app);
 	void Handle_OP_ClientError(const EQApplicationPacket *app);
 	void Handle_OP_ClientTimeStamp(const EQApplicationPacket *app);
+	void Handle_OP_ClientScreenSize(const EQApplicationPacket *app);
+	void Handle_OP_ClientStats(const EQApplicationPacket *app);
 	void Handle_OP_ClientUpdate(const EQApplicationPacket *app);
 //	void Handle_OP_CloseContainer(const EQApplicationPacket *app);
 	void Handle_OP_CombatAbility(const EQApplicationPacket *app);
@@ -134,6 +143,7 @@
 	void Handle_OP_EvolveItem(const EQApplicationPacket *app);
 	void Handle_OP_FaceChange(const EQApplicationPacket *app);
 	void Handle_OP_FeignDeath(const EQApplicationPacket *app);
+	void Handle_OP_FindItemSearch(const EQApplicationPacket *app);
 	void Handle_OP_FindPersonRequest(const EQApplicationPacket *app);
 	void Handle_OP_Fishing(const EQApplicationPacket *app);
 	void Handle_OP_Forage(const EQApplicationPacket *app);
@@ -184,6 +194,7 @@
 	void Handle_OP_GuildPublicNote(const EQApplicationPacket *app);
 	void Handle_OP_GuildRemove(const EQApplicationPacket *app);
 	void Handle_OP_GuildStatus(const EQApplicationPacket *app);
+	void Handle_OP_GuildTributeInfo(const EQApplicationPacket *app);
 	void Handle_OP_GuildTributeModifyBenefits(const EQApplicationPacket* app);
 	void Handle_OP_GuildTributeOptInOut(const EQApplicationPacket* app);
 	void Handle_OP_GuildTributeSaveActiveTributes(const EQApplicationPacket* app);
@@ -194,6 +205,12 @@
 	void Handle_OP_GuildTributeDonatePlat(const EQApplicationPacket* app);
 	void Handle_OP_GuildWar(const EQApplicationPacket *app);
 	void Handle_OP_Heartbeat(const EQApplicationPacket *app);
+	void Handle_OP_HoardClear(const EQApplicationPacket *app);
+	void Handle_OP_HoardItemAdd(const EQApplicationPacket *app);
+	void Handle_OP_HoardItemRemove(const EQApplicationPacket *app);
+	void Handle_OP_HoardRequest(const EQApplicationPacket *app);
+	void Handle_OP_HoardStatusRequest(const EQApplicationPacket *app);
+	void Handle_OP_HoardZoneInit(const EQApplicationPacket *app);
 	void Handle_OP_Hide(const EQApplicationPacket *app);
 	void Handle_OP_HideCorpse(const EQApplicationPacket *app);
 	void Handle_OP_Ignore(const EQApplicationPacket *app);
@@ -231,6 +248,10 @@
 	void Handle_OP_LootRequest(const EQApplicationPacket *app);
 	void Handle_OP_ManaChange(const EQApplicationPacket *app);
 	void Handle_OP_Medding(const EQApplicationPacket *app);
+	void Handle_OP_MarketplaceClose(const EQApplicationPacket *app);
+	void Handle_OP_MarketplaceOpen(const EQApplicationPacket *app);
+	void Handle_OP_MarketplacePurchase(const EQApplicationPacket *app);
+	void Handle_OP_MarketplaceRequest(const EQApplicationPacket *app);
 	void Handle_OP_MemorizeSpell(const EQApplicationPacket *app);
 	void Handle_OP_Mend(const EQApplicationPacket *app);
 	void Handle_OP_MercenaryCommand(const EQApplicationPacket *app);
@@ -269,6 +290,7 @@
 	void Handle_OP_PVPLeaderBoardDetailsRequest(const EQApplicationPacket *app);
 	void Handle_OP_PVPLeaderBoardRequest(const EQApplicationPacket *app);
 	void Handle_OP_QueryUCSServerStatus(const EQApplicationPacket *app);
+	void Handle_OP_RaceChangeRequest(const EQApplicationPacket *app);
 	void Handle_OP_RaidCommand(const EQApplicationPacket *app);
 	void Handle_OP_RaidDelegateAbility(const EQApplicationPacket* app);
 	void Handle_OP_RaidClearNPCMarks(const EQApplicationPacket* app);
@@ -310,6 +332,7 @@
 	void Handle_OP_Split(const EQApplicationPacket *app);
 	void Handle_OP_Surname(const EQApplicationPacket *app);
 	void Handle_OP_SwapSpell(const EQApplicationPacket *app);
+	void Handle_OP_SystemFingerprint(const EQApplicationPacket *app);
 	void Handle_OP_TargetCommand(const EQApplicationPacket *app);
 	void Handle_OP_TargetMouse(const EQApplicationPacket *app);
 	void Handle_OP_TaskHistoryRequest(const EQApplicationPacket *app);
@@ -330,6 +353,8 @@
 	void Handle_OP_TradeSkillCombine(const EQApplicationPacket *app);
 	void Handle_OP_TradeSkillRecipeInspect(const EQApplicationPacket* app);
 	void Handle_OP_Translocate(const EQApplicationPacket *app);
+	void Handle_OP_SkillRankReport(const EQApplicationPacket *app);
+	void Handle_OP_TributeInfo(const EQApplicationPacket *app);
 	void Handle_OP_TributeItem(const EQApplicationPacket *app);
 	void Handle_OP_TributeMoney(const EQApplicationPacket *app);
 	void Handle_OP_TributeNPC(const EQApplicationPacket *app);
@@ -344,7 +369,9 @@
 	void Handle_OP_XTargetOpen(const EQApplicationPacket *app);
 	void Handle_OP_XTargetRequest(const EQApplicationPacket *app);
 	void Handle_OP_YellForHelp(const EQApplicationPacket *app);
+	void Handle_OP_CrashReport(const EQApplicationPacket *app);
 	void Handle_OP_ZoneChange(const EQApplicationPacket *app);
+	void Handle_OP_ZoneConnectRequest(const EQApplicationPacket *app);
 	void Handle_OP_ResetAA(const EQApplicationPacket *app);
 	void Handle_OP_MovementHistoryList(const EQApplicationPacket* app);
 	void Handle_OP_UnderWorld(const EQApplicationPacket* app);

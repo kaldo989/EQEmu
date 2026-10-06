@@ -280,6 +280,19 @@ ClientListEntry* ClientList::FindCLEByCharacterID(uint32 iCharID) {
 	return nullptr;
 }
 
+ClientListEntry* ClientList::FindCLEByAccountName(const char* account_name) {
+	LinkedListIterator<ClientListEntry*> iterator(clientlist);
+
+	iterator.Reset();
+	while(iterator.MoreElements()) {
+		if (strcasecmp(iterator.GetData()->AccountName(), account_name) == 0) {
+			return iterator.GetData();
+		}
+		iterator.Advance();
+	}
+	return nullptr;
+}
+
 void ClientList::SendCLEList(const int16& admin, const char* to, WorldTCPConnection* connection, const char* search_criteria)
 {
 	LinkedListIterator<ClientListEntry*> iterator(clientlist);

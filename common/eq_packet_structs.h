@@ -6567,5 +6567,47 @@ struct EvolveGetNextItem {
 	uint32 max_transfer_level;
 };
 
+// --- SoF x64 (Laurion) zone opcodes: client -> server ---
+// Layouts derived from the client send sites in eqgame.exe (Ghidra SoF project).
+
+struct ClientScreenSize_Struct {
+	uint32 width;
+	uint32 height;
+	uint8  flag;
+	uint8  pad[3];
+};
+
+struct ClientStats_Struct {
+	uint8  counters[72];
+	uint32 value;
+	uint32 unknown;
+};
+
+struct HoardItem_Struct {
+	uint8 action;
+	uint8 slot;
+};
+
+struct HoardItemRemove_Struct {
+	uint8 action;
+	uint8 slot;
+	uint16 unknown;
+};
+
+struct ZoneConnectRequest_Struct {
+	uint64 flag;
+};
+
+struct SkillRankReport_Struct {
+	uint16 announce_flags;
+	uint32 skill_a;
+	uint32 skill_b;
+	uint32 skill_c;
+};
+
+struct TributeRequest_Struct {
+	uint32 request_type;
+};
+
 // Restore structure packing to default
 #pragma pack(pop)

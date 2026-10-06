@@ -110,6 +110,15 @@ static const EQ::constants::LookupEntry constants_static_lookup_entries[EQ::vers
 		RoF2::constants::CHARACTER_CREATION_LIMIT,
 		RoF2::constants::SAY_LINK_BODY_SIZE,
 		RoF2::constants::MAX_BAZAAR_TRADERS
+	),
+	/*[ClientVersion::Laurion] =*/
+	EQ::constants::LookupEntry(
+		Laurion::constants::EXPANSION,
+		Laurion::constants::EXPANSION_BIT,
+		Laurion::constants::EXPANSIONS_MASK,
+		Laurion::constants::CHARACTER_CREATION_LIMIT,
+		Laurion::constants::SAY_LINK_BODY_SIZE,
+		Laurion::INULL
 	)
 };
 
@@ -154,6 +163,11 @@ const EQ::constants::LookupEntry* EQ::constants::DynamicGMLookup(versions::Clien
 const EQ::constants::LookupEntry* EQ::constants::StaticLookup(versions::ClientVersion client_version)
 {
 	return &constants_static_lookup_entries[static_cast<int>(versions::ValidateClientVersion(client_version))];
+}
+
+size_t EQ::constants::GetSayLinkBodySize(versions::ClientVersion client_version)
+{
+	return StaticLookup(client_version)->SayLinkBodySize;
 }
 
 static std::unique_ptr<EQ::inventory::LookupEntry> inventory_dynamic_nongm_lookup_entries[EQ::versions::MobVersionCount];
@@ -375,6 +389,33 @@ static const EQ::inventory::LookupEntry inventory_static_lookup_entries[EQ::vers
 		RoF2::inventory::AllowClickCastFromBag,
 		RoF2::inventory::ConcatenateInvTypeLimbo,
 		RoF2::inventory::AllowOverLevelEquipment
+	),
+	/*[MobVersion::Laurion] =*/
+	EQ::inventory::LookupEntry(
+		EQ::inventory::LookupEntry::InventoryTypeSize_Struct(
+			Laurion::invtype::POSSESSIONS_SIZE,       Laurion::invtype::BANK_SIZE,               Laurion::invtype::SHARED_BANK_SIZE,
+			Laurion::invtype::TRADE_SIZE,             Laurion::invtype::WORLD_SIZE,              Laurion::invtype::LIMBO_SIZE,
+			Laurion::invtype::TRIBUTE_SIZE,           Laurion::invtype::TROPHY_TRIBUTE_SIZE,     Laurion::invtype::GUILD_TRIBUTE_SIZE,
+			Laurion::invtype::MERCHANT_SIZE,          Laurion::invtype::DELETED_SIZE,            Laurion::invtype::CORPSE_SIZE,
+			Laurion::invtype::BAZAAR_SIZE,            Laurion::invtype::INSPECT_SIZE,            Laurion::invtype::REAL_ESTATE_SIZE,
+			Laurion::invtype::VIEW_MOD_PC_SIZE,       Laurion::invtype::VIEW_MOD_BANK_SIZE,      Laurion::invtype::VIEW_MOD_SHARED_BANK_SIZE,
+			Laurion::invtype::VIEW_MOD_LIMBO_SIZE,    Laurion::invtype::ALT_STORAGE_SIZE,        Laurion::invtype::ARCHIVED_SIZE,
+			Laurion::invtype::MAIL_SIZE,              Laurion::invtype::GUILD_TROPHY_TRIBUTE_SIZE, Laurion::invtype::KRONO_SIZE,
+			RoF2::invtype::GUILD_BANK_MAIN_SIZE,      RoF2::invtype::GUILD_BANK_DEPOSIT_SIZE,    Laurion::invtype::OTHER_SIZE
+		),
+
+		Laurion::invslot::EQUIPMENT_BITMASK,
+		Laurion::invslot::GENERAL_BITMASK,
+		Laurion::invslot::CURSOR_BITMASK,
+		Laurion::invslot::POSSESSIONS_BITMASK,
+		Laurion::invslot::CORPSE_BITMASK,
+		Laurion::invbag::SLOT_COUNT,
+		Laurion::invaug::SOCKET_COUNT,
+
+		Laurion::inventory::AllowEmptyBagInBag,
+		Laurion::inventory::AllowClickCastFromBag,
+		Laurion::inventory::ConcatenateInvTypeLimbo,
+		Laurion::inventory::AllowOverLevelEquipment
 	),
 	/*[MobVersion::NPC] =*/
 	EQ::inventory::LookupEntry(
@@ -753,6 +794,33 @@ static const EQ::inventory::LookupEntry inventory_static_lookup_entries[EQ::vers
 		false,
 		false,
 		false
+	),
+	/*[MobVersion::OfflineLaurion] =*/
+	EQ::inventory::LookupEntry(
+		EQ::inventory::LookupEntry::InventoryTypeSize_Struct(
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL,
+			Laurion::INULL, Laurion::INULL, Laurion::INULL
+		),
+
+		Laurion::INULL,
+		Laurion::INULL,
+		Laurion::INULL,
+		Laurion::INULL,
+		Laurion::INULL,
+		Laurion::invbag::SLOT_COUNT,
+		Laurion::invaug::SOCKET_COUNT,
+
+		false,
+		false,
+		false,
+		false
 	)
 };
 
@@ -1000,6 +1068,10 @@ static const EQ::behavior::LookupEntry behavior_static_lookup_entries[EQ::versio
 	EQ::behavior::LookupEntry(
 		RoF2::behavior::CoinHasWeight
 	),
+	/*[MobVersion::Laurion] =*/
+	EQ::behavior::LookupEntry(
+		Laurion::behavior::CoinHasWeight
+	),
 	/*[MobVersion::NPC] =*/
 	EQ::behavior::LookupEntry(
 		EQ::behavior::CoinHasWeight
@@ -1055,6 +1127,10 @@ static const EQ::behavior::LookupEntry behavior_static_lookup_entries[EQ::versio
 	/*[MobVersion::OfflineRoF2] =*/
 	EQ::behavior::LookupEntry(
 		RoF2::behavior::CoinHasWeight
+	),
+	/*[MobVersion::OfflineLaurion] =*/
+	EQ::behavior::LookupEntry(
+		Laurion::behavior::CoinHasWeight
 	)
 };
 
@@ -1208,6 +1284,19 @@ static const EQ::spells::LookupEntry spells_static_lookup_entries[EQ::versions::
 		RoF2::spells::NPC_BUFFS,
 		RoF2::spells::PET_BUFFS,
 		RoF2::spells::MERC_BUFFS
+	),
+	/*[ClientVersion::Laurion] =*/
+	EQ::spells::LookupEntry(
+		Laurion::spells::SPELL_ID_MAX,
+		Laurion::spells::SPELLBOOK_SIZE,
+		Laurion::spells::SPELL_GEM_COUNT,
+		Laurion::spells::LONG_BUFFS,
+		Laurion::spells::SHORT_BUFFS,
+		Laurion::spells::DISC_BUFFS,
+		Laurion::spells::TOTAL_BUFFS,
+		Laurion::spells::NPC_BUFFS,
+		Laurion::spells::PET_BUFFS,
+		Laurion::spells::MERC_BUFFS
 	)
 };
 

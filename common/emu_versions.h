@@ -32,7 +32,8 @@ namespace EQ
 			SoD,		// Build: 'Dec 19 2008 15:22:49'
 			UF,			// Build: 'Jun  8 2010 16:44:32'
 			RoF,		// Build: 'Dec 10 2012 17:35:44'
-			RoF2		// Build: 'May 10 2013 23:30:08'
+			RoF2,		// Build: 'May 10 2013 23:30:08'
+			Laurion		// SoF x64 community port (2024)
 		};
 
 		enum ClientVersionBitmask : uint32 {
@@ -44,12 +45,14 @@ namespace EQ
 			bitUF = 0x00000010,
 			bitRoF = 0x00000020,
 			bitRoF2 = 0x00000040,
+			bitLaurion = 0x00000080,
 			maskUnknown = 0x00000000,
 			maskTitaniumAndEarlier = 0x00000003,
 			maskSoFAndEarlier = 0x00000007,
 			maskSoDAndEarlier = 0x0000000F,
 			maskUFAndEarlier = 0x0000001F,
 			maskRoFAndEarlier = 0x0000003F,
+			maskLaurionAndEarlier = 0x0000007F,
 			maskSoFAndLater = 0xFFFFFFFC,
 			maskSoDAndLater = 0xFFFFFFF8,
 			maskUFAndLater = 0xFFFFFFF0,
@@ -58,7 +61,7 @@ namespace EQ
 			maskAllClients = 0xFFFFFFFF
 		};
 
-		const ClientVersion LastClientVersion = ClientVersion::RoF2;
+		const ClientVersion LastClientVersion = ClientVersion::Laurion;
 		const size_t ClientVersionCount = (static_cast<size_t>(LastClientVersion) + 1);
 
 		bool IsValidClientVersion(ClientVersion client_version);
@@ -76,6 +79,7 @@ namespace EQ
 			UF,
 			RoF,
 			RoF2,
+			Laurion,
 			NPC,
 			NPCMerchant,
 			Merc,
@@ -89,13 +93,14 @@ namespace EQ
 			OfflineSoD,
 			OfflineUF,
 			OfflineRoF,
-			OfflineRoF2
+			OfflineRoF2,
+			OfflineLaurion
 		};
 
-		const MobVersion LastMobVersion = MobVersion::OfflineRoF2;
-		const MobVersion LastPCMobVersion = MobVersion::RoF2;
+		const MobVersion LastMobVersion = MobVersion::OfflineLaurion;
+		const MobVersion LastPCMobVersion = MobVersion::Laurion;
 		const MobVersion LastNonPCMobVersion = MobVersion::BotPet;
-		const MobVersion LastOfflinePCMobVersion = MobVersion::OfflineRoF2;
+		const MobVersion LastOfflinePCMobVersion = MobVersion::OfflineLaurion;
 		const size_t MobVersionCount = (static_cast<size_t>(LastMobVersion) + 1);
 
 		bool IsValidMobVersion(MobVersion mob_version);
@@ -127,7 +132,8 @@ namespace EQ
 			ucsSoDCombined = 'D',
 			ucsUFCombined = 'E',
 			ucsRoFCombined = 'F',
-			ucsRoF2Combined = 'G'
+			ucsRoF2Combined = 'G',
+				ucsLaurionCombined = 'H'
 		};
 
 	} /*versions*/

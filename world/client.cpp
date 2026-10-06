@@ -32,6 +32,7 @@
 #include "common/inventory_profile.h"
 #include "common/misc.h"
 #include "common/opcodemgr.h"
+#include "common/patches/laurion_structs.h"
 #include "common/packet_dump.h"
 #include "common/races.h"
 #include "common/random.h"
@@ -141,6 +142,11 @@ Client::~Client() {
 
 void Client::SendLogServer()
 {
+	// 0x6d4d wire layout is produced by the Laurion ENCODE(OP_LogServer) in common/patches/laurion.cpp:
+	// it allocates 1840 bytes and copies emu->worldshortname (emu offset 0x20) to wire +0x15, which is
+	// the offset the client handler reads into DAT_140e3d630. Building the wire packet here instead put
+	// the name at the wrong emu offset, so the client received an empty server name.
+
 	auto outapp = new EQApplicationPacket(OP_LogServer, sizeof(LogServer_Struct));
 	LogServer_Struct *l=(LogServer_Struct *)outapp->pBuffer;
 	const char *wsn=WorldConfig::get()->ShortName.c_str();
@@ -184,8 +190,26 @@ bool Client::CanTradeFVNoDropItem()
 	return false;
 }
 
+uint32 Client::GetExpansionSettings() {
+	if (RuleI(World, CharacterSelectExpansionSettings) != -1) {
+		return RuleI(World, CharacterSelectExpansionSettings);
+	}
+	if (RuleB(World, UseClientBasedExpansionSettings)) {
+		return EQ::expansions::ConvertClientVersionToExpansionsMask(eqs->ClientVersion());
+	}
+	return RuleI(World, ExpansionSettings);
+}
+
 void Client::SendEnterWorld(std::string name)
 {
+	// 0x6691 copies the payload string into DAT_140e36430, which is the CHARACTER NAME buffer, not the
+	// server name. The server name shown in the UI comes from 0x6d4d (+0x17). FUN_14026b460 (ProcessGame)
+	// branches on DAT_140e36430: empty -> FUN_14027cbf0 (char select), non-empty -> treat it as the
+	// character to enter, send 0x6691 back, set gamestate 3 and wait 120s for a zone connect.
+	// So at character select this must be an EMPTY string. The generic path below already emits the
+	// null terminated name, which is empty when there is no live character - that is the correct wire
+	// format for Laurion, so there is no Laurion special case here.
+
 	std::string live_name {};
 
 	if (is_player_zoning) {
@@ -210,18 +234,14 @@ void Client::SendEnterWorld(std::string name)
 }
 
 void Client::SendExpansionInfo() {
+	// 0x66d: the Laurion ENCODE(OP_ExpansionInfo) expands this 4 byte emu packet to the 68 byte wire
+	// layout (64 byte prefix + Expansions dword at +0x40). Sending the wire struct directly trips
+	// ENCODE_LENGTH_EXACT and the packet is dropped, so the client never gets its expansion mask.
+
 	auto outapp = new EQApplicationPacket(OP_ExpansionInfo, sizeof(ExpansionInfo_Struct));
 	ExpansionInfo_Struct *eis = (ExpansionInfo_Struct*)outapp->pBuffer;
 
-	if (RuleI(World, CharacterSelectExpansionSettings) != -1) {
-		eis->Expansions = RuleI(World, CharacterSelectExpansionSettings);
-	}
-	else if (RuleB(World, UseClientBasedExpansionSettings)) {
-		eis->Expansions = EQ::expansions::ConvertClientVersionToExpansionsMask(eqs->ClientVersion());
-	}
-	else {
-		eis->Expansions = RuleI(World, ExpansionSettings);
-	}
+	eis->Expansions = GetExpansionSettings();
 
 	QueuePacket(outapp);
 	safe_delete(outapp);
@@ -233,15 +253,30 @@ void Client::SendCharInfo() {
 	}
 
 	if (m_ClientVersionBit & EQ::versions::maskRoFAndLater) {
+		// 0x2608 (FUN_1406407b0) CLEARS the FreeToPlay object, including the +0x04/+0x08 bitmasks,
+		// before filling its tables. Those bitmasks are what the 0x832 handler tests to decide if a
+		// character is usable, so for Laurion the settings packet has to come first.
+		if (m_ClientVersion == EQ::versions::ClientVersion::Laurion) {
+			SendMembershipSettings();
+			SendMembership();
+		} else {
+			SendMembership();
+			SendMembershipSettings();
+		}
+
+		// 0x13af is the char-list update handler, not max-chars. It sets pinstCEverQuest+0x624 (the
+		// bound the 0x832 usability loop uses) and makes the client send 0x200 back to us.
 		SendMaxCharCreate();
-		SendMembership();
-		SendMembershipSettings();
 	}
 
 	seen_character_select = true;
 
 	// Send OP_SendCharInfo
 	EQApplicationPacket *outapp = nullptr;
+
+	// The Laurion wire layout is produced by ENCODE(OP_SendCharInfo), so the database only has to
+	// fill the generic emu struct. Serialising the wire format here as well made the encoder read the
+	// head/armor/tail fields from the wrong offsets.
 	database.GetCharSelectInfo(GetAccountID(), &outapp, m_ClientVersionBit);
 
 	if (outapp) {
@@ -317,6 +352,11 @@ void Client::SendMembership() {
 	mc->entries[20] = 0xffffffff;	// 0 for Silver
 	mc->exit_url_length = 0;
 	//mc->exit_url = 0; // Used on Live: "http://www.everquest.com/free-to-play/exit-silver"
+
+	// 0x2aca wire layout (leading uint8 flag, then the two bitmasks the 0x832 handler tests) is
+	// produced by ENCODE(OP_SendMembership). Sending a hand built wire packet trips
+	// ENCODE_LENGTH_EXACT (104 expected) and the packet is dropped, so the FreeToPlay bitmasks stay
+	// zero and every character is marked unusable by the 0x832 handler.
 
 	QueuePacket(outapp);
 	safe_delete(outapp);
@@ -427,19 +467,112 @@ void Client::SendMembershipSettings() {
 	21	-	0		0		0		-	Unknown 0
 	*/
 
+	// 0x2608 wire layout (9 byte setting entries, 8 byte race/class entries) is produced by
+	// ENCODE(OP_SendMembershipDetails). A hand built wire packet trips ENCODE_LENGTH_EXACT
+	// (1052 expected) and the packet is dropped.
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
+// 0x2049 - server ping / heartbeat. FUN_14027ad80 indexes the packet as dwords (0, 2 and 4), so
+// the payload has to be at least 14 bytes. The client records a tick and echoes the opcode back.
+void Client::SendLaurionPing() {
+	if (m_ClientVersion != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_WorldUnknown001, Laurion::structs::LAURION_PING_SIZE);
+	memset(outapp->pBuffer, 0, outapp->size);
+
 	QueuePacket(outapp);
 	safe_delete(outapp);
 }
 
 void Client::SendPostEnterWorld() {
+	// The WorldAuthenticate dispatcher (FUN_1402a6fd0) has no handler for this opcode on the
+	// 2024 SoF/Laurion client - sending it only produces an UNKNOWN MESSAGE in dbg.txt.
+	if (m_ClientVersion == EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_PostEnterWorld, 1);
 	outapp->size=0;
 	QueuePacket(outapp);
 	safe_delete(outapp);
 }
 
+// 0x6a0 - server list. The client reads 19 length-prefixed strings via FUN_1405647b0
+// (each [int32 len][len bytes], no null terminator) into 19 CString fields.
+void Client::SendServerList() {
+	if (m_ClientVersion != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	const char* entries[19] = {
+		WorldConfig::get()->ShortName.c_str(),
+		"", "", "", "", "", "", "", "", "",
+		"", "", "", "", "", "", "", "", ""
+	};
+
+	size_t size = 0;
+	for (const char* entry : entries) {
+		size += 4 + strlen(entry);
+	}
+
+	auto outapp = new EQApplicationPacket(OP_ServerList, size);
+	unsigned char* ptr = outapp->pBuffer;
+	for (const char* entry : entries) {
+		uint32 len = (uint32) strlen(entry);
+		memcpy(ptr, &len, 4);
+		ptr += 4;
+		memcpy(ptr, entry, len);
+		ptr += len;
+	}
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
+// 0x1b2b - NOT a "char list ready" flag. Handler FUN_1401f77f0 sets pinstCEverQuest + 0x18ed9.
+// CCharacterListWnd__OnTimer (FUN_1400ce070) tests that flag and immediately raises the
+// "Some characters took to long to load..." popup (string 0x3ada) with event 0x6b, whose handler
+// (FUN_1400ccd00 case 0x6b) logs "TIMED OUT WAITING FOR CHARACTERS TO BE SENT" and disconnects.
+// So this opcode means "some characters failed to load" and must only be sent in that case -
+// never during a normal character select flow.
+void Client::SendCharListReady() {
+	if (m_ClientVersion != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_CharListReady, 0);
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
+// 0x40a - char-list window refresh. The handler only stores the state when payload size > 3.
+void Client::SendCharListWindowUpdate() {
+	if (m_ClientVersion != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_CharListWindowUpdate, 4);
+	memset(outapp->pBuffer, 0, 4);
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
 bool Client::HandleSendLoginInfoPacket(const EQApplicationPacket *app)
 {
+	// Laurion client (SoF x64 community port) sends a 464-byte payload:
+	// username\0 + password\0 + "Unknown"\0 + zero-padding to 464
+	// SoF client sends a 488-byte LoginInfo struct.
+	// The client version is detected via the stream signature (first wire opcode 0x2fca for Laurion, 0x6c3c for SoF).
+	if (m_ClientVersion == EQ::versions::ClientVersion::Laurion) {
+		return HandleLaurionLoginInfo(app);
+	}
+
 	if (app->size != sizeof(LoginInfo)) {
 		return false;
 	}
@@ -562,6 +695,128 @@ bool Client::HandleSendLoginInfoPacket(const EQApplicationPacket *app)
 		LogInfo("Bad/Expired session key [{}]", name);
 		return false;
 	}
+}
+
+// Laurion client login handler.
+// The Laurion client sends opcode 0x2fca with a 464-byte payload:
+// username\0 + password\0 + "Unknown"\0 + zero-padding to 464
+// No encryption (unlike standard EQ1 which uses eqcrypt_block).
+bool Client::HandleLaurionLoginInfo(const EQApplicationPacket *app)
+{
+	// Laurion (SoF x64) wire layout, verified from client FUN_1402a7a70 + FUN_140232f40:
+	//   [account id as decimal string]\0[10-char login key]\0[third string]\0 + zero pad to 464
+	//   then uint8 at +0xBA, uint32 at +0xBC, uint16 (0xCC) at +0xC0
+	// Field 1 is the ACCOUNT ID (not the account name); field 2 is the loginserver session key.
+	char account_id_str[32] = {0};
+	char login_key[64] = {0};
+
+	const char *data = (const char *) app->pBuffer;
+	int offset = 0;
+
+	// Parse account id string
+	int id_len = 0;
+	while (data[offset + id_len] != '\0' && id_len < 31) {
+		id_len++;
+	}
+	memcpy(account_id_str, data + offset, id_len);
+	account_id_str[id_len] = '\0';
+	offset += id_len + 1;
+
+	// Parse login key
+	int key_len = 0;
+	while (data[offset + key_len] != '\0' && key_len < 63) {
+		key_len++;
+	}
+	memcpy(login_key, data + offset, key_len);
+	login_key[key_len] = '\0';
+	offset += key_len + 1;
+
+	// Skip the third string
+	int third_len = 0;
+	while (data[offset + third_len] != '\0' && third_len < 63) {
+		third_len++;
+	}
+	offset += third_len + 1;
+
+	LogDebug("[Laurion] Receiving login info packet from client | account_id [{}] key [{}]", account_id_str, login_key);
+
+	if (id_len <= 0 || key_len <= 0) {
+		LogInfo("[Laurion] Login without account id or key");
+		SendLaurionLoginReject();
+		return false;
+	}
+
+	uint32 account_id = Strings::ToInt(account_id_str);
+	if (account_id == 0) {
+		LogWarning("[Laurion] Login info packet with account_id 0 - disconnecting");
+		SendLaurionLoginReject();
+		return false;
+	}
+
+	// The loginserver already authenticated the password. The world validates the 10-char
+	// session key against the CLE that CLEAdd() created over servertalk.
+	ClientListEntry* account = ClientList::Instance()->CheckAuth(account_id, login_key);
+	if (!account) {
+		LogInfo("[Laurion] Account [{}] not found or key mismatch", account_id);
+		SendLaurionLoginReject();
+		return false;
+	}
+
+	// Client writes a uint32 at payload +0xBC (EQEmu struct calls this `zoning`).
+	is_player_zoning = (data[0xBC] == 1);
+
+	LogClientLogin("[Laurion] Checking authentication for account [{}]", account_id);
+
+	// Set the client's account
+	cle = account;
+	LoadDataBucketsCache();
+
+	LogClientLogin("[Laurion] Checking authentication for account [{}] passed", account_id);
+
+	if (cle->GetOnline() == CLE_Status::Never) {
+		cle->SetOnline(CLE_Status::CharSelect);
+		LogInfo("[Laurion] Account ({}) Logging in to character select", cle->AccountName());
+	}
+	else {
+		cle->SetOnline();
+	}
+
+	// Login flow in the order the WorldAuthenticate dispatcher expects (Ghidra-verified):
+	//   0x6d4d server info -> 0x6691 server name -> 0x6a0 server list
+	//   -> 0x2062 access granted -> 0x66d expansions -> 0x2608/0x2aca membership -> 0x13af char list
+	//   update -> 0x832 char list -> 0x40a window refresh -> 0x2049 heartbeat
+	// Do NOT send 0x1b2b here: it sets the "characters failed to load" flag and the client
+	// disconnects as soon as the character select window renders.
+	SendGuildList();
+	SendLogServer();
+	SendEnterWorld(cle->name());
+	SendServerList();
+	SendApproveWorld();			// OP_ApproveWorld = 0x2062 (access granted)
+	SendExpansionInfo();
+	SendCharInfo();
+	SendCharListWindowUpdate();
+	SendLaurionPing();	// 0x2049 - keeps the connection alive while the window is open
+	database.LoginIP(cle->AccountID(), long2ip(GetIP()));
+
+	cle->SetIP(GetIP());
+	return true;
+}
+
+// Send the Laurion login accept opcode (0x2062 = Access granted, no payload)
+// This is OP_PostEnterWorld in the Laurion patch.
+// SendPostEnterWorld() is called separately in the login flow,
+// so this is a no-op here.
+void Client::SendLaurionLoginAccept()
+{
+}
+
+// Send the Laurion login reject opcode (0x6e53)
+void Client::SendLaurionLoginReject()
+{
+	auto outapp = new EQApplicationPacket(OP_WorldLoginFailed, 1);
+	outapp->size = 0;
+	QueuePacket(outapp);
+	safe_delete(outapp);
 }
 
 bool Client::HandleNameApprovalPacket(const EQApplicationPacket *app)
@@ -797,6 +1052,21 @@ bool Client::HandleEnterWorldPacket(const EQApplicationPacket *app) {
 
 	auto ew = (EnterWorld_Struct *) app->pBuffer;
 	strn0cpy(char_name, ew->name, sizeof(char_name));
+
+	// 0x6691 is bidirectional for this client. FUN_14026b460 (ProcessGame) echoes it whenever
+	// DAT_140e36430 is non empty, so a name that is empty (the char select handshake) or that matches
+	// the world short name (the client had no character name to send) is not a character selection.
+	// Ignore those instead of failing the lookup and closing the socket.
+	if (GetClientVersion() == EQ::versions::ClientVersion::Laurion && char_name[0] == '\0') {
+		LogInfo("[Laurion] 0x6691 arrived with an empty name - treating it as the char select handshake, not a character selection");
+		return true;
+	}
+
+	if (GetClientVersion() == EQ::versions::ClientVersion::Laurion &&
+		strcmp(char_name, WorldConfig::get()->ShortName.c_str()) == 0) {
+		LogInfo("[Laurion] 0x6691 carried the server name [{}] - treating it as the char select server name echo, not a character selection", char_name);
+		return true;
+	}
 
 	const auto& l = CharacterDataRepository::GetWhere(
 		database,
@@ -1143,6 +1413,19 @@ bool Client::HandlePacket(const EQApplicationPacket *app) {
 		case OP_SendLoginInfo:
 		{
 			return HandleSendLoginInfoPacket(app);
+		}
+		case OP_CharacterSelectRequest:
+		{
+			// Generated by the 0x13af char-list update handler when the name field is empty:
+			// [8 zero bytes][uint16 sub-opcode = 2][uint16 FID] via FUN_140523530.
+			if (app->size >= 12) {
+				uint16 sub_opcode = *(uint16 *)(app->pBuffer + 8);
+				uint16 fid = *(uint16 *)(app->pBuffer + 10);
+				LogInfo("[Laurion] Character select request: sub_opcode [{}] FID [{}]", sub_opcode, fid);
+			} else {
+				LogInfo("[Laurion] Character select request with unexpected size [{}]", app->size);
+			}
+			return true;
 		}
 		case OP_ApproveName: //Name approval
 		{

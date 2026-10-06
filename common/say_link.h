@@ -17,6 +17,7 @@
 */
 #pragma once
 
+#include "common/emu_versions.h"
 #include "common/loot.h"
 #include "common/repositories/saylink_repository.h"
 #include "common/types.h"
@@ -39,8 +40,8 @@ namespace EQ
 			SayLinkItemInst
 		};
 
-		extern bool DegenerateLinkBody(SayLinkBody_Struct& say_Link_body_struct, const std::string& say_link_body);
-		extern bool GenerateLinkBody(std::string& say_link_body, const SayLinkBody_Struct& say_link_body_struct);
+		extern bool DegenerateLinkBody(SayLinkBody_Struct& say_Link_body_struct, const std::string& say_link_body, versions::ClientVersion client_version = EQ::versions::ClientVersion::RoF2);
+		extern bool GenerateLinkBody(std::string& say_link_body, const SayLinkBody_Struct& say_link_body_struct, versions::ClientVersion client_version = EQ::versions::ClientVersion::RoF2);
 
 	} /*saylink*/
 
@@ -53,10 +54,14 @@ namespace EQ
 		uint32 augment_4;		/* %05X */
 		uint32 augment_5;		/* %05X */
 		uint32 augment_6;		/* %05X */
+		// Laurion only: per augment socket luck (client ItemLinkInfo::socketLuck[6]).
+		// RoF2 emits nothing here, so these stay zero for older clients.
+		uint32 socket_luck[6];	/* %05X x 6 (Laurion) */
 		uint8 is_evolving;		/* %1X */
 		uint32 evolve_group;	/* %04X */
 		uint8 evolve_level;		/* %02X */
 		uint32 ornament_icon;	/* %05X */
+		uint32 luck;			/* %05X (Laurion) */
 		uint32 hash;			/* %08X */
 	};
 
@@ -92,6 +97,11 @@ namespace EQ
 		void SetProxyText(const char* proxy_text) { m_LinkProxyStruct.text = proxy_text; } // overrides standard text use
 		void SetTaskUse() { m_TaskUse = true; }
 
+		// Link body layout is client version specific (RoF2 = 56 chars, Laurion = 91 chars).
+		void SetClientVersion(EQ::versions::ClientVersion client_version) { m_ClientVersion = client_version; }
+		EQ::versions::ClientVersion GetClientVersion() const { return m_ClientVersion; }
+		static void SetDefaultClientVersion(EQ::versions::ClientVersion client_version) { s_DefaultClientVersion = client_version; }
+
 		const std::string& GenerateLink();
 		bool LinkError() { return m_Error; }
 
@@ -110,12 +120,14 @@ namespace EQ
 		void generate_text();
 
 		int m_LinkType;
+		EQ::versions::ClientVersion m_ClientVersion;
 		const ItemData     * m_ItemData;
 		const LootItem     * m_LootData;
 		const ItemInstance * m_ItemInst;
 		SayLinkBody_Struct m_LinkBodyStruct;
 		SayLinkProxy_Struct m_LinkProxyStruct;
 		bool m_TaskUse;
+		static EQ::versions::ClientVersion s_DefaultClientVersion;
 		std::string m_Link;
 		std::string m_LinkBody;
 		std::string m_LinkText;

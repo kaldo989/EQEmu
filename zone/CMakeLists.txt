@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 set(zone_sources
     aa.cpp
     aa_ability.cpp
+    advloot.cpp
     aggro.cpp
     aggromanager.cpp
     api_service.cpp
@@ -117,7 +118,8 @@ set(zone_sources
 )
 
 set(zone_headers
-    aa.h
+    aa_ability.h
+    advloot.h
     aa_ability.h
     aggromanager.h
     api_service.h

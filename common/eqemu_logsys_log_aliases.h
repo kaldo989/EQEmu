@@ -610,6 +610,16 @@
         OutF(logsys, Logs::Detail, Logs::Loot, __FILE__, __func__, __LINE__, message, ##__VA_ARGS__);\
 } while (0)
 
+
+#define LogLootFilters(message, ...) do {\
+    if (auto logsys = EQEmuLogSys::Instance(); logsys && logsys->IsLogEnabled(Logs::General, Logs::LootFilters))\
+        OutF(logsys, Logs::General, Logs::LootFilters, __FILE__, __func__, __LINE__, message, ##__VA_ARGS__);\
+} while (0)
+
+#define LogLootFiltersDetail(message, ...) do {\
+    if (auto logsys = EQEmuLogSys::Instance(); logsys && logsys->IsLogEnabled(Logs::Detail, Logs::LootFilters))\
+        OutF(logsys, Logs::Detail, Logs::LootFilters, __FILE__, __func__, __LINE__, message, ##__VA_ARGS__);\
+} while (0)
 #define LogExpeditions(message, ...) do {\
     if (auto logsys = EQEmuLogSys::Instance(); logsys && logsys->IsLogEnabled(Logs::General, Logs::Expeditions))\
         OutF(logsys, Logs::General, Logs::Expeditions, __FILE__, __func__, __LINE__, message, ##__VA_ARGS__);\

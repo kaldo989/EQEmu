@@ -159,6 +159,7 @@ IN(OP_LootRequest, EntityId_Struct);	//entity must be a corpse
 IN(OP_Dye, DyeStruct);
 INr(OP_ConfirmDelete);	//?
 IN(OP_LootItem, LootingItem_Struct);
+INr(OP_AdvLoot);	//Advanced Loot, variable length: uint16 sub-command then sub-command payload
 INr(OP_GuildDelete);	//?
 IN(OP_GuildPublicNote, GuildUpdate_PublicNote);
 INz(OP_GetGuildsList);	//?
@@ -315,6 +316,7 @@ OUTz(OP_ClearObject);
 OUTz(OP_FinishTrade);		//follows OP_TradeAcceptClick
 OUTz(OP_GMEndTrainingResponse);	//follows OP_GMTraining
 OUTz(OP_LootComplete);		//follows OP_LootItem
+OUTr(OP_AdvLoot);		//Advanced Loot sub-command replies
 OUTz(OP_WorldObjectsSent);
 OUTz(OP_FinishWindow);
 OUTz(OP_FinishWindow2);

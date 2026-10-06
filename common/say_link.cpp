@@ -28,50 +28,99 @@
 // static bucket global
 std::vector<SaylinkRepository::Saylink> g_cached_saylinks = {};
 
-bool EQ::saylink::DegenerateLinkBody(SayLinkBody_Struct &say_link_body_struct, const std::string &say_link_body)
+EQ::versions::ClientVersion EQ::SayLinkEngine::s_DefaultClientVersion = EQ::versions::ClientVersion::RoF2;
+
+bool EQ::saylink::DegenerateLinkBody(SayLinkBody_Struct &say_link_body_struct, const std::string &say_link_body, versions::ClientVersion client_version)
 {
 	memset(&say_link_body_struct, 0, sizeof(say_link_body_struct));
-	if (say_link_body.length() != EQ::constants::SAY_LINK_BODY_SIZE) {
+	if (say_link_body.length() != EQ::constants::GetSayLinkBodySize(client_version)) {
 		return false;
 	}
 
-	say_link_body_struct.action_id     = (uint8) strtol(say_link_body.substr(0, 1).c_str(), nullptr, 16);
-	say_link_body_struct.item_id       = (uint32) strtol(say_link_body.substr(1, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_1     = (uint32) strtol(say_link_body.substr(6, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_2     = (uint32) strtol(say_link_body.substr(11, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_3     = (uint32) strtol(say_link_body.substr(16, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_4     = (uint32) strtol(say_link_body.substr(21, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_5     = (uint32) strtol(say_link_body.substr(26, 5).c_str(), nullptr, 16);
-	say_link_body_struct.augment_6     = (uint32) strtol(say_link_body.substr(31, 5).c_str(), nullptr, 16);
-	say_link_body_struct.is_evolving   = (uint8) strtol(say_link_body.substr(36, 1).c_str(), nullptr, 16);
-	say_link_body_struct.evolve_group  = (uint32) strtol(say_link_body.substr(37, 4).c_str(), nullptr, 16);
-	say_link_body_struct.evolve_level  = (uint8) strtol(say_link_body.substr(41, 2).c_str(), nullptr, 16);
-	say_link_body_struct.ornament_icon = (uint32) strtol(say_link_body.substr(43, 5).c_str(), nullptr, 16);
-	say_link_body_struct.hash          = (uint32) strtol(say_link_body.substr(48, 8).c_str(), nullptr, 16);
+	const bool is_laurion = (client_version == EQ::versions::ClientVersion::Laurion);
+
+	uint32 *augment_fields[6] = {
+		&say_link_body_struct.augment_1,
+		&say_link_body_struct.augment_2,
+		&say_link_body_struct.augment_3,
+		&say_link_body_struct.augment_4,
+		&say_link_body_struct.augment_5,
+		&say_link_body_struct.augment_6
+	};
+
+	size_t pos = 0;
+	auto read_hex = [&](size_t width) -> uint32 {
+		uint32 value = (uint32) strtol(say_link_body.substr(pos, width).c_str(), nullptr, 16);
+		pos += width;
+		return value;
+	};
+
+	say_link_body_struct.action_id = (uint8) read_hex(1);
+	say_link_body_struct.item_id   = read_hex(5);
+
+	for (int i = 0; i < 6; ++i) {
+		*augment_fields[i] = read_hex(5);
+		if (is_laurion) {
+			say_link_body_struct.socket_luck[i] = read_hex(5);
+		}
+	}
+
+	say_link_body_struct.is_evolving   = (uint8) read_hex(1);
+	say_link_body_struct.evolve_group  = read_hex(4);
+	say_link_body_struct.evolve_level  = (uint8) read_hex(2);
+	say_link_body_struct.ornament_icon = read_hex(5);
+	if (is_laurion) {
+		say_link_body_struct.luck = read_hex(5);
+	}
+	say_link_body_struct.hash = read_hex(8);
 
 	return true;
 }
 
-bool EQ::saylink::GenerateLinkBody(std::string &say_link_body, const SayLinkBody_Struct &say_link_body_struct)
+bool EQ::saylink::GenerateLinkBody(std::string &say_link_body, const SayLinkBody_Struct &say_link_body_struct, versions::ClientVersion client_version)
 {
-	say_link_body = StringFormat(
-		"%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X",
-		(0x0F & say_link_body_struct.action_id),
-		(0x000FFFFF & say_link_body_struct.item_id),
-		(0x000FFFFF & say_link_body_struct.augment_1),
-		(0x000FFFFF & say_link_body_struct.augment_2),
-		(0x000FFFFF & say_link_body_struct.augment_3),
-		(0x000FFFFF & say_link_body_struct.augment_4),
-		(0x000FFFFF & say_link_body_struct.augment_5),
-		(0x000FFFFF & say_link_body_struct.augment_6),
-		(0x0F & say_link_body_struct.is_evolving),
-		(0x0000FFFF & say_link_body_struct.evolve_group),
-		(0xFF & say_link_body_struct.evolve_level),
-		(0x000FFFFF & say_link_body_struct.ornament_icon),
-		(0xFFFFFFFF & say_link_body_struct.hash)
-	);
+	if (client_version == EQ::versions::ClientVersion::Laurion) {
+		// Laurion client layout (client ItemBase__CreateItemTagString): every augment socket is
+		// written as a pair of %05X fields (socket item id + socket luck), plus a trailing item luck.
+		say_link_body = StringFormat(
+			"%1X" "%05X"
+			"%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X"
+			"%1X" "%04X" "%02X" "%05X" "%05X" "%08X",
+			(0x0F & say_link_body_struct.action_id),
+			(0x000FFFFF & say_link_body_struct.item_id),
+			(0x000FFFFF & say_link_body_struct.augment_1), (0x000FFFFF & say_link_body_struct.socket_luck[0]),
+			(0x000FFFFF & say_link_body_struct.augment_2), (0x000FFFFF & say_link_body_struct.socket_luck[1]),
+			(0x000FFFFF & say_link_body_struct.augment_3), (0x000FFFFF & say_link_body_struct.socket_luck[2]),
+			(0x000FFFFF & say_link_body_struct.augment_4), (0x000FFFFF & say_link_body_struct.socket_luck[3]),
+			(0x000FFFFF & say_link_body_struct.augment_5), (0x000FFFFF & say_link_body_struct.socket_luck[4]),
+			(0x000FFFFF & say_link_body_struct.augment_6), (0x000FFFFF & say_link_body_struct.socket_luck[5]),
+			(0x0F & say_link_body_struct.is_evolving),
+			(0x0000FFFF & say_link_body_struct.evolve_group),
+			(0xFF & say_link_body_struct.evolve_level),
+			(0x000FFFFF & say_link_body_struct.ornament_icon),
+			(0x000FFFFF & say_link_body_struct.luck),
+			(0xFFFFFFFF & say_link_body_struct.hash)
+		);
+	} else {
+		say_link_body = StringFormat(
+			"%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X",
+			(0x0F & say_link_body_struct.action_id),
+			(0x000FFFFF & say_link_body_struct.item_id),
+			(0x000FFFFF & say_link_body_struct.augment_1),
+			(0x000FFFFF & say_link_body_struct.augment_2),
+			(0x000FFFFF & say_link_body_struct.augment_3),
+			(0x000FFFFF & say_link_body_struct.augment_4),
+			(0x000FFFFF & say_link_body_struct.augment_5),
+			(0x000FFFFF & say_link_body_struct.augment_6),
+			(0x0F & say_link_body_struct.is_evolving),
+			(0x0000FFFF & say_link_body_struct.evolve_group),
+			(0xFF & say_link_body_struct.evolve_level),
+			(0x000FFFFF & say_link_body_struct.ornament_icon),
+			(0xFFFFFFFF & say_link_body_struct.hash)
+		);
+	}
 
-	if (say_link_body.length() != EQ::constants::SAY_LINK_BODY_SIZE) {
+	if (say_link_body.length() != EQ::constants::GetSayLinkBodySize(client_version)) {
 		return false;
 	}
 
@@ -92,23 +141,26 @@ const std::string &EQ::SayLinkEngine::GenerateLink()
 	generate_body();
 	generate_text();
 
-	if ((m_LinkBody.length() == EQ::constants::SAY_LINK_BODY_SIZE) && (m_LinkText.length() > 0)) {
+	const size_t body_size = EQ::constants::GetSayLinkBodySize(m_ClientVersion);
+	const size_t maximum_size = EQ::constants::SAY_LINK_OPENER_SIZE + body_size + EQ::constants::SAY_LINK_TEXT_SIZE + EQ::constants::SAY_LINK_CLOSER_SIZE;
+
+	if ((m_LinkBody.length() == body_size) && (m_LinkText.length() > 0)) {
 		m_Link.push_back(0x12);
 		m_Link.append(m_LinkBody);
 		m_Link.append(m_LinkText);
 		m_Link.push_back(0x12);
 	}
 
-	if ((m_Link.length() == 0) || (m_Link.length() > (EQ::constants::SAY_LINK_MAXIMUM_SIZE))) {
+	if ((m_Link.length() == 0) || (m_Link.length() > maximum_size)) {
 		m_Error = true;
 		m_Link  = "<LINKER ERROR>";
 		LogError("SayLinkEngine::GenerateLink() failed to generate a useable say link");
 		LogError(">> LinkType: {}, Lengths: [link: {}({}), body: {}({}), text: {}({})]",
 				 m_LinkType,
 				 m_Link.length(),
-				 EQ::constants::SAY_LINK_MAXIMUM_SIZE,
+				 maximum_size,
 				 m_LinkBody.length(),
-				 EQ::constants::SAY_LINK_BODY_SIZE,
+				 body_size,
 				 m_LinkText.length(),
 				 EQ::constants::SAY_LINK_TEXT_SIZE
 		);
@@ -122,6 +174,7 @@ const std::string &EQ::SayLinkEngine::GenerateLink()
 void EQ::SayLinkEngine::Reset()
 {
 	m_LinkType = saylink::SayLinkBlank;
+	m_ClientVersion = s_DefaultClientVersion;
 	m_ItemData = nullptr;
 	m_LootData = nullptr;
 	m_ItemInst = nullptr;
@@ -241,22 +294,7 @@ void EQ::SayLinkEngine::generate_body()
 		m_LinkBodyStruct.hash = 0x14505DC2;
 	}
 
-	m_LinkBody = StringFormat(
-		"%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X",
-		(0x0F & m_LinkBodyStruct.action_id),
-		(0x000FFFFF & m_LinkBodyStruct.item_id),
-		(0x000FFFFF & m_LinkBodyStruct.augment_1),
-		(0x000FFFFF & m_LinkBodyStruct.augment_2),
-		(0x000FFFFF & m_LinkBodyStruct.augment_3),
-		(0x000FFFFF & m_LinkBodyStruct.augment_4),
-		(0x000FFFFF & m_LinkBodyStruct.augment_5),
-		(0x000FFFFF & m_LinkBodyStruct.augment_6),
-		(0x0F & m_LinkBodyStruct.is_evolving),
-		(0x0000FFFF & m_LinkBodyStruct.evolve_group),
-		(0xFF & m_LinkBodyStruct.evolve_level),
-		(0x000FFFFF & m_LinkBodyStruct.ornament_icon),
-		(0xFFFFFFFF & m_LinkBodyStruct.hash)
-	);
+	saylink::GenerateLinkBody(m_LinkBody, m_LinkBodyStruct, m_ClientVersion);
 }
 
 void EQ::SayLinkEngine::generate_text()

@@ -36,6 +36,7 @@
 #include "common/repositories/tradeskill_recipe_entries_repository.h"
 #include "common/rulesys.h"
 #include "common/shared_tasks.h"
+#include "zone/advloot.h"
 #include "zone/bot.h"
 #include "zone/dialogue_window.h"
 #include "zone/dynamic_zone.h"
@@ -106,8 +107,15 @@ void MapOpcodes()
 
 	// connected opcode handler assignments:
 	ConnectedOpcodes[OP_0x0193] = &Client::Handle_0x0193;
+	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
+	ConnectedOpcodes[OP_0x59bd] = &Client::Handle_0x59bd;
+	ConnectedOpcodes[OP_0x5e4a] = &Client::Handle_0x5e4a;
+	ConnectedOpcodes[OP_0x6b80] = &Client::Handle_0x6b80;
+	ConnectedOpcodes[OP_0x7340] = &Client::Handle_0x7340;
+	ConnectedOpcodes[OP_0x798e] = &Client::Handle_0x798e;
 	ConnectedOpcodes[OP_AAAction] = &Client::Handle_OP_AAAction;
 	ConnectedOpcodes[OP_AcceptNewTask] = &Client::Handle_OP_AcceptNewTask;
+	ConnectedOpcodes[OP_AdvLoot] = &Client::Handle_OP_AdvLoot;
 	ConnectedOpcodes[OP_AdventureInfoRequest] = &Client::Handle_OP_AdventureInfoRequest;
 	ConnectedOpcodes[OP_AdventureLeaderboardRequest] = &Client::Handle_OP_AdventureLeaderboardRequest;
 	ConnectedOpcodes[OP_AdventureMerchantPurchase] = &Client::Handle_OP_AdventureMerchantPurchase;
@@ -157,12 +165,15 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_ClickObjectAction] = &Client::Handle_OP_ClickObjectAction;
 	ConnectedOpcodes[OP_ClientError] = &Client::Handle_OP_ClientError;
 	ConnectedOpcodes[OP_ClientTimeStamp] = &Client::Handle_OP_ClientTimeStamp;
+	ConnectedOpcodes[OP_ClientScreenSize] = &Client::Handle_OP_ClientScreenSize;
+	ConnectedOpcodes[OP_ClientStats] = &Client::Handle_OP_ClientStats;
 	ConnectedOpcodes[OP_ClientUpdate] = &Client::Handle_OP_ClientUpdate;
 	ConnectedOpcodes[OP_CombatAbility] = &Client::Handle_OP_CombatAbility;
 	ConnectedOpcodes[OP_ConfirmDelete] = &Client::Handle_OP_ConfirmDelete;
 	ConnectedOpcodes[OP_Consent] = &Client::Handle_OP_Consent;
 	ConnectedOpcodes[OP_ConsentDeny] = &Client::Handle_OP_ConsentDeny;
 	ConnectedOpcodes[OP_Consider] = &Client::Handle_OP_Consider;
+	ConnectedOpcodes[OP_CrashReport] = &Client::Handle_OP_CrashReport;
 	ConnectedOpcodes[OP_ConsiderCorpse] = &Client::Handle_OP_ConsiderCorpse;
 	ConnectedOpcodes[OP_Consume] = &Client::Handle_OP_Consume;
 	ConnectedOpcodes[OP_ControlBoat] = &Client::Handle_OP_ControlBoat;
@@ -199,6 +210,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_EvolveItem] = &Client::Handle_OP_EvolveItem;
 	ConnectedOpcodes[OP_FaceChange] = &Client::Handle_OP_FaceChange;
 	ConnectedOpcodes[OP_FeignDeath] = &Client::Handle_OP_FeignDeath;
+	ConnectedOpcodes[OP_FindItemSearch] = &Client::Handle_OP_FindItemSearch;
 	ConnectedOpcodes[OP_FindPersonRequest] = &Client::Handle_OP_FindPersonRequest;
 	ConnectedOpcodes[OP_Fishing] = &Client::Handle_OP_Fishing;
 	ConnectedOpcodes[OP_FloatListThing] = &Client::Handle_OP_MovementHistoryList;
@@ -251,6 +263,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_GuildPublicNote] = &Client::Handle_OP_GuildPublicNote;
 	ConnectedOpcodes[OP_GuildRemove] = &Client::Handle_OP_GuildRemove;
 	ConnectedOpcodes[OP_GuildStatus] = &Client::Handle_OP_GuildStatus;
+	ConnectedOpcodes[OP_GuildTributeInfo] = &Client::Handle_OP_GuildTributeInfo;
 	ConnectedOpcodes[OP_GuildUpdate] = &Client::Handle_OP_GuildUpdate;
 	ConnectedOpcodes[OP_GuildWar] = &Client::Handle_OP_GuildWar;
 	ConnectedOpcodes[OP_GuildSelectTribute] = &Client::Handle_OP_GuildTributeSelect;
@@ -261,6 +274,12 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_GuildTributeDonateItem] = &Client::Handle_OP_GuildTributeDonateItem;
 	ConnectedOpcodes[OP_GuildTributeDonatePlat] = &Client::Handle_OP_GuildTributeDonatePlat;
 	ConnectedOpcodes[OP_Heartbeat] = &Client::Handle_OP_Heartbeat;
+	ConnectedOpcodes[OP_HoardClear] = &Client::Handle_OP_HoardClear;
+	ConnectedOpcodes[OP_HoardItemAdd] = &Client::Handle_OP_HoardItemAdd;
+	ConnectedOpcodes[OP_HoardItemRemove] = &Client::Handle_OP_HoardItemRemove;
+	ConnectedOpcodes[OP_HoardRequest] = &Client::Handle_OP_HoardRequest;
+	ConnectedOpcodes[OP_HoardStatusRequest] = &Client::Handle_OP_HoardStatusRequest;
+	ConnectedOpcodes[OP_HoardZoneInit] = &Client::Handle_OP_HoardZoneInit;
 	ConnectedOpcodes[OP_Hide] = &Client::Handle_OP_Hide;
 	ConnectedOpcodes[OP_HideCorpse] = &Client::Handle_OP_HideCorpse;
 	ConnectedOpcodes[OP_Illusion] = &Client::Handle_OP_Illusion;
@@ -297,6 +316,10 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_LootItem] = &Client::Handle_OP_LootItem;
 	ConnectedOpcodes[OP_LootRequest] = &Client::Handle_OP_LootRequest;
 	ConnectedOpcodes[OP_ManaChange] = &Client::Handle_OP_ManaChange;
+	ConnectedOpcodes[OP_MarketplaceClose] = &Client::Handle_OP_MarketplaceClose;
+	ConnectedOpcodes[OP_MarketplaceOpen] = &Client::Handle_OP_MarketplaceOpen;
+	ConnectedOpcodes[OP_MarketplacePurchase] = &Client::Handle_OP_MarketplacePurchase;
+	ConnectedOpcodes[OP_MarketplaceRequest] = &Client::Handle_OP_MarketplaceRequest;
 	ConnectedOpcodes[OP_MemorizeSpell] = &Client::Handle_OP_MemorizeSpell;
 	ConnectedOpcodes[OP_Mend] = &Client::Handle_OP_Mend;
 	ConnectedOpcodes[OP_MercenaryCommand] = &Client::Handle_OP_MercenaryCommand;
@@ -337,6 +360,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_PVPLeaderBoardDetailsRequest] = &Client::Handle_OP_PVPLeaderBoardDetailsRequest;
 	ConnectedOpcodes[OP_PVPLeaderBoardRequest] = &Client::Handle_OP_PVPLeaderBoardRequest;
 	ConnectedOpcodes[OP_QueryUCSServerStatus] = &Client::Handle_OP_QueryUCSServerStatus;
+	ConnectedOpcodes[OP_RaceChangeRequest] = &Client::Handle_OP_RaceChangeRequest;
 	ConnectedOpcodes[OP_RaidInvite] = &Client::Handle_OP_RaidCommand;
 	ConnectedOpcodes[OP_RaidDelegateAbility] = &Client::Handle_OP_RaidDelegateAbility;
 	ConnectedOpcodes[OP_RaidClearNPCMarks] = &Client::Handle_OP_RaidClearNPCMarks;
@@ -378,6 +402,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_Split] = &Client::Handle_OP_Split;
 	ConnectedOpcodes[OP_Surname] = &Client::Handle_OP_Surname;
 	ConnectedOpcodes[OP_SwapSpell] = &Client::Handle_OP_SwapSpell;
+	ConnectedOpcodes[OP_SystemFingerprint] = &Client::Handle_OP_SystemFingerprint;
 	ConnectedOpcodes[OP_TargetCommand] = &Client::Handle_OP_TargetCommand;
 	ConnectedOpcodes[OP_TargetMouse] = &Client::Handle_OP_TargetMouse;
 	ConnectedOpcodes[OP_TaskHistoryRequest] = &Client::Handle_OP_TaskHistoryRequest;
@@ -398,6 +423,8 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_TradeSkillCombine] = &Client::Handle_OP_TradeSkillCombine;
 	ConnectedOpcodes[OP_TradeSkillRecipeInspect] = &Client::Handle_OP_TradeSkillRecipeInspect;
 	ConnectedOpcodes[OP_Translocate] = &Client::Handle_OP_Translocate;
+	ConnectedOpcodes[OP_SkillRankReport] = &Client::Handle_OP_SkillRankReport;
+	ConnectedOpcodes[OP_TributeInfo] = &Client::Handle_OP_TributeInfo;
 	ConnectedOpcodes[OP_TributeItem] = &Client::Handle_OP_TributeItem;
 	ConnectedOpcodes[OP_TributeMoney] = &Client::Handle_OP_TributeMoney;
 	ConnectedOpcodes[OP_TributeNPC] = &Client::Handle_OP_TributeNPC;
@@ -414,6 +441,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_XTargetRequest] = &Client::Handle_OP_XTargetRequest;
 	ConnectedOpcodes[OP_YellForHelp] = &Client::Handle_OP_YellForHelp;
 	ConnectedOpcodes[OP_ZoneChange] = &Client::Handle_OP_ZoneChange;
+	ConnectedOpcodes[OP_ZoneConnectRequest] = &Client::Handle_OP_ZoneConnectRequest;
 	ConnectedOpcodes[OP_ResetAA] = &Client::Handle_OP_ResetAA;
 	ConnectedOpcodes[OP_UnderWorld] = &Client::Handle_OP_UnderWorld;
 
@@ -1373,6 +1401,9 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	database.LoadCharacterTribute(this); /* Load CharacterTribute */
 	database.LoadCharacterEXPModifier(this); /* Load Character EXP Modifier */
 	database.LoadCharacterTitleSets(this); /* Load Character Title Sets */
+	LoadAdvLootSettings();
+	LoadAdvLootFilters();
+	SendAdvLootFilterSet();
 
 	// this pattern is strange
 	// this is remnants of the old way of doing things
@@ -1890,6 +1921,40 @@ void Client::Handle_0x0193(const EQApplicationPacket *app)
 	// 2 bytes: 00 00
 
 	return;
+}
+
+// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names.
+// These are all zero payload requests, so there is nothing to parse yet.
+
+void Client::Handle_0x59bd(const EQApplicationPacket *app)
+{
+	// FUN_1403b03d0, sent as a pair with 0x7340.
+	LogNetcodeDetail("OP_0x59bd [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_0x5e4a(const EQApplicationPacket *app)
+{
+	// FUN_1402596d0 / FUN_1404814b0.
+	LogNetcodeDetail("OP_0x5e4a [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_0x6b80(const EQApplicationPacket *app)
+{
+	// FUN_1401d5140 / FUN_1402c4a50, sent from the UI init block with 0x687b, 0x3c92 and 0x69c3.
+	LogNetcodeDetail("OP_0x6b80 [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_0x7340(const EQApplicationPacket *app)
+{
+	// FUN_1403b03d0, sent as a pair with 0x59bd.
+	LogNetcodeDetail("OP_0x7340 [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_0x798e(const EQApplicationPacket *app)
+{
+	// FUN_1402c4190: string + 3 x uint32. Layout not confirmed yet, so dump it.
+	LogNetcodeDetail("OP_0x798e [{}] size [{}]", GetCleanName(), app->size);
+	DumpPacket(app);
 }
 
 void Client::Handle_OP_AAAction(const EQApplicationPacket *app)
@@ -4292,6 +4357,16 @@ void Client::Handle_OP_Camp(const EQApplicationPacket *app)
 	}
 
 	camp_timer.Start(29000, true);
+
+	// Laurion clients do not arm their camp countdown until the server acknowledges the
+	// camp. Wire opcode 0x771d (EQEmu: OP_Logout) is read as two bytes on receipt: a zero
+	// first field arms the client's 30s camp timer, and when it expires the client sends
+	// 0x771d back, which Handle_OP_Logout turns into Save() + Disconnect().
+	// Without this ack /camp never completes - the client just sits there.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_Logout, 2);
+		FastQueuePacket(&outapp);
+	}
 
 	if (RuleB(Bots, Enabled)) {
 		bot_camp_timer.Start((RuleI(Bots, CampTimer) * 1000), true);
@@ -10327,6 +10402,111 @@ void Client::Handle_OP_LootRequest(const EQApplicationPacket *app)
 	return;
 }
 
+// Advanced Loot (OP_AdvLoot, 0x3175) - logging stub only.
+//
+// Every payload is decoded against the layouts documented in advloot.md and logged under
+// Logs::LootFilters so that real captures can be collected. There is no server-side
+// Advanced Loot behaviour yet - see advloot.md section 6 for the implementation plan.
+void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
+{
+	if (app->size < 2) {
+		LogLootFilters("Malformed OP_AdvLoot from [{}]: size [{}]", GetName(), app->size);
+		return;
+	}
+
+	LogLootFilters(
+		"[{}] size [{}] {}",
+		GetName(),
+		app->size,
+		AdvLoot::DescribePayload(app->pBuffer, app->size)
+	);
+
+	AdvLoot::Reader reader(app->pBuffer, app->size);
+	uint16_t subcmd = reader.read_u16();
+
+	switch (subcmd) {
+		case AdvLoot::SubFilterSetSync: {
+			// Bare sub-command = the client is asking for its filter set. The reply is what sets
+			// the client-side gate (manager+0x241) that unlocks every other sub-command, so this
+			// is the packet that makes the Advanced Loot window usable at all.
+			if (reader.remaining() == 0) {
+				SendAdvLootFilterSet();
+				return;
+			}
+
+			uint32_t mode = reader.read_u32();
+			std::string name = reader.read_string(64);
+			uint32_t count = reader.read_u32();
+
+			if (reader.truncated || name != GetCleanName()) {
+				return;
+			}
+
+			advloot_mode = mode;
+
+			for (uint32_t i = 0; i < count && !reader.truncated; i++) {
+				reader.read_u8();
+				reader.read_u8();
+				uint32_t item_id = reader.read_u32();
+				uint32_t bits = reader.read_u32();
+				uint32_t icon = reader.read_u32();
+				std::string filter_name = reader.read_string(64);
+				if (reader.truncated) {
+					break;
+				}
+				SaveAdvLootFilter(item_id, bits, icon, filter_name);
+			}
+			return;
+		}
+
+		case AdvLoot::SubAddFilter: {
+			// FUN_140154cd0: the client added a filter record and serialized it.
+			reader.read_u8();
+			reader.read_u8();
+			uint32_t item_id = reader.read_u32();
+			uint32_t bits = reader.read_u32();
+			uint32_t icon = reader.read_u32();
+			std::string filter_name = reader.read_string(64);
+			if (reader.truncated) {
+				return;
+			}
+			SaveAdvLootFilter(item_id, bits, icon, filter_name);
+			return;
+		}
+
+		case AdvLoot::SubSetState: {
+			uint32_t item_id  = reader.read_u32();
+			uint32_t assignee = reader.read_u32();
+			uint32_t state    = reader.read_u32();
+			uint8_t  flag     = reader.read_u8();
+
+			if (reader.truncated) {
+				return;
+			}
+
+			EQApplicationPacket* out = AdvLoot::BuildStatePacket(item_id, assignee, state, flag);
+			if (!out) {
+				return;
+			}
+
+			// Mirror the change to the rest of the construct so the other windows stay in sync.
+			if (Raid* raid = GetRaid()) {
+				raid->QueueClients(this, out, true);
+			} else if (Group* group = GetGroup()) {
+				group->QueueClients(this, out, true);
+			} else {
+				entity_list.QueueClients(this, out, true);
+			}
+
+			delete out;
+			return;
+		}
+
+		default:
+			return;
+	}
+}
+
 void Client::Handle_OP_ManaChange(const EQApplicationPacket *app)
 {
 	if (app->size == 0) {
@@ -14935,6 +15115,28 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		m_pp.guildAutoconsent = (sa->parameter == 1);
 		ConsentCorpses("Guild", (sa->parameter != 1));
 	}
+	else if (sa->type == AppearanceType::AdvLootSettings)
+	{
+		// Laurion appearance type 40 is the advanced looting master switch. The client only
+		// sends it when the Loot Settings checkbox is toggled, so this is the only place the
+		// server can learn the value. Persist it so it survives a reconnect.
+		advloot_enabled = (sa->parameter != 0);
+
+		const auto query = fmt::format(
+			"INSERT INTO `character_loot_settings` (`char_id`, `use_advanced_looting`) "
+			"VALUES ({}, {}) ON DUPLICATE KEY UPDATE `use_advanced_looting` = {}",
+			CharacterID(),
+			advloot_enabled ? 1 : 0,
+			advloot_enabled ? 1 : 0
+		);
+
+		if (!database.QueryDatabase(query).Success()) {
+			LogLootFilters("Failed to persist advanced looting setting for character {}", CharacterID());
+		}
+		else {
+			LogLootFilters("[{}] advanced looting {}", GetName(), advloot_enabled ? "enabled" : "disabled");
+		}
+	}
 	else {
 		std::cout << "Unknown SpawnAppearance type: 0x" << std::hex << std::setw(4) << std::setfill('0') << sa->type << std::dec
 			<< " value: 0x" << std::hex << std::setw(8) << std::setfill('0') << sa->parameter << std::dec << std::endl;
@@ -15080,6 +15282,18 @@ void Client::Handle_OP_SwapSpell(const EQApplicationPacket *app)
 
 	QueuePacket(app);
 	return;
+}
+
+void Client::Handle_OP_SystemFingerprint(const EQApplicationPacket *app)
+{
+	// FUN_1402789d0: variable length string report the client sends once per session.
+	// Not a fixed struct, so keep the raw bytes for logging / RE purposes.
+	if (!app->pBuffer || app->size == 0) {
+		return;
+	}
+
+	std::string fingerprint((const char*) app->pBuffer, app->size);
+	LogNetcodeDetail("OP_SystemFingerprint [{}] {} bytes: {}", GetCleanName(), app->size, fingerprint);
 }
 
 void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
@@ -17476,4 +17690,174 @@ void Client::SyncWorldPositionsToClient(bool ignore_idle)
 	if (ignore_idle && reset_idle) {
 		m_is_idle = false;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SoF x64 (Laurion) zone opcodes resolved from the client RE (Ghidra SoF
+// project). The client features behind most of them (Dragon's Hoard,
+// Marketplace, Race Change, Find Item) have no EQEmu server-side
+// implementation yet, so these handlers parse + log the packets and act as the
+// hook point for the eventual implementations.
+// ---------------------------------------------------------------------------
+
+void Client::Handle_OP_ZoneConnectRequest(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(ZoneConnectRequest_Struct)) {
+		LogNetcode("Size mismatch on OP_ZoneConnectRequest: got [{}] expected [{}]", app->size, sizeof(ZoneConnectRequest_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (ZoneConnectRequest_Struct*) app->pBuffer;
+	LogNetcode("OP_ZoneConnectRequest [{}] flag [{:#x}]", GetCleanName(), data->flag);
+}
+
+void Client::Handle_OP_SkillRankReport(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(SkillRankReport_Struct)) {
+		LogNetcode("Size mismatch on OP_SkillRankReport: got [{}] expected [{}]", app->size, sizeof(SkillRankReport_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (SkillRankReport_Struct*) app->pBuffer;
+	LogNetcode("OP_SkillRankReport [{}] announce_flags [{:#x}] skill values [{}, {}, {}]",
+		GetCleanName(), data->announce_flags, data->skill_a, data->skill_b, data->skill_c);
+}
+
+void Client::Handle_OP_ClientScreenSize(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(ClientScreenSize_Struct)) {
+		LogNetcode("Size mismatch on OP_ClientScreenSize: got [{}] expected [{}]", app->size, sizeof(ClientScreenSize_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (ClientScreenSize_Struct*) app->pBuffer;
+	LogNetcodeDetail("OP_ClientScreenSize [{}] {}x{} flag [{}]", GetCleanName(), data->width, data->height, data->flag);
+}
+
+void Client::Handle_OP_ClientStats(const EQApplicationPacket *app)
+{
+	// Sent by the client roughly every 30 seconds (FUN_1402a89a0).
+	if (app->size != sizeof(ClientStats_Struct)) {
+		LogNetcode("Size mismatch on OP_ClientStats: got [{}] expected [{}]", app->size, sizeof(ClientStats_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (ClientStats_Struct*) app->pBuffer;
+	LogNetcodeDetail("OP_ClientStats [{}] value [{}]", GetCleanName(), data->value);
+}
+
+void Client::Handle_OP_CrashReport(const EQApplicationPacket *app)
+{
+	// Variable length '^'-separated report (FUN_1402794a0).
+	if (!app->pBuffer || app->size == 0) {
+		return;
+	}
+
+	std::string report((const char*) app->pBuffer, app->size);
+	LogNetcode("OP_CrashReport [{}] {} bytes", GetCleanName(), app->size);
+	LogNetcodeDetail("OP_CrashReport content: {}", report);
+}
+
+void Client::Handle_OP_TributeInfo(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(TributeRequest_Struct)) {
+		LogNetcode("Size mismatch on OP_TributeInfo: got [{}] expected [{}]", app->size, sizeof(TributeRequest_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	// The client (TributeManager) asks for its tribute list on zone entry.
+	DoTributeUpdate();
+}
+
+void Client::Handle_OP_GuildTributeInfo(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(TributeRequest_Struct)) {
+		LogNetcode("Size mismatch on OP_GuildTributeInfo: got [{}] expected [{}]", app->size, sizeof(TributeRequest_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	DoGuildTributeUpdate();
+}
+
+void Client::Handle_OP_HoardRequest(const EQApplicationPacket *app)
+{
+	// Dragon's Hoard (shared inventory) - no server side feature yet.
+	LogNetcodeDetail("OP_HoardRequest [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_HoardStatusRequest(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_HoardStatusRequest [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_HoardZoneInit(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_HoardZoneInit [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_HoardItemAdd(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(HoardItem_Struct)) {
+		LogNetcode("Size mismatch on OP_HoardItemAdd: got [{}] expected [{}]", app->size, sizeof(HoardItem_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (HoardItem_Struct*) app->pBuffer;
+	LogNetcode("OP_HoardItemAdd [{}] action [{}] slot [{}]", GetCleanName(), data->action, data->slot);
+}
+
+void Client::Handle_OP_HoardItemRemove(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(HoardItemRemove_Struct)) {
+		LogNetcode("Size mismatch on OP_HoardItemRemove: got [{}] expected [{}]", app->size, sizeof(HoardItemRemove_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto data = (HoardItemRemove_Struct*) app->pBuffer;
+	LogNetcode("OP_HoardItemRemove [{}] action [{}] slot [{}] unknown [{:#x}]",
+		GetCleanName(), data->action, data->slot, data->unknown);
+}
+
+void Client::Handle_OP_HoardClear(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_HoardClear [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_FindItemSearch(const EQApplicationPacket *app)
+{
+	// CFindItemWnd (EQUI_FindItemWnd.xml) - serialized search request, variable length.
+	LogNetcodeDetail("OP_FindItemSearch [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_MarketplaceRequest(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_MarketplaceRequest [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_MarketplaceOpen(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_MarketplaceOpen [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_MarketplaceClose(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_MarketplaceClose [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_MarketplacePurchase(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_MarketplacePurchase [{}] size [{}]", GetCleanName(), app->size);
+}
+
+void Client::Handle_OP_RaceChangeRequest(const EQApplicationPacket *app)
+{
+	LogNetcodeDetail("OP_RaceChangeRequest [{}] size [{}]", GetCleanName(), app->size);
 }

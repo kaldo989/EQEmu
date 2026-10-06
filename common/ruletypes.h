@@ -335,6 +335,7 @@ RULE_INT(World, PVPSettings, 0, "Sets the PVP settings for the server. 1=Rallos 
 RULE_INT(World, PVPMinLevel, 0, "Minimum level to pvp")
 RULE_BOOL (World, IsGMPetitionWindowEnabled, false, "Setting whether the GM petition window is available")
 RULE_INT (World, FVNoDropFlag, 0, "Sets the Firiona Vie settings on the client, allowing trading of no-drop items. 1=for all players, 2=for GM only")
+RULE_INT (World, Id, 1, "World/Server ID for character select packets")
 RULE_BOOL (World, IPLimitDisconnectAll, false, "Disconnect all current clients by IP if they go over the IP limit.  This should allow people to quickly reconnect in the case of dead sessions waiting to timeout")
 RULE_INT (World, TellQueueSize, 20, "Maximum tell queue size")
 RULE_BOOL(World, StartZoneSameAsBindOnCreation, true, "Should the start zone always be the same location as your bind?")

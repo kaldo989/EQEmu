@@ -7207,6 +7207,42 @@ ALTER TABLE `character_parcels_containers`
 )",
 		.content_schema_update = false
 	},
+	ManifestEntry{
+		.version = 9329,
+		.description = "2026_10_06_character_loot_filters.sql",
+		.check = "SHOW TABLES LIKE 'character_loot_filters'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+CREATE TABLE `character_loot_filters` (
+  `id` int unsigned NOT NULL AUTO_INCREMENT,
+  `char_id` int unsigned NOT NULL,
+  `item_id` int unsigned NOT NULL,
+  `filter_bits` int unsigned NOT NULL DEFAULT 0,
+  `icon` int unsigned NOT NULL DEFAULT 0,
+  `name` varchar(64) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `char_item` (`char_id`, `item_id`)
+);
+)",
+	},
+	ManifestEntry{
+		.version = 9330,
+		.description = "2026_10_06_character_loot_settings.sql",
+		.check = "SHOW TABLES LIKE 'character_loot_settings'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+CREATE TABLE `character_loot_settings` (
+  `char_id` int unsigned NOT NULL,
+  `use_advanced_looting` tinyint unsigned NOT NULL DEFAULT 0,
+  `master_looter_candidate` tinyint unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`char_id`)
+);
+)",
+		.content_schema_update = false
+	},
+
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{
 //		.version = 9228,

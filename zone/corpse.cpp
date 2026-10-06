@@ -1742,7 +1742,18 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 
 		linker.GenerateLink();
 
-		c->MessageString(Chat::Loot, LOOTED_MESSAGE, linker.Link().c_str());
+		// Modern client string 467 is "--You have looted %1 %2 from %3.--" (item, count, source).
+		// Older clients only used %1, so the extra arguments are harmless there.
+		char loot_count_str[16];
+		snprintf(loot_count_str, sizeof(loot_count_str), "%d", count);
+
+		c->MessageString(
+			Chat::Loot,
+			LOOTED_MESSAGE,
+			linker.Link().c_str(),
+			loot_count_str,
+			GetName()
+		);
 
 		if (!IsPlayerCorpse()) {
 			Group *g = c->GetGroup();
@@ -1751,7 +1762,9 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 					c, Chat::Loot,
 					OTHER_LOOTED_MESSAGE,
 					c->GetName(),
-					linker.Link().c_str()
+					linker.Link().c_str(),
+					loot_count_str,
+					GetName()
 				);
 			}
 			else {
@@ -1762,7 +1775,9 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 						Chat::Loot,
 						OTHER_LOOTED_MESSAGE,
 						c->GetName(),
-						linker.Link().c_str()
+						linker.Link().c_str(),
+						loot_count_str,
+						GetName()
 					);
 				}
 			}
