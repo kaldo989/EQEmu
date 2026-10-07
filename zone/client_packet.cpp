@@ -22,6 +22,7 @@
 #include "common/eqemu_logsys.h"
 #include "common/events/player_event_logs.h"
 #include "common/opcodemgr.h"
+#include "common/packet_dump.h"
 #include "common/raid.h"
 #include "common/rdtsc.h"
 #include "common/repositories/account_repository.h"
@@ -10419,10 +10420,11 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 	}
 
 	LogLootFilters(
-		"[{}] size [{}] {}",
+		"[{}] size [{}] {} | raw {}",
 		GetName(),
 		app->size,
-		AdvLoot::DescribePayload(app->pBuffer, app->size)
+		AdvLoot::DescribePayload(app->pBuffer, app->size),
+		DumpPacketHexToString(app->pBuffer, app->size)
 	);
 
 	AdvLoot::Reader reader(app->pBuffer, app->size);
@@ -10449,32 +10451,130 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 			advloot_mode = mode;
 
 			for (uint32_t i = 0; i < count && !reader.truncated; i++) {
+				// FUN_140086370 group record: u8 (+0x146c loot-rights flag), u8 (+3), u32 (+4 hash key),
+				// u32 (+0 Types bitmask), u32 (+8 nested item count), string (+0xd name), then the
+				// nested item records.
 				reader.read_u8();
 				reader.read_u8();
 				uint32_t item_id = reader.read_u32();
-				uint32_t bits = reader.read_u32();
-				uint32_t icon = reader.read_u32();
+				uint32_t bits    = reader.read_u32();
+				uint32_t nested  = reader.read_u32();
 				std::string filter_name = reader.read_string(64);
 				if (reader.truncated) {
 					break;
 				}
-				SaveAdvLootFilter(item_id, bits, icon, filter_name);
+				SaveAdvLootFilter(item_id, bits, 0, filter_name);
+
+				for (uint32_t j = 0; j < nested && !reader.truncated; j++) {
+					uint64_t nested_id = reader.read_u64();
+					uint32_t icon      = reader.read_u32();
+					reader.read_u32();  // locked
+					reader.read_u32();  // managed
+					reader.read_u8();   // flag
+					reader.read_u32();  // value
+					reader.read_u32();  // quantity
+					std::string nested_name = reader.read_string(64);
+					if (reader.truncated) {
+						break;
+					}
+					SaveAdvLootFilter(static_cast<uint32_t>(nested_id), bits, icon, nested_name);
+				}
 			}
 			return;
 		}
 
-		case AdvLoot::SubAddFilter: {
-			// FUN_140154cd0: the client added a filter record and serialized it.
-			reader.read_u8();
-			reader.read_u8();
-			uint32_t item_id = reader.read_u32();
-			uint32_t bits = reader.read_u32();
-			uint32_t icon = reader.read_u32();
-			std::string filter_name = reader.read_string(64);
+		case AdvLoot::SubTransactionRequest: {
+			// FUN_140085aa0 serializer: u64 item_id, u32 field_b, u32 c, u32 transaction_id, u8 flag.
+			// This is the green loot button. The client has no legacy loot session open, so the corpse
+			// has to be resolved from the rows the server pushed (advloot_corpse), with GetCorpseByOwner
+			// as the fallback for players who joined after the kill.
+			uint64_t item_id     = reader.read_u64();
+			uint32_t corpse_key  = reader.read_u32();   // +8 - the corpse spawn id in the live capture
+			uint32_t record_c    = reader.read_u32();   // +0xC - AdvLoot record +0xC
+			uint32_t transaction = reader.read_u32();   // +0x10 - client transaction counter
+			uint8_t  flag        = reader.read_u8();
+
 			if (reader.truncated) {
 				return;
 			}
-			SaveAdvLootFilter(item_id, bits, icon, filter_name);
+
+			Corpse* corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+			if (!corpse) {
+				LogLootFilters(
+					"[{}] transaction for item [{}] but no corpse is tracked",
+					GetCleanName(),
+					item_id
+				);
+				return;
+			}
+
+			uint16_t transfer_quantity = static_cast<uint16_t>(corpse->GetLootQuantityByItemID(static_cast<uint32_t>(item_id)));
+			if (!transfer_quantity) {
+				transfer_quantity = 1;
+			}
+
+			corpse->AdvLootTransaction(this, static_cast<uint32_t>(item_id), transfer_quantity);
+
+			// Subcmd 0x0e wire order (FUN_140086cb0 -> FUN_140151c60 case 0xe):
+			//   u32 A, u32 B, u64 item_id, u16 quantity, u8 flag, string name
+			// The dispatcher uses B as the corpse hash key and A must match the row's +0xC (the item
+			// record's managed flag, which we always write as 1). uVar9 - the flag that lets
+			// FUN_1400a4eb0 create the Personal Loot row - is only 1 when the name matches the local
+			// player AND the reply's flag byte is 0, so do not echo the request's flag.
+			EQApplicationPacket* out = AdvLoot::BuildTransactionPacket(
+				record_c,
+				corpse_key,
+				item_id,
+				transfer_quantity,
+				0,
+				GetCleanName()
+			);
+			if (!out) {
+				return;
+			}
+
+			LogLootFilters("transaction reply item [{}] quantity [{}] corpse [{}] request flag [{}]", item_id, transfer_quantity, corpse_key, flag);
+
+			QueuePacket(out);
+
+			if (Raid* raid = GetRaid()) {
+				raid->QueueClients(this, out, true);
+			} else if (Group* group = GetGroup()) {
+				group->QueueClients(this, out, true);
+			}
+
+			safe_delete(out);
+
+			// Subcmd 0x09 (FUN_140151810) is the only server->client packet that reaches a Personal Loot
+			// row: it looks the wire key up in the client's filter hash (manager + 0x38, 30 buckets) and
+			// calls FUN_1400a8960(wnd, record + 0, record + 8, 0), which clears row + 0x6D
+			// (LootInProgress). Only FUN_1400a42f0 clears that flag otherwise, and it only walks the
+			// Shared Loot list - so a solo personal row stays flagged and a second click errors with
+			// string 0x283.
+			//
+			// Best effort: the hash entry only exists for items the client already has a filter record
+			// for (its ini loader / the Loot Filters window). With action = 0 the switch does nothing, so
+			// the packet is harmless when the record is missing.
+			if (!GetGroup() && !GetRaid()) {
+				EQApplicationPacket* action = AdvLoot::BuildItemActionPacket(
+					0,
+					static_cast<uint32_t>(item_id),
+					static_cast<uint32_t>(item_id),
+					0
+				);
+
+				if (action) {
+					LogLootFilters(
+						"solo row unlock item [{}] corpse [{}] hash key [{}]",
+						item_id,
+						corpse_key,
+						static_cast<uint32_t>(item_id)
+					);
+					QueuePacket(action);
+					safe_delete(action);
+				}
+			}
+
 			return;
 		}
 
@@ -10494,6 +10594,63 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 			}
 
 			// Mirror the change to the rest of the construct so the other windows stay in sync.
+			if (Raid* raid = GetRaid()) {
+				raid->QueueClients(this, out, true);
+			} else if (Group* group = GetGroup()) {
+				group->QueueClients(this, out, true);
+			} else {
+				entity_list.QueueClients(this, out, true);
+			}
+
+			delete out;
+			return;
+		}
+
+		case AdvLoot::SubCorpseRowNotify: {
+			// FUN_1400859e0: u64 item_id, u32 field_b, u32 quantity. First confirmed client->server
+			// sub-command (captured 2026-10-06 when the client clicked "Don't loot").
+			// FUN_14009e460 emits it when the filter record exists, the window is in managed mode
+			// (wnd + 0x18) and the filter carries the NeverLoot bit (1 << 3 = 8).
+			uint64_t item_id  = reader.read_u64();
+			uint32_t field_b  = reader.read_u32();
+			uint32_t quantity = reader.read_u32();
+
+			if (reader.truncated) {
+				return;
+			}
+
+			LogLootFilters(
+				"[{}] CorpseRowNotify item [{}] field_b [{}]({}) quantity [{}]",
+				GetCleanName(),
+				item_id,
+				field_b,
+				AdvLoot::ModeName(field_b),
+				quantity
+			);
+
+			// FUN_1400a4750 sends 0x07 per nested record before it drops the Personal row (the client's
+			// Remove button). Treat that as a row resolution so the corpse lockout releases without
+			// waiting for the unlock timer - a player who removes a solo row instead of looting it would
+			// otherwise stay locked out until m_corpse_delay_timer expires.
+			Corpse* corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+			if (corpse && corpse->HasPendingAdvLootRows(CharacterID())) {
+				corpse->ConsumeAdvLootPendingRow(CharacterID());
+				LogLootFilters(
+					"[{}] CorpseRowNotify consumed pending row on corpse [{}] - [{}] left",
+					GetCleanName(),
+					corpse->GetID(),
+					corpse->GetAdvLootPendingRows(CharacterID())
+				);
+				if (!HasGroup() && !HasRaid()) {
+					SendAdvLootCorpseRebuild();
+				}
+			}
+
+			EQApplicationPacket* out = AdvLoot::BuildCorpseRowNotifyPacket(item_id, field_b, quantity);
+			if (!out) {
+				return;
+			}
+
 			if (Raid* raid = GetRaid()) {
 				raid->QueueClients(this, out, true);
 			} else if (Group* group = GetGroup()) {
@@ -14954,12 +15111,35 @@ void Client::Handle_OP_Sneak(const EQApplicationPacket *app)
 
 void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 {
-	if (app->size != sizeof(SpawnAppearance_Struct)) {
+	// The Laurion decode expects 24 bytes but the client sends 8 for the settings packets,
+	// so type/parameter can be misaligned. Capture the actual bytes.
+	LogLootFilters(
+		"[{}] SpawnAppearance size [{}] raw {}",
+		GetName(),
+		app->size,
+		DumpPacketHexToString(app->pBuffer, app->size)
+	);
+
+	// The Laurion SpawnAppearance_Struct is 24 bytes, but the client still sends the legacy 8 byte form
+	// (u16 spawn_id, u16 type, u32 parameter) for the single value types - Animation and the loot
+	// settings (AppearanceType::Split = 28 is the Auto Split Coin checkbox). Decode both forms into a
+	// local struct so type/parameter are not read out of bounds.
+	SpawnAppearance_Struct local_sa = {};
+
+	if (app->size == sizeof(SpawnAppearance_Struct)) {
+		memcpy(&local_sa, app->pBuffer, app->size);
+	} else if (app->size == 8) {
+		local_sa.spawn_id  = static_cast<uint32>(app->pBuffer[0] | (app->pBuffer[1] << 8));
+		local_sa.type      = static_cast<uint32>(app->pBuffer[2] | (app->pBuffer[3] << 8));
+		local_sa.parameter = static_cast<uint64>(
+			app->pBuffer[4] | (app->pBuffer[5] << 8) | (app->pBuffer[6] << 16) | (app->pBuffer[7] << 24)
+		);
+	} else {
 		std::cout << "Wrong size on OP_SpawnAppearance. Got: " << app->size << ", Expected: " << sizeof(SpawnAppearance_Struct) << std::endl;
 		return;
 	}
-	SpawnAppearance_Struct* sa = (SpawnAppearance_Struct*)app->pBuffer;
 
+	SpawnAppearance_Struct* sa = &local_sa;
 	cheat_manager.ProcessSpawnApperance(sa->spawn_id, sa->type, sa->parameter);
 
 	if (sa->spawn_id != GetID())
@@ -15125,6 +15305,7 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		// sends it when the Loot Settings checkbox is toggled, so this is the only place the
 		// server can learn the value. Persist it so it survives a reconnect.
 		advloot_enabled = (sa->parameter != 0);
+		m_pp.use_advanced_looting = advloot_enabled ? 1 : 0;
 
 		const auto query = fmt::format(
 			"INSERT INTO `character_loot_settings` (`char_id`, `use_advanced_looting`) "
@@ -15139,6 +15320,27 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		}
 		else {
 			LogLootFilters("[{}] advanced looting {}", GetName(), advloot_enabled ? "enabled" : "disabled");
+		}
+	}
+	else if (sa->type == AppearanceType::MasterLootCandidate)
+	{
+		// Laurion appearance type 41: "Master Loot Candidate" checkbox (PcClient + 0x2435)
+		advloot_master_looter_candidate = (sa->parameter != 0);
+		m_pp.master_loot_candidate = advloot_master_looter_candidate ? 1 : 0;
+
+		const auto query = fmt::format(
+			"INSERT INTO `character_loot_settings` (`char_id`, `master_looter_candidate`) "
+			"VALUES ({}, {}) ON DUPLICATE KEY UPDATE `master_looter_candidate` = {}",
+			CharacterID(),
+			advloot_master_looter_candidate ? 1 : 0,
+			advloot_master_looter_candidate ? 1 : 0
+		);
+
+		if (!database.QueryDatabase(query).Success()) {
+			LogLootFilters("Failed to persist master looter candidate for character {}", CharacterID());
+		}
+		else {
+			LogLootFilters("[{}] master looter candidate {}", GetName(), advloot_master_looter_candidate ? "yes" : "no");
 		}
 	}
 	else {

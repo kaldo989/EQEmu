@@ -34,7 +34,10 @@
 #include "zone/queryserv.h"
 #include "zone/quest_parser_collection.h"
 #include "zone/raids.h"
+#include "zone/advloot.h"
 #include "zone/string_ids.h"
+
+#include <algorithm>
 #include "zone/worldserver.h"
 
 #include <iostream>
@@ -1010,6 +1013,9 @@ bool Corpse::Process()
 		for (int &allowed_looter: m_allowed_looters) {
 			allowed_looter = 0;
 		}
+		// The corpse is public now, so the kill-credit AdvLoot lockout is gone and the legacy
+		// right-click path is open again for everyone.
+		ClearAdvLootPendingRows();
 		m_corpse_delay_timer.Disable();
 		return true;
 	}
@@ -1173,6 +1179,28 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 
 	if (m_being_looted_by_entity_id != 0xFFFFFFFF && m_being_looted_by_entity_id != c->GetID()) {
 		SendLootReqErrorPacket(c, LootResponse::SomeoneElse);
+		return;
+	}
+
+	// Advanced Loot lockout. For a kill-credit client the AdvLoot window is the loot UI, so the legacy
+	// right-click path has to stay closed while that client still has unresolved rows here - running
+	// both paths on the same corpse would take the item twice and pay the corpse cash twice. The
+	// lockout is released when every row for that client is resolved, or when the corpse unlock timer
+	// (NPC/CorpseUnlockTimer) fires: at that point m_allowed_looters is cleared, IsKillCreditLooter is
+	// false for everyone and the corpse is public, so any player may loot through either path.
+	//
+	// Players who were not present at the kill are deliberately not locked out - the right-click is the
+	// only way to unlock their locked rows (eqstr_us 11321), and they cannot loot until the unlock timer
+	// expires anyway.
+	if (c->advloot_enabled && IsKillCreditLooter(c->CharacterID()) && HasPendingAdvLootRows(c->CharacterID())) {
+		LogLootFilters(
+			"[{}] advloot right-click refused on corpse [{}] - [{}] unresolved row(s), unlock timer [{}ms]",
+			c->GetCleanName(),
+			GetID(),
+			GetAdvLootPendingRows(c->CharacterID()),
+			m_corpse_delay_timer.GetRemainingTime()
+		);
+		SendLootReqErrorPacket(c, LootResponse::NotAtThisTime);
 		return;
 	}
 
@@ -1400,14 +1428,79 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 
 		LogInventory("MakeLootRequestPackets() Slot [{}], Item [{}]", loot_slot, item->Name);
 
-		c->SendItemPacket(loot_slot, inst, ItemPacketLoot);
+		// With Advanced Loot on, the AdvLoot window is the loot UI. Sending the legacy ItemPacketLoot
+		// packets makes the client open the old loot window alongside it, so the slots are still
+		// assigned (OP_LootItem resolves items through m_item_list) but the packets are skipped. A
+		// kill-credit AdvLoot client never reaches this point while it has pending rows - see the lockout
+		// above - so this only covers the post-unlock / non-kill-credit path.
+		if (!c->advloot_enabled) {
+			c->SendItemPacket(loot_slot, inst, ItemPacketLoot);
+		}
 		safe_delete(inst);
 
 		i->lootslot = loot_slot++;
 	}
 
+	// Advanced Loot: subcmd 0x03 is the corpse delivery channel. CAdvancedLootWnd::AddCorpse builds
+	// loot list rows from the nested item records of each group record. Rows are normally created at
+	// kill time by Corpse::SendAdvLootCorpseRows(); this covers the right-click path for players who
+	// were not in the zone at the kill or who joined afterwards.
+	if (c->advloot_enabled) {
+		AdvLoot::CorpseGroup group;
+		group.corpse_key      = GetID();
+		group.npc_name         = corpse_name;
+		group.expiration       = GetDecayTime() / 1000;   // seconds - FUN_14014f5f0 packs value * 1000 + clock
+		group.present_at_kill  = IsKillCreditLooter(c->CharacterID()) ? 1 : 0;
+		const bool solo = !c->HasGroup() && !c->HasRaid();
+
+		for (const auto& i : m_item_list) {
+			const auto* item = database.GetItem(i->item_id);
+			if (!item) {
+				continue;
+			}
+
+			AdvLoot::Filter filter;
+			filter.item_id         = item->ID;
+			filter.icon            = item->Icon;
+			filter.name            = item->Name;
+			filter.filter_bits     = c->AdvLootFilterBits(item->ID);
+			const uint32_t qty = i->charges ? i->charges : 1;
+			// Same rule as SendAdvLootCorpseRows: solo -> personal pool (Shared pane is hidden), group/raid
+			// -> shared pool.
+			if (solo) {
+				filter.quantity = 0;
+				filter.personal = qty;
+			} else {
+				filter.quantity = qty;
+				filter.personal = 0;
+			}
+			filter.expiration      = group.expiration;
+			filter.present_at_kill = group.present_at_kill;
+			filter.corpse_key      = group.corpse_key;
+
+			group.items.push_back(filter);
+		}
+
+		if (!group.items.empty()) {
+			LogLootFilters(
+				"[{}] sending AdvLoot corpse [{}] with [{}] item(s)",
+				c->GetCleanName(),
+				GetID(),
+				group.items.size()
+			);
+			SetAdvLootPendingRows(c->CharacterID(), static_cast<uint32_t>(group.items.size()));
+			c->advloot_corpse = this;
+			c->SendAdvLootCorpse(group);
+		}
+	}
+
 	// Disgrace: Client seems to require that we send the packet back...
-	c->QueuePacket(app);
+	// With Advanced Loot on the AdvLoot window is the loot UI, and the echoed OP_LootRequest is what
+	// makes the client open the legacy loot window. Skip the echo for AdvLoot clients so only the
+	// AdvLoot window appears. OP_LootItem still resolves items through m_item_list above.
+	if (!c->advloot_enabled) {
+		c->QueuePacket(app);
+	}
 
 	// This is required for the 'Loot All' feature to work for SoD clients. I expect it is to tell the client that the
 	// server has now sent all the items on the corpse.
@@ -1967,6 +2060,17 @@ uint16 Corpse::GetFirstLootSlotByItemID(uint32 item_id)
 	return 0;
 }
 
+uint32 Corpse::GetLootQuantityByItemID(uint32 item_id)
+{
+	for (auto i: m_item_list) {
+		if (i->item_id == item_id) {
+			return i->charges ? i->charges : 1;
+		}
+	}
+
+	return 0;
+}
+
 bool Corpse::Summon(Client *c, bool spell, bool CheckDistance)
 {
 	uint32 dist2 = 10000; // pow(100, 2);
@@ -2149,6 +2253,341 @@ void Corpse::AddLooter(Mob *who)
 			looter = who->CastToClient()->CharacterID();
 			break;
 		}
+	}
+}
+
+// Loot rights follow the kill credit. The client's Advanced Loot window marks a row as locked with
+// "These item(s) are locked because you were not present when the enemy died" - the server-side
+// equivalent of that presence check is this list, so it is populated from the client that receives
+// the experience for the kill plus that client's group or raid. Anyone outside the list gets locked
+// rows. This is additive so the raid loot-type rules in Mob::Death still apply.
+void Corpse::SetKillCreditLooters(Client *killer)
+{
+	if (!killer) {
+		return;
+	}
+
+	AddLooter(killer);
+
+	// A raid member is also a group member, so check the raid first.
+	Raid *killer_raid = entity_list.GetRaidByClient(killer);
+	if (killer_raid) {
+		for (const auto &m: killer_raid->members) {
+			if (m.member) {
+				AddLooter(m.member);
+			}
+		}
+
+		return;
+	}
+
+	Group *killer_group = killer->GetGroup();
+	if (killer_group) {
+		for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
+			Mob *ent = killer_group->members[i];
+			if (ent && ent->IsClient()) {
+				AddLooter(ent);
+			}
+		}
+	}
+}
+
+bool Corpse::IsKillCreditLooter(uint32 character_id) const
+{
+	for (int looter: m_allowed_looters) {
+		if (looter == static_cast<int>(character_id)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Builds one subcmd 0x03 group record for this corpse. CAdvancedLootWnd::AddCorpse turns the nested
+// item records into loot list rows, so this is what fills the Advanced Loot window without the
+// player having to right-click the corpse.
+void Corpse::SendAdvLootCorpseRows()
+{
+	if (m_is_player_corpse) {
+		return;
+	}
+
+	std::vector<Client *> looters;
+
+	for (const auto &entry: entity_list.GetClientList()) {
+		Client *c = entry.second;
+		if (!c || !c->advloot_enabled) {
+			continue;
+		}
+		looters.push_back(c);
+	}
+
+	if (looters.empty()) {
+		return;
+	}
+
+	// One group record per client: the group record is the corpse itself and every item on the corpse
+	// is a nested item record. filter_bits and the loot-rights flag are per-viewer, so the record is
+	// rebuilt per client rather than broadcast. The group record's string is the NPC name the window
+	// shows in its NPC Name column - it must not be an item name.
+	for (Client *c: looters) {
+		AdvLoot::CorpseGroup group = BuildAdvLootGroup(c);
+
+		if (group.items.empty()) {
+			continue;
+		}
+
+		LogLootFilters(
+			"[{}] advloot corpse [{}] [{}] item(s) [{}], kill credit [{}], group name [{}], expiration [{}]s",
+			c->GetCleanName(),
+			GetID(),
+			group.items.size(),
+			group.present_at_kill ? "unlocked" : "locked",
+			group.present_at_kill ? "yes" : "no",
+			group.npc_name,
+			group.expiration
+		);
+
+		SetAdvLootPendingRows(c->CharacterID(), static_cast<uint32_t>(group.items.size()));
+		c->advloot_corpse = this;
+		if (std::find(c->advloot_corpses.begin(), c->advloot_corpses.end(), GetID()) == c->advloot_corpses.end()) {
+			c->advloot_corpses.push_back(GetID());
+		}
+		c->SendAdvLootCorpse(group);
+	}
+
+	// The AdvLoot window has no coin row, so the kill-time delivery has to settle the corpse cash here.
+	DistributeAdvLootCash(looters);
+}
+
+void Corpse::SetAdvLootPendingRows(uint32_t character_id, uint32_t count)
+{
+	m_advloot_pending_rows[character_id] = count;
+}
+
+void Corpse::ConsumeAdvLootPendingRow(uint32_t character_id)
+{
+	auto it = m_advloot_pending_rows.find(character_id);
+	if (it == m_advloot_pending_rows.end()) {
+		return;
+	}
+
+	if (it->second > 0) {
+		--it->second;
+	}
+}
+
+uint32_t Corpse::GetAdvLootPendingRows(uint32_t character_id) const
+{
+	auto it = m_advloot_pending_rows.find(character_id);
+	return it == m_advloot_pending_rows.end() ? 0 : it->second;
+}
+
+bool Corpse::HasPendingAdvLootRows(uint32_t character_id) const
+{
+	return GetAdvLootPendingRows(character_id) > 0;
+}
+
+void Corpse::ClearAdvLootPendingRows()
+{
+	m_advloot_pending_rows.clear();
+}
+
+void Corpse::ClearAdvLootPendingRowsFor(uint32_t character_id)
+{
+	m_advloot_pending_rows.erase(character_id);
+}
+
+// The group record for one viewer, rebuilt from the corpse's current loot list. filter_bits and the
+// loot-rights flag are per-viewer, so this cannot be broadcast.
+AdvLoot::CorpseGroup Corpse::BuildAdvLootGroup(Client* c)
+{
+	AdvLoot::CorpseGroup group;
+
+	group.corpse_key      = GetID();
+	group.npc_name         = corpse_name;
+	group.expiration       = GetDecayTime() / 1000;   // seconds - FUN_14014f5f0 packs value * 1000 + clock
+	group.present_at_kill  = IsKillCreditLooter(c->CharacterID()) ? 1 : 0;
+
+	// FUN_1400a5d10 keeps ADLW_CLLWnd hidden unless the player is in a group or a raid, so in solo the
+	// Personal Loot pane is the only pane the player can see. The Shared list object still exists
+	// (window +0x320 / store +0x3E8), it is just not drawn.
+	const bool solo = !c->HasGroup() && !c->HasRaid();
+
+	for (const auto &i: m_item_list) {
+		const auto *item = database.GetItem(i->item_id);
+		if (!item) {
+			continue;
+		}
+
+		AdvLoot::Filter filter;
+		filter.item_id         = item->ID;
+		filter.filter_bits     = c->AdvLootFilterBits(item->ID);
+		filter.icon            = item->Icon;
+		filter.name            = item->Name;
+		const uint32_t qty = i->charges ? i->charges : 1;
+
+		// AddCorpse (FUN_14009e310) puts a row in the Personal Loot List when +0x14 is non-zero and in the
+		// Shared Loot list when +0x0C is non-zero.
+		//
+		// Solo: personal pool, because the Shared pane is hidden. No client path decrements or removes a
+		// personal row from a server packet (FUN_1400a42f0 only walks the Shared list, FUN_1400a4eb0 only
+		// adds), so a solo row is only correct after a subcmd 0x03 rebuild - which is what
+		// AdvLootTransaction does.
+		//
+		// Group/raid: shared pool, because that is the pool the transaction resolves and the one that has
+		// to be synchronised across clients.
+		if (solo) {
+			filter.quantity = 0;
+			filter.personal = qty;
+		} else {
+			filter.quantity = qty;
+			filter.personal = 0;
+		}
+
+		filter.expiration      = group.expiration;
+		filter.present_at_kill = group.present_at_kill;
+		filter.corpse_key      = group.corpse_key;
+
+		group.items.push_back(filter);
+	}
+
+	return group;
+}
+
+// Coin is not part of the AdvLoot row model - the window has no coin row - so the kill-time delivery
+// settles it directly. Same rules as the legacy path: group split when auto-split is on, otherwise the
+// kill-credit looters share it.
+void Corpse::DistributeAdvLootCash(const std::vector<Client *> &looters)
+{
+	if (!(GetCopper() || GetSilver() || GetGold() || GetPlatinum())) {
+		return;
+	}
+
+	std::vector<Client *> paid;
+	for (Client *c: looters) {
+		if (IsKillCreditLooter(c->CharacterID())) {
+			paid.push_back(c);
+		}
+	}
+
+	if (paid.empty()) {
+		return;
+	}
+
+	auto send_money = [](Client *c, uint32 copper, uint32 silver, uint32 gold, uint32 platinum) {
+		auto outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));
+		auto *d     = (moneyOnCorpseStruct *) outapp->pBuffer;
+
+		d->response  = static_cast<uint8>(LootResponse::Normal);
+		d->unknown1  = 0x42;
+		d->unknown2  = 0xef;
+		d->copper    = copper;
+		d->silver    = silver;
+		d->gold      = gold;
+		d->platinum  = platinum;
+
+		outapp->priority = 6;
+		c->QueuePacket(outapp);
+		safe_delete(outapp);
+	};
+
+	Group *cgroup  = nullptr;
+	Client *splitter = nullptr;
+	for (Client *c: paid) {
+		if (c->IsGrouped() && c->AutoSplitEnabled()) {
+			cgroup   = c->GetGroup();
+			splitter = c;
+			break;
+		}
+	}
+
+	if (cgroup) {
+		for (Client *c: paid) {
+			send_money(c, 0, 0, 0, 0);
+		}
+		cgroup->SplitMoney(GetCopper(), GetSilver(), GetGold(), GetPlatinum(), splitter);
+	}
+	else {
+		uint32 count = static_cast<uint32>(paid.size());
+		for (Client *c: paid) {
+			uint32 copper   = GetCopper()   / count;
+			uint32 silver   = GetSilver()   / count;
+			uint32 gold     = GetGold()     / count;
+			uint32 platinum = GetPlatinum() / count;
+
+			send_money(c, copper, silver, gold, platinum);
+			c->AddMoneyToPP(copper, silver, gold, platinum);
+		}
+	}
+
+	RemoveCash();
+	Save();
+}
+
+// AdvLoot subcmd 0x08 is the transaction request from the green loot button. The client sends it
+// without a legacy OP_LootRequest, so no looting session exists yet - establish one from the
+// kill-credit list and then reuse LootCorpseItem so the existing checks still apply.
+void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
+{
+	if (!c) {
+		return;
+	}
+
+	if (m_being_looted_by_entity_id != 0xFFFFFFFF && m_being_looted_by_entity_id != c->GetID()) {
+		SendLootReqErrorPacket(c, LootResponse::SomeoneElse);
+		return;
+	}
+
+	if (!CanPlayerLoot(c->CharacterID())) {
+		// eqstr_us.txt string 11321: "These item(s) are locked because you were not present when the
+		// enemy died. To loot them you will first need to right-click that enemy's corpse to unlock."
+		c->MessageString(Chat::White, 11321);
+		return;
+	}
+
+	uint16 slot = GetFirstLootSlotByItemID(item_id);
+	if (slot == 0xFFFF) {
+		return;
+	}
+
+	m_being_looted_by_entity_id = c->GetID();
+	m_loot_request_type = c->GetGM() ? LootRequestType::GMAllowed : LootRequestType::AllowedPVE;
+
+	// LootCorpseItem reads the legacy LootingItem_Struct. lootee/looter/slot_id sit at the same
+	// offsets in the Laurion struct, so build the legacy layout directly and skip the decoder.
+	LootingItem_Struct lootitem = {};
+	lootitem.lootee    = GetID();
+	lootitem.looter    = c->GetID();
+	lootitem.slot_id   = slot;
+	// The AdvLoot loot button always means "put it in my bags", not "put it on the cursor", so
+	// auto_loot must be 1 regardless of the quantity. LootCorpseItem only routes to inventory when
+	// auto_loot > 0 (corpse.cpp L1741).
+	lootitem.auto_loot = 1;
+
+	EQApplicationPacket app(OP_LootItem, sizeof(LootingItem_Struct));
+	memcpy(app.pBuffer, &lootitem, sizeof(LootingItem_Struct));
+
+	LogLootFilters(
+		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}]",
+		c->GetCleanName(),
+		item_id,
+		slot,
+		quantity,
+		GetID()
+	);
+
+	LootCorpseItem(c, &app);
+
+	// The row is resolved from the client's point of view whether the loot succeeded or not (the client
+	// already moved the unit out of the shared pool), so release the lockout either way.
+	ConsumeAdvLootPendingRow(c->CharacterID());
+
+	// In solo nothing on the client can decrement or remove a Personal Loot row, so the window has to be
+	// rebuilt from what is actually left on the corpse. If the corpse is now empty (items and cash gone)
+	// the rebuild drops it from the window instead of leaving a stale row.
+	if (!c->HasGroup() && !c->HasRaid()) {
+		c->SendAdvLootCorpseRebuild();
 	}
 }
 

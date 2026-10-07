@@ -2921,6 +2921,15 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			}
 		}
 
+		// Advanced Loot: the client's "was present when the enemy died" state follows the kill credit,
+		// so the presence list is the client that receives the experience for the kill plus that
+		// client's group or raid. Pushing the corpse record here fills the Advanced Loot window at the
+		// kill, so kill-credit players do not have to right-click the corpse to unlock their rows.
+		if (give_exp_client) {
+			corpse->SetKillCreditLooters(give_exp_client);
+			corpse->SendAdvLootCorpseRows();
+		}
+
 		if (zone && zone->adv_data) {
 			auto sr = (ServerZoneAdventureDataReply_Struct *) zone->adv_data;
 			if (sr->type == Adventure_Kill) {

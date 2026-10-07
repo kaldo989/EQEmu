@@ -64,6 +64,7 @@ namespace AppearanceType {
 	constexpr uint32 GuildShow             = 52;
 	constexpr uint32 OfflineMode           = 53; // Offline Mode
 	constexpr uint32 AdvLootSettings       = 54; // Laurion appearance type 40: advanced looting settings flag
+	constexpr uint32 MasterLootCandidate   = 55; // Laurion appearance type 41: master looter candidate flag
 }
 
 namespace Animation {

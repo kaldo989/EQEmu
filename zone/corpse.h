@@ -23,6 +23,8 @@
 #include "zone/client.h"
 #include "zone/mob.h"
 
+#include <map>
+
 class EQApplicationPacket;
 class Group;
 class NPC;
@@ -216,6 +218,7 @@ public:
 	uint32 CountItem(uint32 item_id);
 	uint32 GetItemIDBySlot(uint16 loot_slot);
 	uint16 GetFirstLootSlotByItemID(uint32 item_id);
+	uint32 GetLootQuantityByItemID(uint32 item_id);
 	std::vector<int> GetLootList();
 	inline const LootItems &GetLootItems() { return m_item_list; }
 	void LootCorpseItem(Client *c, const EQApplicationPacket *app);
@@ -223,6 +226,43 @@ public:
 	void MakeLootRequestPackets(Client *c, const EQApplicationPacket *app);
 	void AllowPlayerLoot(Mob *them, uint8 slot);
 	void AddLooter(Mob *who);
+
+	// Loot rights follow the kill credit: the client's "was present when the enemy died" state is
+	// driven by this list. Populate it from the client that receives the experience for the kill
+	// plus that client's group or raid. Anyone outside the list gets locked rows.
+	void SetKillCreditLooters(Client *killer);
+	bool IsKillCreditLooter(uint32 character_id) const;
+	void SendAdvLootCorpseRows();
+
+	// Build the group record for one viewer from the corpse's current loot list. Used for the kill-time
+	// delivery and for the post-transaction rebuild, so the window always reflects what is actually left.
+	AdvLoot::CorpseGroup BuildAdvLootGroup(Client* c);
+
+	// True while the corpse still has something to show. Once the items and the cash are gone the corpse
+	// is dropped from the window instead of leaving a stale row behind.
+	bool HasAdvLootItems() const { return !m_item_list.empty(); }
+
+	// AdvLoot rows are the loot UI for kill-credit players, so the server has to know which rows a
+	// client still has unresolved. While a client has pending rows its legacy right-click is refused:
+	// running both paths on the same corpse would take an item twice and pay the corpse cash twice.
+	// The lockout is released when every row for that client is resolved, or when the corpse unlock
+	// timer (NPC/CorpseUnlockTimer) expires and the corpse becomes public to everyone.
+	void SetAdvLootPendingRows(uint32_t character_id, uint32_t count);
+	void ConsumeAdvLootPendingRow(uint32_t character_id);
+	uint32_t GetAdvLootPendingRows(uint32_t character_id) const;
+	bool HasPendingAdvLootRows(uint32_t character_id) const;
+	void ClearAdvLootPendingRows();
+	void ClearAdvLootPendingRowsFor(uint32_t character_id);
+
+	// The AdvLoot window has no coin row, so the kill-time delivery has to settle the corpse cash
+	// itself: group/raid split when auto-split is on, otherwise split across the kill-credit looters.
+	void DistributeAdvLootCash(const std::vector<Client *> &looters);
+
+	// The client's green loot button sends AdvLoot subcmd 0x08 without a legacy OP_LootRequest, so
+	// there is no looting session established. This sets the looting state from the kill-credit list
+	// and then reuses LootCorpseItem so all the existing checks (lore, cooldown, lock, bag limits)
+	// still apply.
+	void AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity);
 	uint32 CountItems();
 	bool CanPlayerLoot(int character_id);
 
@@ -296,6 +336,7 @@ private:
 	Timer                    m_loot_cooldown_timer;
 	Timer                    m_check_owner_online_timer;
 	Timer                    m_check_rezzable_timer;
+	std::map<uint32_t, uint32_t> m_advloot_pending_rows;   // character id -> unresolved AdvLoot rows
 	uint8                    m_killed_by_type;
 	bool                     m_is_rezzable;
 	EQ::TintProfile          m_item_tint;

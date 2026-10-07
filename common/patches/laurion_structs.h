@@ -1171,6 +1171,15 @@ namespace Laurion {
 			/*20*/
 		};
 
+		struct Consume_Struct { // OP_0x5ef7, 20 byte payload (FUN_1401d4020)
+			/*00*/	uint32	slot;           // inventory slot of the item being consumed
+			/*04*/	uint32	unknown4;       // item global index
+			/*08*/	uint16	unknown8;
+			/*0A*/	uint32	auto_consumed;  // 0xFFFFFFFF when auto consumed
+			/*0E*/	uint32	type;           // 0x100 = food, 0x101 = water
+			/*12*/
+		};
+
 		struct SkillRankReport_Struct { // OP_0x3fe5, 16 byte payload
 			/*00*/	uint16	announce_flags;
 			/*02*/	uint16	unknown02;      // natural alignment padding - client sends 16 bytes

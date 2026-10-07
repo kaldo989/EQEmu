@@ -1021,9 +1021,20 @@ public:
 	bool advloot_enabled = false;
 	bool advloot_master_looter_candidate = false;
 
+	// The client's green loot button sends subcmd 0x08 without a legacy loot request, so the server
+	// has to remember which corpse the rows it pushed belong to. Set when rows are delivered.
+	Corpse* advloot_corpse = nullptr;
+
+	// Every corpse this client still has unresolved AdvLoot rows for. A looted row cannot be decremented or
+	// removed by any server packet, so the window is rebuilt from this list after each transaction.
+	std::vector<uint16_t> advloot_corpses;
+
 	void LoadAdvLootFilters();
 	void LoadAdvLootSettings();
 	void SendAdvLootFilterSet();
+	uint32_t AdvLootFilterBits(uint32_t item_id) const;
+	void SendAdvLootCorpse(const AdvLoot::CorpseGroup& corpse_group);
+	void SendAdvLootCorpseRebuild();
 	void SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t icon, const std::string& name);
 
 	void SummonHorse(uint16 spell_id);

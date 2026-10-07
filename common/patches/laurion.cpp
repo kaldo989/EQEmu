@@ -57,7 +57,7 @@ namespace Laurion
 
 	// SpawnAppearance
 	static inline uint32 ServerToLaurionSpawnAppearanceType(uint32 server_type);
-	static inline uint32 LaurionToServerSpawnAppearanceType(uint32 laurion_type);
+	static inline uint32 LaurionToServerSpawnAppearanceType(uint32 laurion_type, uint32 laurion_parameter);
 
 	// server to client inventory location converters
 	static inline structs::InventorySlot_Struct ServerToLaurionSlot(uint32 server_slot);
@@ -2307,8 +2307,11 @@ namespace Laurion
 		u8 is_master_loot_candidate;
 		*/
 
-		out.WriteUInt8(1);
-		out.WriteUInt8(1);
+		// These are the only bytes the client reads for the advanced looting master switch on
+		// login: FUN_1402c58b0 deserializes them into profile +0x7c98 / +0x7c99 and FUN_1402c01a0
+		// copies them to PcClient +0x2434 / +0x2435. The zone fills them from character_loot_settings.
+		out.WriteUInt8(emu->use_advanced_looting);
+		out.WriteUInt8(emu->master_loot_candidate);
 
 		//alchemy_bonus_list_count
 		out.WriteUInt32(0);
@@ -3882,7 +3885,7 @@ namespace Laurion
 		SETUP_DIRECT_DECODE(SpawnAppearance_Struct, structs::SpawnAppearance_Struct);
 
 		IN(spawn_id);
-		emu->type = LaurionToServerSpawnAppearanceType(eq->type);
+		emu->type = LaurionToServerSpawnAppearanceType(eq->type, eq->parameter);
 		IN(parameter);
 
 		FINISH_DIRECT_DECODE();
@@ -3973,6 +3976,28 @@ namespace Laurion
 		emu->unknown3[0] = 0;
 		emu->unknown3[1] = 0;
 		IN(auto_loot);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_Consume) // 0x5ef7
+	{
+		// Laurion widened the packet to 20 bytes: slot, item global index, uint16, auto_consumed and a
+		// uint32 type (0x100 = food, 0x101 = water).  EQEmu's Consume_Struct is 16 bytes and expects
+		// type 0x01 / 0x02, so map the Laurion values back.
+		DECODE_LENGTH_EXACT(structs::Consume_Struct);
+		SETUP_DIRECT_DECODE(Consume_Struct, structs::Consume_Struct);
+
+		IN(slot);
+		emu->auto_consumed = eq->auto_consumed;
+		emu->c_unknown1[0] = 0;
+		emu->c_unknown1[1] = 0;
+		emu->c_unknown1[2] = 0;
+		emu->c_unknown1[3] = 0;
+		emu->type = (eq->type == 0x101) ? 0x02 : 0x01;
+		emu->unknown13[0] = 0;
+		emu->unknown13[1] = 0;
+		emu->unknown13[2] = 0;
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -4993,7 +5018,7 @@ namespace Laurion
 		}
 	}
 
-	static inline uint32 LaurionToServerSpawnAppearanceType(uint32 laurion_type) {
+	static inline uint32 LaurionToServerSpawnAppearanceType(uint32 laurion_type, uint32 laurion_parameter) {
 		switch (laurion_type)
 		{
 		case structs::LaurionAppearance::WhoLevel:
@@ -5054,10 +5079,21 @@ namespace Laurion
 			return AppearanceType::GuildShow;
 		case structs::LaurionAppearance::OfflineMode:
 			return AppearanceType::OfflineMode;
+		case structs::LaurionAppearance::Unknown18:
+			// Loot Settings window "Auto Split Coin" checkbox (FUN_14027e210 sends type 0x12).
+			// EQEmu's canonical type for this is AppearanceType::Split, handled in
+			// Client::Handle_OP_SpawnAppearance via m_pp.autosplit.
+			return AppearanceType::Split;
 		case structs::LaurionAppearance::Unknown40:
 			// Client Loot Settings window sends this for the "Use Advanced Looting" checkbox
 			return AppearanceType::AdvLootSettings;
+		case structs::LaurionAppearance::Unknown41:
+			// Client Loot Settings window sends this for the "Master Loot Candidate" checkbox
+			return AppearanceType::MasterLootCandidate;
 		default:
+			// Keep the raw Laurion type visible: without this every unmapped type collapses to
+			// AppearanceType::Die and the log shows "Unknown SpawnAppearance type: 0x0000".
+			LogLootFilters("SpawnAppearance: unmapped Laurion type [{}] value [{}]", laurion_type, laurion_parameter);
 			return AppearanceType::Die;
 		}
 	}

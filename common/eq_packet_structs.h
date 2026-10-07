@@ -1137,6 +1137,8 @@ struct PlayerProfile_Struct
 /*19559*/	uint8				unknown19595[5];	// ***Placeholder (6/29/2005)
 /*19564*/	uint32				RestTimer;
 /*19568*/	uint32				char_id;			// Found as part of bazaar revamp (5/15/2024)
+/*19572*/	uint8				use_advanced_looting;	// Laurion profile +0x7c98 (read by FUN_1402c58b0)
+/*19573*/	uint8				master_loot_candidate;	// Laurion profile +0x7c99
 
 	// All player profile packets are translated and this overhead is ignored in out-bound packets
 	PlayerProfile_Struct() : m_player_profile_version(EQ::versions::MobVersion::Unknown) { }
