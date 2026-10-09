@@ -1059,14 +1059,10 @@ void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {
 				inst->SetMerchantSlot(ml.slot);
 				inst->SetPrice(item_price);
 
-				// Items the player previously sold live in tmpmerchanttable and belong on the Recover
-				// page. Laurion routes them through the recovery item packet type; other clients keep
-				// the existing merchant routing.
-				ItemPacketType temp_type = (ClientVersionBit() & EQ::versions::bitLaurion)
-					? ItemPacketRecovery
-					: ItemPacketMerchant;
-
-				SendItemPacket(ml.slot - 1, inst, temp_type);
+				// Keep the temp items in the merchant container. AddItemToArray resolves the merchant
+				// slot through CItemDisplayManager, which is keyed by the packet type, so routing these to
+				// the recovery container breaks the lookup. The recovery list is filled by the 0x27d1 path.
+				SendItemPacket(ml.slot - 1, inst, ItemPacketMerchant);
 				safe_delete(inst);
 			}
 		}
