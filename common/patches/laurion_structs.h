@@ -1193,6 +1193,246 @@ namespace Laurion {
 			/*00*/	uint32	request_type;
 			/*04*/
 		};
+		/*
+		 * Client -> server wire layouts confirmed from the LS client (opcodes/batch_*.md).
+		 * Offsets are payload relative - the 2 byte opcode is stripped before decode.
+		 */
+
+		/* 0x0833 OP_GroupRoles - payload 152. EQEmu's GroupRole_Struct is 148: the client
+		 * carries a dword at +144 and the toggle byte at +148 instead of +144. */
+		struct GroupRole_Struct {
+			/*000*/	char	Name1[64];        /* target member name (32 written + 32 zero pad) */
+			/*064*/	char	Name2[64];        /* local player name */
+			/*128*/	uint32	Unknown128;
+			/*132*/	uint32	Unknown132;
+			/*136*/	uint32	Unknown136;
+			/*140*/	uint32	RoleNumber;
+			/*144*/	uint32	Unknown144;
+			/*148*/	uint8	Toggle;
+			/*149*/	uint8	SecondBool;
+			/*150*/	uint8	Unknown150[2];    /* never written by the send function */
+			/*152*/
+		};
+
+		/* 0x0a83 OP_CrashDump - payload 436, every byte written by the sender */
+		struct CrashDump_Struct {
+			/*000*/	uint8	Unknown000[32];
+			/*032*/	char	Name[64];
+			/*096*/	char	ZoneName[64];
+			/*160*/	uint32	Gamestate;
+			/*164*/	char	GraphicsMode[16];
+			/*180*/	char	StringA[128];
+			/*308*/	char	StringB[128];
+			/*436*/
+		};
+
+		/* 0x0afa OP_GuildMemberRankAltBanker - payload 144 */
+		struct GuildMemberRankAltBanker_Struct {
+			/*000*/	uint32	Unknown000;
+			/*004*/	char	MyName[64];       /* zeroed by the sender */
+			/*068*/	uint32	Unknown068;
+			/*072*/	char	Member[56];       /* member name */
+			/*128*/	uint64	Unknown128;
+			/*136*/	uint32	Flags;            /* member flags: bit 0 banker, bit 1 alt */
+			/*140*/	uint32	Unknown140;
+			/*144*/
+		};
+
+		/* 0x0b22 OP_MercenaryDataUpdateRequest - payload 8 */
+		struct MercenaryDataUpdateRequest_Struct {
+			/*000*/	uint32	ManagerFieldA;
+			/*004*/	uint32	ManagerFieldB;
+			/*008*/
+		};
+
+		/* 0x0c05 OP_SummonCorpse - payload 64, single null terminated name */
+		struct SummonCorpse_Struct {
+			/*000*/	char	Name[64];
+			/*064*/
+		};
+
+		/* 0x0c84 OP_GuildMemberPublicNote - payload 392 */
+		struct GuildMemberPublicNote_Struct {
+			/*000*/	uint64	GuildID;
+			/*008*/	char	LocalName[64];
+			/*072*/	char	TargetName[64];
+			/*136*/	char	Note[256];
+			/*392*/
+		};
+
+		/* 0x1bae OP_CrystalCreate - payload 72 */
+		struct CrystalCreate_Struct {
+			/*000*/	char	Name[64];
+			/*064*/	uint32	Type;             /* 0 = radiant, non zero = ebon */
+			/*068*/	uint32	Quantity;
+			/*072*/
+		};
+
+		/* 0x2455 OP_GMLastName - payload 195 */
+		struct GMLastName_Struct {
+			/*000*/	char	Name[64];
+			/*064*/	char	GMName[64];
+			/*128*/	char	LastName[64];
+			/*192*/	uint16	Unknown192;
+			/*194*/	uint8	Unknown194;
+			/*195*/
+		};
+
+		/* 0x2d05 OP_GuildInvite and 0x6313 OP_GuildRemove - payload 144 */
+		struct GuildCommand_Struct {
+			/*000*/	char	OtherName[64];
+			/*064*/	char	MyName[64];
+			/*128*/	uint64	GuildEqID;
+			/*136*/	uint32	Officer;          /* rank, 1..8 */
+			/*140*/	uint32	Unknown140;
+			/*144*/
+		};
+
+		/* 0x2e8e OP_BazaarSearch - the only shape stable across all send sites */
+		struct BazaarSearch_Struct {
+			/*000*/	uint32	Subcommand;
+			/*004*/	char	ItemName[12];
+			/*016*/	uint64	Unknown016;
+			/*024*/	uint32	Unknown024;
+			/*028*/	uint32	Unknown028;
+			/*032*/
+		};
+
+		/* 0x359e OP_GuildStatus - payload 144 (EQEmu's struct has 72 here, not 80) */
+		struct GuildStatus_Struct {
+			/*000*/	char	Name[64];
+			/*064*/	uint8	Unknown064[80];
+			/*144*/
+		};
+
+		/* 0x4a13 OP_TributeItem - payload 40 */
+		struct TributeItem_Struct {
+			/*000*/	uint64	ItemField0;
+			/*008*/	uint32	Quantity;
+			/*012*/	uint32	Param3;
+			/*016*/	uint32	SpawnID;
+			/*020*/	uint32	Stale020;         /* never written by the sender */
+			/*024*/	uint64	PlayerField208;
+			/*032*/	uint64	Stale032;         /* never written by the sender */
+			/*040*/
+		};
+
+		/* 0x4b97 OP_GroupFollow - payload 64, single null terminated name */
+		struct GroupFollow_Struct {
+			/*000*/	char	Name[64];
+			/*064*/
+		};
+
+		/* 0x5b29 OP_LFGuild subcommand 3 - payload 48 */
+		struct LFGuild_SearchPlayer_Struct {
+			/*000*/	uint32	Command;
+			/*004*/	uint32	Stale004;
+			/*008*/	uint64	Stale008;
+			/*016*/	uint32	Stale016;
+			/*020*/	uint32	Stale020;
+			/*024*/	uint32	FromLevel;
+			/*028*/	uint32	ToLevel;
+			/*032*/	uint32	MinAA;
+			/*036*/	uint32	Classes;
+			/*040*/	uint32	TimeZone;
+			/*044*/	uint32	Stale044;
+			/*048*/
+		};
+
+		/* 0x5b29 OP_LFGuild subcommand 4 - payload 40 */
+		struct LFGuild_SearchGuild_Struct {
+			/*000*/	uint32	Command;
+			/*004*/	uint32	Stale004;
+			/*008*/	uint64	Stale008;
+			/*016*/	uint32	Stale016;
+			/*020*/	uint32	Stale020;
+			/*024*/	uint32	Level;
+			/*028*/	uint32	AAPoints;
+			/*032*/	uint32	Class;
+			/*036*/	uint32	TimeZone;
+			/*040*/
+		};
+
+		/* 0x62fc tribute donation variant - payload 32 */
+		struct TributeMoney_Struct {
+			/*000*/	uint32	Platinum;
+			/*004*/	uint32	TributeMasterID;
+			/*008*/	uint32	Stale008;         /* never written by the sender */
+			/*012*/	uint32	Stale012;
+			/*016*/	uint64	PlayerField208;
+			/*024*/	uint64	Stale024;         /* never written by the sender */
+			/*032*/
+		};
+
+		/* 0x64b0 OP_BecomeCorpse - payload 4 */
+		struct BecomeCorpse_Struct {
+			/*000*/	uint32	SpawnID;
+			/*004*/
+		};
+
+		/* 0x6631 OP_SharedTaskMemberChange - payload 12 */
+		struct SharedTaskMemberChange_Struct {
+			/*000*/	uint32	Stale000;         /* never written by the sender */
+			/*004*/	uint32	AddPlayerID;
+			/*008*/	uint8	Flag;
+			/*009*/	uint8	Stale009[3];      /* never written by the sender */
+			/*012*/
+		};
+
+		/* 0x6640 OP_GroupMakeLeader - payload 136 */
+		struct GroupMakeLeader_Struct {
+			/*000*/	uint32	Unknown000;       /* constant 8 in this client */
+			/*004*/	char	CurrentLeader[64];
+			/*068*/	char	NewLeader[64];
+			/*132*/	uint32	Unknown132;
+			/*136*/
+		};
+
+		/* 0x6939 OP_PetCommands - payload 12 */
+		struct PetCommands_Struct {
+			/*000*/	uint32	Command;
+			/*004*/	uint32	Target;
+			/*008*/	uint8	Param4;
+			/*009*/	uint8	Param5;
+			/*010*/	uint16	Stale010;         /* never written by the sender */
+			/*012*/
+		};
+
+		/* 0x7365 OP_GMEmoteWorld - payload 512 */
+		struct GMEmoteWorld_Struct {
+			/*000*/	char	Text[512];
+			/*512*/
+		};
+
+		/* 0x7410 right click target select - payload 4 */
+		struct SetTargetRightClick_Struct {
+			/*000*/	uint32	NewTarget;
+			/*004*/
+		};
+
+		/* 0x7545 OP_InspectBuffs - payload 1 */
+		struct InspectBuffs_Struct {
+			/*000*/	uint8	ShowTargetBuffs;   /* 0 = own buffs, 1 = target buffs */
+			/*001*/
+		};
+
+		/* 0x77e6 OP_GuildInviteAccept - payload 144 */
+		struct GuildInviteAccept_Struct {
+			/*000*/	char	Inviter[64];
+			/*064*/	char	NewMember[64];
+			/*128*/	uint32	Response;         /* 9 decline, 10, 11 */
+			/*132*/	uint32	Unknown132;
+			/*136*/	uint64	GuildID;
+			/*144*/
+		};
+
+		/* 0x077a task status clear - payload 8 */
+		struct TaskStatusClear_Struct {
+			/*000*/	uint32	TaskID;
+			/*004*/	uint32	ActivityType;
+			/*008*/
+		};
+
 #pragma pack()
 
 	};	//end namespace structs

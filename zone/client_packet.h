@@ -153,6 +153,7 @@
 	void Handle_OP_GMBecomeNPC(const EQApplicationPacket *app);
 	void Handle_OP_GMDelCorpse(const EQApplicationPacket *app);
 	void Handle_OP_GMEmoteZone(const EQApplicationPacket *app);
+	void Handle_OP_SummonCorpse(const EQApplicationPacket *app);
 	void Handle_OP_GMEndTraining(const EQApplicationPacket *app);
 	void Handle_OP_GMFind(const EQApplicationPacket *app);
 	void Handle_OP_GMGoto(const EQApplicationPacket *app);

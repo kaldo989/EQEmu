@@ -222,6 +222,8 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_GMBecomeNPC] = &Client::Handle_OP_GMBecomeNPC;
 	ConnectedOpcodes[OP_GMDelCorpse] = &Client::Handle_OP_GMDelCorpse;
 	ConnectedOpcodes[OP_GMEmoteZone] = &Client::Handle_OP_GMEmoteZone;
+	ConnectedOpcodes[OP_GMEmoteWorld] = &Client::Handle_OP_GMEmoteZone;
+	ConnectedOpcodes[OP_SummonCorpse] = &Client::Handle_OP_SummonCorpse;
 	ConnectedOpcodes[OP_GMEndTraining] = &Client::Handle_OP_GMEndTraining;
 	ConnectedOpcodes[OP_GMFind] = &Client::Handle_OP_GMFind;
 	ConnectedOpcodes[OP_GMGoto] = &Client::Handle_OP_GMGoto;
@@ -259,9 +261,13 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_GuildInviteAccept] = &Client::Handle_OP_GuildInviteAccept;
 	ConnectedOpcodes[OP_GuildLeader] = &Client::Handle_OP_GuildLeader;
 	ConnectedOpcodes[OP_GuildManageBanker] = &Client::Handle_OP_GuildManageBanker;
+	// LS sends the alt banker change on 0x0afa with the member name and flag dword
+	ConnectedOpcodes[OP_GuildMemberRankAltBanker] = &Client::Handle_OP_GuildManageBanker;
 	ConnectedOpcodes[OP_GuildPeace] = &Client::Handle_OP_GuildPeace;
 	ConnectedOpcodes[OP_GuildPromote] = &Client::Handle_OP_GuildPromote;
 	ConnectedOpcodes[OP_GuildPublicNote] = &Client::Handle_OP_GuildPublicNote;
+	// LS sends the public note change on 0x0c84 with the guild id, local name, target name and note
+	ConnectedOpcodes[OP_GuildMemberPublicNote] = &Client::Handle_OP_GuildPublicNote;
 	ConnectedOpcodes[OP_GuildRemove] = &Client::Handle_OP_GuildRemove;
 	ConnectedOpcodes[OP_GuildStatus] = &Client::Handle_OP_GuildStatus;
 	ConnectedOpcodes[OP_GuildTributeInfo] = &Client::Handle_OP_GuildTributeInfo;
@@ -406,6 +412,8 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_SystemFingerprint] = &Client::Handle_OP_SystemFingerprint;
 	ConnectedOpcodes[OP_TargetCommand] = &Client::Handle_OP_TargetCommand;
 	ConnectedOpcodes[OP_TargetMouse] = &Client::Handle_OP_TargetMouse;
+	// EQEmu's OP_TargetMouse is 0x5741, LS right click select is a second opcode (0x7410)
+	ConnectedOpcodes[OP_SetTargetRightClick] = &Client::Handle_OP_TargetMouse;
 	ConnectedOpcodes[OP_TaskHistoryRequest] = &Client::Handle_OP_TaskHistoryRequest;
 	ConnectedOpcodes[OP_TaskTimers] = &Client::Handle_OP_TaskTimers;
 	ConnectedOpcodes[OP_Taunt] = &Client::Handle_OP_Taunt;
@@ -6683,6 +6691,29 @@ void Client::Handle_OP_GMDelCorpse(const EQApplicationPacket *app)
 	Message(Chat::Red, fmt::format("Corpse {} deleted.", c->corpsename).c_str());
 }
 
+void Client::Handle_OP_SummonCorpse(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(SummonCorpse_Struct)) {
+		LogError("Wrong size: OP_SummonCorpse, size=[{}], expected [{}]", app->size, sizeof(SummonCorpse_Struct));
+		DumpPacket(app);
+		return;
+	}
+
+	auto *scs = (SummonCorpse_Struct *) app->pBuffer;
+
+	Corpse *corpse = entity_list.GetCorpseByName(scs->charname);
+	if (!corpse) {
+		Message(Chat::Red, "Format: /summoncorpse <name>.");
+		return;
+	}
+
+	if (!corpse->Summon(this, false, true)) {
+		return;
+	}
+
+	Message(Chat::System, fmt::format("Summoning {}'s corpse(s).", scs->charname).c_str());
+}
+
 void Client::Handle_OP_GMEmoteZone(const EQApplicationPacket *app)
 {
 	if (app->size != sizeof(GMEmoteZone_Struct)) {
@@ -10946,8 +10977,9 @@ void Client::Handle_OP_MercenaryDataRequest(const EQApplicationPacket *app)
 
 void Client::Handle_OP_MercenaryDataUpdateRequest(const EQApplicationPacket *app)
 {
-	// The payload is 0 bytes.
-	if (app->size != 0)
+	// The payload is 0 bytes for older clients. LS sends two client side mercenary
+	// manager dwords on 0x0b22 which the handler does not consume, so accept up to 8.
+	if (app->size > 8)
 	{
 		Message(Chat::Red, "Size mismatch in OP_MercenaryDataUpdateRequest expected 0 got %i", app->size);
 		LogDebug("Size mismatch in OP_MercenaryDataUpdateRequest expected 0 got [{}]", app->size);

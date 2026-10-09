@@ -42,6 +42,7 @@
 #include <numeric>
 #include <cassert>
 #include <cinttypes>
+#include <cstring>
 
 namespace Laurion
 {
@@ -4079,6 +4080,302 @@ namespace Laurion
 
 
 	//Naive version but should work well enough for now
+
+	/* ---- Client -> server decoders for the LS wire layouts (opcodes/batch_*.md) ---- */
+
+	static void ReadWireString(const unsigned char*& p, const unsigned char* end, char* out, size_t out_size) {
+		size_t n = 0;
+		while (p + n < end && p[n] != '\0') n++;
+		size_t copy = n < out_size - 1 ? n : out_size - 1;
+		memcpy(out, p, copy);
+		out[copy] = '\0';
+		p += n + 1;
+	}
+
+	DECODE(OP_GroupRoles)
+	{
+		DECODE_LENGTH_EXACT(structs::GroupRole_Struct);
+		SETUP_DIRECT_DECODE(GroupRole_Struct, structs::GroupRole_Struct);
+
+		strn0cpy(emu->Name1, eq->Name1, sizeof(emu->Name1));
+		strn0cpy(emu->Name2, eq->Name2, sizeof(emu->Name2));
+		IN(Unknown128);
+		IN(Unknown132);
+		IN(Unknown136);
+		IN(RoleNumber);
+		// EQEmu reads Toggle at +144, this client sends it at +148
+		emu->Toggle = eq->Toggle;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildMemberRankAltBanker)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildMemberRankAltBanker_Struct);
+		SETUP_DIRECT_DECODE(GuildManageBanker_Struct, structs::GuildMemberRankAltBanker_Struct);
+
+		strn0cpy(emu->member, eq->Member, sizeof(emu->member));
+		emu->enabled = eq->Flags;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildMemberPublicNote)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildMemberPublicNote_Struct);
+		SETUP_DIRECT_DECODE(GuildUpdate_PublicNote, structs::GuildMemberPublicNote_Struct);
+
+		emu->unknown0 = (uint32) eq->GuildID;
+		strn0cpy(emu->name, eq->LocalName, sizeof(emu->name));
+		strn0cpy(emu->target, eq->TargetName, sizeof(emu->target));
+		strn0cpy(emu->note, eq->Note, sizeof(emu->note));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_SummonCorpse)
+	{
+		DECODE_LENGTH_EXACT(structs::SummonCorpse_Struct);
+		SETUP_DIRECT_DECODE(SummonCorpse_Struct, structs::SummonCorpse_Struct);
+
+		strn0cpy(emu->charname, eq->Name, sizeof(emu->charname));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_CrystalCreate)
+	{
+		DECODE_LENGTH_EXACT(structs::CrystalCreate_Struct);
+		SETUP_DIRECT_DECODE(CrystalReclaim_Struct, structs::CrystalCreate_Struct);
+
+		// the client uses 0 for radiant and non zero for ebon, EQEmu expects 4 / 5
+		emu->type = eq->Type == 0 ? CrystalReclaimTypes::Radiant : CrystalReclaimTypes::Ebon;
+		emu->amount = eq->Quantity;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_RaidInvite)
+	{
+		// variable length: action, null terminated name, dword, null terminated name, dword, optional text
+		unsigned char* __eq_buffer = __packet->pBuffer;
+		const unsigned char* p = __eq_buffer;
+		const unsigned char* end = __packet->pBuffer + __packet->size;
+
+		if (end - p < 5) { __packet->SetOpcode(OP_Unknown); return; }
+
+		uint32 action = *(const uint32*)p; p += 4;
+
+		char player_name[64] = { 0 };
+		ReadWireString(p, end, player_name, sizeof(player_name));
+
+		uint32 unknown1 = 0;
+		if (end - p >= 4) { unknown1 = *(const uint32*)p; p += 4; }
+
+		char leader_name[64] = { 0 };
+		ReadWireString(p, end, leader_name, sizeof(leader_name));
+
+		uint32 parameter = 0;
+		if (end - p >= 4) { parameter = *(const uint32*)p; p += 4; }
+
+		__packet->size = sizeof(RaidGeneral_Struct);
+		__packet->pBuffer = new unsigned char[__packet->size] {};
+		RaidGeneral_Struct* emu = (RaidGeneral_Struct*)__packet->pBuffer;
+
+		emu->action = action;
+		strn0cpy(emu->player_name, player_name, sizeof(emu->player_name));
+		emu->unknown1 = unknown1;
+		strn0cpy(emu->leader_name, leader_name, sizeof(emu->leader_name));
+		emu->parameter = parameter;
+
+		delete[] __eq_buffer;
+	}
+
+	DECODE(OP_RaidDelegateAbility)
+	{
+		// variable length: seven dwords then a null terminated name
+		unsigned char* __eq_buffer = __packet->pBuffer;
+		const unsigned char* p = __eq_buffer;
+		const unsigned char* end = __packet->pBuffer + __packet->size;
+
+		if (end - p < 28) { __packet->SetOpcode(OP_Unknown); return; }
+
+		uint32 ability = *(const uint32*)p; p += 4;
+		uint32 member_number = *(const uint32*)p; p += 4;
+		uint32 action = *(const uint32*)p; p += 4;
+		uint32 unknown012 = *(const uint32*)p; p += 4;
+		uint32 unknown016 = *(const uint32*)p; p += 4;
+		uint32 entity_id = *(const uint32*)p; p += 4;
+		uint32 unknown024 = *(const uint32*)p; p += 4;
+
+		char name[64] = { 0 };
+		ReadWireString(p, end, name, sizeof(name));
+
+		__packet->size = sizeof(DelegateAbility_Struct);
+		__packet->pBuffer = new unsigned char[__packet->size] {};
+		DelegateAbility_Struct* emu = (DelegateAbility_Struct*)__packet->pBuffer;
+
+		// this client numbers them 0 master looter / 1 main assist / 2 mark npc,
+		// EQEmu's enum is RaidDelegateMainAssist 3 and RaidDelegateMainMarker 4
+		if (ability == 1) ability = 3;
+		else if (ability == 2) ability = 4;
+
+		emu->DelegateAbility = ability;
+		emu->MemberNumber = member_number;
+		emu->Action = action;
+		emu->Unknown012 = unknown012;
+		emu->Unknown016 = unknown016;
+		emu->EntityID = entity_id;
+		emu->Unknown024 = unknown024;
+		strn0cpy(emu->Name, name, sizeof(emu->Name));
+
+		delete[] __eq_buffer;
+	}
+
+	DECODE(OP_GMLastName)
+	{
+		DECODE_LENGTH_EXACT(structs::GMLastName_Struct);
+		SETUP_DIRECT_DECODE(GMLastName_Struct, structs::GMLastName_Struct);
+
+		strn0cpy(emu->name, eq->Name, sizeof(emu->name));
+		strn0cpy(emu->gmname, eq->GMName, sizeof(emu->gmname));
+		strn0cpy(emu->lastname, eq->LastName, sizeof(emu->lastname));
+		emu->unknown[0] = eq->Unknown192;
+		// the client only sends 3 bytes of EQEmu's uint16 unknown[4]
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildInvite)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildCommand_Struct);
+		SETUP_DIRECT_DECODE(GuildCommand_Struct, structs::GuildCommand_Struct);
+
+		strn0cpy(emu->othername, eq->OtherName, sizeof(emu->othername));
+		strn0cpy(emu->myname, eq->MyName, sizeof(emu->myname));
+		emu->guildeqid = (uint16) eq->GuildEqID;
+		emu->officer = eq->Officer;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildRemove)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildCommand_Struct);
+		SETUP_DIRECT_DECODE(GuildCommand_Struct, structs::GuildCommand_Struct);
+
+		strn0cpy(emu->othername, eq->OtherName, sizeof(emu->othername));
+		strn0cpy(emu->myname, eq->MyName, sizeof(emu->myname));
+		emu->guildeqid = (uint16) eq->GuildEqID;
+		emu->officer = eq->Officer;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildStatus)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildStatus_Struct);
+		SETUP_DIRECT_DECODE(GuildStatus_Struct, structs::GuildStatus_Struct);
+
+		strn0cpy(emu->Name, eq->Name, sizeof(emu->Name));
+		// EQEmu's tail is 72 bytes, this client sends 80
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GuildInviteAccept)
+	{
+		DECODE_LENGTH_EXACT(structs::GuildInviteAccept_Struct);
+		SETUP_DIRECT_DECODE(GuildInviteAccept_Struct, structs::GuildInviteAccept_Struct);
+
+		strn0cpy(emu->inviter, eq->Inviter, sizeof(emu->inviter));
+		strn0cpy(emu->new_member, eq->NewMember, sizeof(emu->new_member));
+		emu->response = eq->Response;
+		emu->guild_id = (uint32) eq->GuildID;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GroupFollow)
+	{
+		DECODE_LENGTH_EXACT(structs::GroupFollow_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollow_Struct);
+
+		strn0cpy(emu->name1, eq->Name, sizeof(emu->name1));
+		// name2 is filled by the handler
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GroupMakeLeader)
+	{
+		DECODE_LENGTH_EXACT(structs::GroupMakeLeader_Struct);
+		SETUP_DIRECT_DECODE(GroupMakeLeader_Struct, structs::GroupMakeLeader_Struct);
+
+		emu->Unknown000 = eq->Unknown000;
+		strn0cpy(emu->CurrentLeader, eq->CurrentLeader, sizeof(emu->CurrentLeader));
+		strn0cpy(emu->NewLeader, eq->NewLeader, sizeof(emu->NewLeader));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_PetCommands)
+	{
+		DECODE_LENGTH_EXACT(structs::PetCommands_Struct);
+		SETUP_DIRECT_DECODE(PetCommand_Struct, structs::PetCommands_Struct);
+
+		emu->command = eq->Command;
+		emu->target = eq->Target;
+		// the trailing 4 bytes have no EQEmu equivalent
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_TributeItem)
+	{
+		DECODE_LENGTH_EXACT(structs::TributeItem_Struct);
+		SETUP_DIRECT_DECODE(TributeItem_Struct, structs::TributeItem_Struct);
+
+		// positional mapping against the client's own reader (batch_21):
+		// +0 item index, +8 count, +16 spawn id, +24 value
+		emu->slot = (uint32) eq->ItemField0;
+		emu->quantity = eq->Quantity;
+		emu->tribute_master_id = eq->SpawnID;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_LFGuild)
+	{
+		if (__packet->size < 4) { __packet->SetOpcode(OP_Unknown); return; }
+
+		uint32 command = *(uint32*)__packet->pBuffer;
+
+		if (command == 3 && __packet->size == sizeof(structs::LFGuild_SearchPlayer_Struct)) {
+			SETUP_DIRECT_DECODE(LFGuild_SearchPlayer_Struct, structs::LFGuild_SearchPlayer_Struct);
+
+			emu->Command = eq->Command;
+			emu->FromLevel = eq->FromLevel;
+			emu->ToLevel = eq->ToLevel;
+			emu->MinAA = eq->MinAA;
+			emu->Classes = eq->Classes;
+			emu->TimeZone = eq->TimeZone;
+
+			FINISH_DIRECT_DECODE();
+		} else if (command == 4 && __packet->size == sizeof(structs::LFGuild_SearchGuild_Struct)) {
+			SETUP_DIRECT_DECODE(LFGuild_SearchGuild_Struct, structs::LFGuild_SearchGuild_Struct);
+
+			emu->Command = eq->Command;
+			emu->Level = eq->Level;
+			emu->AAPoints = eq->AAPoints;
+			emu->Class = eq->Class;
+			emu->TimeZone = eq->TimeZone;
+
+			FINISH_DIRECT_DECODE();
+		}
+		// subcommands 0 and 1 carry a runtime record block that cannot be described statically
+	}
+
 	int ExtractIDFile(const std::string& input) {
 		std::string number;
 		for (char ch : input) {

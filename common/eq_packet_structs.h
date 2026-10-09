@@ -1962,6 +1962,10 @@ struct GMZoneRequest_Struct {
 //	/*073*/	uint8	unknown0073[3]; // =0 ok, =ffffff error
 };
 
+struct SummonCorpse_Struct {
+/*  0*/	char	charname[64];	// LS 0x0c05 /summoncorpse, single null terminated name
+};
+
 struct GMSummon_Struct {
 /*  0*/	char	charname[64];
 /* 30*/	char	gmname[64];
