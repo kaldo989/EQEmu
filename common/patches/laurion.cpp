@@ -5993,6 +5993,12 @@ namespace Laurion
 			return item::ItemPacketType::ItemPacketGuildTribute;
 		case ItemPacketType::ItemPacketCharmUpdate:
 			return item::ItemPacketType::ItemPacketCharmUpdate;
+		case ItemPacketType::ItemPacketRecovery:
+			// Canonical 0x71 -> Laurion 0x72. Without this case the packet falls through to
+			// ItemPacketInvalid and ENCODE(OP_ItemPacket) drops it, so the Recover page never fills.
+			return item::ItemPacketType::ItemPacketRecovery;
+		case ItemPacketType::ItemPacketParcel:
+			return item::ItemPacketType::ItemPacketParcel;
 		default:
 			return item::ItemPacketType::ItemPacketInvalid;
 		}
