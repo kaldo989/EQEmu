@@ -623,8 +623,36 @@ void Client::SendParcelAck()
 
 void Client::SendParcelRetrieveAck()
 {
-	std::unique_ptr<EQApplicationPacket> outapp(new EQApplicationPacket(OP_ShopRetrieveParcel));
-	QueuePacket(outapp.get());
+	// The client handler for 0x27d1 (FUN_140457fb0) reads a u64 at payload +8 and requires it to be > 0.
+	// An empty payload means the recovery page never gets a row, so send one packet per recovery item with
+	// the merchant slot at +8. +12 has to stay zero because the client reads +8 as a full 64 bit value.
+	Mob* merchant = entity_list.GetMob(GetMerchantSessionEntityID());
+
+	if (!merchant || !merchant->IsNPC()) {
+		std::unique_ptr<EQApplicationPacket> outapp(new EQApplicationPacket(OP_ShopRetrieveParcel));
+		QueuePacket(outapp.get());
+		return;
+	}
+
+	const auto& recovery_rows = zone->tmpmerchanttable[merchant->GetNPCTypeID()];
+
+	if (recovery_rows.empty()) {
+		std::unique_ptr<EQApplicationPacket> outapp(new EQApplicationPacket(OP_ShopRetrieveParcel));
+		QueuePacket(outapp.get());
+		return;
+	}
+
+	for (const auto& ml : recovery_rows) {
+		std::unique_ptr<EQApplicationPacket> outapp(new EQApplicationPacket(OP_ShopRetrieveParcel, sizeof(ParcelRetrieve_Struct)));
+		auto data = (ParcelRetrieve_Struct*)outapp->pBuffer;
+
+		data->merchant_entity_id = merchant->GetID();
+		data->player_entity_id   = GetID();
+		data->parcel_slot_id     = ml.slot;
+		data->parcel_item_id     = 0;
+
+		QueuePacket(outapp.get());
+	}
 }
 
 void Client::SendParcelDeliveryToWorld(const Parcel_Struct &parcel)
