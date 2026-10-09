@@ -1113,6 +1113,26 @@ namespace Laurion {
 			/*024*/
 		};
 
+		// Parcel send, opcode 0x0f16 (client -> server).
+		// Send site: FUN_14045e7e0, wire length 0xe2 (226) = 2 byte opcode + 224 byte payload.
+		// The client's slot struct is split by the quantity: slot +4, sub +6, quantity +8, aug +12,
+		// then a u16 that is always 0xffff at +14, the money/item flag at +16, send_to at +20 and
+		// note at +84. EQEmu's canonical Parcel_Struct is 220 bytes with send_to at +16 and note[128]
+		// at +80, so Handle_OP_ShopSendParcel rejected every Laurion parcel on the size check, and its
+		// uint32 item_slot is really slot+sub packed together.
+		struct Parcel_Request_Struct {
+			/*000*/	uint32	npc_id;
+			/*004*/	int16		slot;
+			/*006*/	int16		sub;
+			/*008*/	uint32	quantity;
+			/*012*/	int16		aug;
+			/*014*/	int16		unknown014;	// 0xffff in the client
+			/*016*/	uint32	money_flag;
+			/*020*/	char		send_to[64];
+			/*084*/	char		note[140];
+			/*224*/
+		};
+
 		/*
 		** Cancel Trade struct
 		** Sent when a player cancels a trade

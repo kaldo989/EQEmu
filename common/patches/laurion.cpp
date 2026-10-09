@@ -3871,6 +3871,28 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_ShopSendParcel)
+	{
+		DECODE_LENGTH_EXACT(structs::Parcel_Request_Struct);
+		SETUP_DIRECT_DECODE(Parcel_Struct, structs::Parcel_Request_Struct);
+
+		IN(npc_id);
+		// Rebuild the full slot struct from the split fields so the flat canonical item_slot is right
+		// for bag contents and for Laurion's two extra general slots.
+		structs::TypelessInventorySlot_Struct laurion_slot{};
+		laurion_slot.Slot = eq->slot;
+		laurion_slot.SubIndex = eq->sub;
+		laurion_slot.AugIndex = eq->aug;
+		laurion_slot.Padding = 0;
+		emu->item_slot = LaurionToServerTypelessSlot(laurion_slot, invtype::typePossessions);
+		IN(quantity);
+		IN(money_flag);
+		IN_str(send_to);
+		IN_str(note);
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_ShopRequest)
 	{
 		DECODE_LENGTH_EXACT(structs::MerchantClickRequest_Struct);
