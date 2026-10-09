@@ -14983,15 +14983,17 @@ void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)
 
 				SendItemPacket(freeslot - 1, inst2, ItemPacketMerchant);
 
-				// The client's Recover page is not filled by the item packet. Its handler for 0x4ce4
-				// (live thunk 0x7FF7840EC8C0 -> FUN_140455510) reads a u64 at payload +8 and passes it to
-				// MerchantPageHandler::AddItemToArray. Live capture confirmed that u64 is the merchant slot,
-				// not an item instance id, so the sell path has to send this or the Recover tab stays empty.
+				// The client handler for 0x4ce4 (live thunk 0x7FF7840EC8C0 -> FUN_140455510 -> vtable+0x20,
+				// FUN_140455e60) is a lookup, not an add: it walks the page handler's container and compares each
+				// entry's ItemBase + 0xF0 (MerchantSlot) against the u64 at payload +8. EQEmu stores the merchant
+				// slot as the 1-based value (SetMerchantSlot(freeslot)) and SerializeItem writes that same value,
+				// so the packet must carry freeslot, not freeslot - 1. The earlier off-by-one made the lookup
+				// miss every row and the recovery page stayed empty.
 				auto delitempacket = new EQApplicationPacket(OP_ShopDelItem, sizeof(Merchant_DelItem_Struct));
 				Merchant_DelItem_Struct* delitem = (Merchant_DelItem_Struct*)delitempacket->pBuffer;
 				delitem->npcid      = vendor->GetID();
 				delitem->playerid   = GetID();
-				delitem->itemslot   = freeslot - 1;
+				delitem->itemslot   = freeslot;
 				delitem->unknown012 = 0;
 				QueuePacket(delitempacket);
 				safe_delete(delitempacket);
