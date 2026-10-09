@@ -2874,10 +2874,10 @@ namespace Laurion
 		ENCODE_LENGTH_EXACT(Merchant_Purchase_Struct);
 		SETUP_DIRECT_ENCODE(Merchant_Purchase_Struct, structs::Merchant_Purchase_Response_Struct);
 
-		OUT(npcid);
+		// The client's sell ack has no npcid: the slot struct is at +0, quantity at +8, price at +16.
 		eq->inventory_slot = ServerToLaurionTypelessSlot(emu->itemslot, EQ::invtype::typePossessions);
-		OUT(quantity);
-		OUT(price);
+		eq->quantity = emu->quantity;
+		eq->price = emu->price;
 
 		FINISH_ENCODE();
 	}
@@ -2887,17 +2887,15 @@ namespace Laurion
 		ENCODE_LENGTH_EXACT(MerchantClick_Struct);
 		SETUP_DIRECT_ENCODE(MerchantClick_Struct, structs::MerchantClickResponse_Struct);
 
-		if (emu->command == 0) {
-			OUT(player_id);
-			eq->npc_id = 0;
-		}
-		else {
-			OUT(npc_id);
-			OUT(player_id);
-			OUT(rate);
-			OUT(tab_display);
-			eq->unknown028 = 256;
-		}
+		// The Laurion client reads +4 as the action flag (0 = close, non-zero = open). It used to be
+		// filled with player_id, which the zone always sets to 0 on open, so the client took the close
+		// branch and the merchant window never appeared.
+		// Client handler: ZonePacket__dispatchRecv case 0x840 -> FUN_1401d4fa0 -> FUN_14045c750.
+		eq->npc_id      = emu->npc_id;   // must be the merchant's entity id for the spawn lookup
+		eq->action      = emu->command;  // MerchantActions::Open = 1, MerchantActions::Close = 0
+		eq->rate        = emu->rate;
+		eq->tab_display = emu->tab_display;
+		eq->unknown028  = 256;
 
 		FINISH_ENCODE();
 	}
@@ -3853,7 +3851,9 @@ namespace Laurion
 
 		IN(npcid);
 		IN(playerid);
-		IN(itemslot);
+		// eq->itemslot is the client's 64 bit ItemBase::MerchantSlot; the merchant list slot always
+		// fits in the low 32 bits, the high half is zero.
+		emu->itemslot = static_cast<uint32>(eq->itemslot);
 		IN(quantity);
 
 		FINISH_DIRECT_DECODE();
@@ -5619,18 +5619,22 @@ namespace Laurion
 		LaurionSlot.SubIndex = invbag::SLOT_INVALID;
 		LaurionSlot.AugIndex = invaug::SOCKET_INVALID;
 
-		uint32 TempSlot = EQ::invslot::SLOT_INVALID;
-
 		if (server_type == EQ::invtype::typePossessions) {
-			if (server_slot < EQ::invtype::POSSESSIONS_SIZE) {
-				LaurionSlot.Slot = server_slot;
+			// Must use Laurion's POSSESSIONS_SIZE (36), not EQ::invtype::POSSESSIONS_SIZE (RoF2 = 34).
+			// Canonical ids 34 and 35 carry Laurion's extra general slots and sit outside the RoF2 size, so
+			// the RoF2 constant made every sell in those slots return SLOT_INVALID. The client's sell ack
+			// handler prints eqstr 12062 ("I am not interested in buying that") when the slot is -1, which is
+			// exactly the symptom: coins credited by SendMoneyUpdate, item never removed from the model.
+			if (server_slot < invtype::POSSESSIONS_SIZE) {
+				// Canonical ids 34 and 35 carry Laurion's two extra general slots; the client numbers them
+				// 33 and 34, so the reverse direction has to remap them back or the client highlights the
+				// wrong slot when the sell ack removes the item.
+				LaurionSlot.Slot = ServerGeneralSlotToLaurion(server_slot);
 			}
 
-			else if (server_slot <= EQ::invbag::CURSOR_BAG_END && server_slot >= EQ::invbag::GENERAL_BAGS_BEGIN) {
-				TempSlot = server_slot - EQ::invbag::GENERAL_BAGS_BEGIN;
-
-				LaurionSlot.Slot = invslot::GENERAL_BEGIN + (TempSlot / EQ::invbag::SLOT_COUNT);
-				LaurionSlot.SubIndex = TempSlot - ((LaurionSlot.Slot - invslot::GENERAL_BEGIN) * EQ::invbag::SLOT_COUNT);
+			else if (EQ::invbag::IsGeneralBagSlot(EQ::versions::ClientVersion::Laurion, server_slot)) {
+				LaurionSlot.Slot = ServerGeneralSlotToLaurion(EQ::invbag::GeneralBagParentSlot(EQ::versions::ClientVersion::Laurion, server_slot));
+				LaurionSlot.SubIndex = EQ::invbag::GeneralBagIndex(EQ::versions::ClientVersion::Laurion, server_slot);
 			}
 		}
 
@@ -5654,7 +5658,8 @@ namespace Laurion
 
 		switch (laurion_slot.Type) {
 		case invtype::typePossessions: {
-			if (laurion_slot.Slot >= invslot::POSSESSIONS_BEGIN && laurion_slot.Slot <= invslot::POSSESSIONS_END) {
+			if (laurion_slot.Slot >= invslot::POSSESSIONS_BEGIN &&
+				laurion_slot.Slot <= EQ::invslot::PossessionsEnd(EQ::versions::ClientVersion::Laurion)) {
 				if (laurion_slot.SubIndex == invbag::SLOT_INVALID) {
 					server_slot = LaurionGeneralSlotToServer(laurion_slot.Slot);
 				}
@@ -5813,9 +5818,14 @@ namespace Laurion
 
 		switch (laurion_type) {
 		case invtype::typePossessions: {
-			if (laurion_slot.Slot >= invslot::POSSESSIONS_BEGIN && laurion_slot.Slot <= invslot::POSSESSIONS_END) {
+			// Laurion numbers the inventory window as 23 equipment slots (0-22), 12 general slots (client
+			// 23-34) and a cursor at client slot 35. The canonical RoF2 range this function is otherwise
+			// written against stops at 33, so client slots 34 and 35 used to be rejected outright.
+			if (laurion_slot.Slot >= invslot::POSSESSIONS_BEGIN &&
+				laurion_slot.Slot <= EQ::invslot::PossessionsEnd(EQ::versions::ClientVersion::Laurion)) {
 				if (laurion_slot.SubIndex == invbag::SLOT_INVALID) {
-					ServerSlot = laurion_slot.Slot;
+					// Remap Laurion's two extra general slots onto the canonical ids EQEmu stores them on.
+					ServerSlot = LaurionGeneralSlotToServer(laurion_slot.Slot);
 				}
 
 				else if (laurion_slot.SubIndex >= invbag::SLOT_BEGIN && laurion_slot.SubIndex <= invbag::SLOT_END) {
