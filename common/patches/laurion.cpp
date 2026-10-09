@@ -5292,10 +5292,11 @@ namespace Laurion
 		// slotGeneral1), so the slot number alone cannot tell the two apart - only the packet type can.
 		// Routing every possession item through the corpse conversion made all general slots resolve to a
 		// corpse container index, which is why the inventory window showed nothing and the food/water check
-		// failed. Keep the corpse branch for the loot packet and for canonical ids above the possessions
-		// range, which is where the AdvLoot rows actually live.
+		// failed. AdvLoot rows do live in 23..56, so the corpse branch is keyed on the packet type: loot, and
+		// the profile insert types when the slot is inside the canonical corpse range. The tradeskill combine
+		// slot is 1000, so it never collides.
 		if (packet_type == ItemPacketLoot ||
-			(IsLaurionCorpseSlot(slot_id_in) && slot_id_in > EQ::invslot::PossessionsEnd(EQ::versions::ClientVersion::Laurion))) {
+			((packet_type == ItemPacketWorldContainer || packet_type == ItemPacketViewLink) && IsLaurionCorpseSlot(slot_id_in))) {
 			slot_id = ServerToLaurionCorpseSlot(slot_id_in);
 		}
 		else {
