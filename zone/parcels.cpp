@@ -678,7 +678,13 @@ void Client::DoParcelRetrieve(const ParcelRetrieve_Struct &parcel_in)
 		m_parcels.begin(),
 		m_parcels.end(),
 		[&](const std::pair<uint32, CharacterParcelsRepository::CharacterParcels> &x) {
-			return x.first == parcel_in.parcel_slot_id && x.second.item_id == parcel_in.parcel_item_id;
+			if (x.first != parcel_in.parcel_slot_id) {
+				return false;
+			}
+			// The client's retrieve packet (FUN_14045cc40) carries one u64 at payload +10, which is the
+			// parcel slot. It does not carry an item id, so the high half - parcel_item_id - is always zero
+			// for Laurion clients and the original item_id comparison could never match.
+			return parcel_in.parcel_item_id == 0 || x.second.item_id == parcel_in.parcel_item_id;
 		}
 	);
 	if (p != m_parcels.end()) {
