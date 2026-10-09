@@ -5288,10 +5288,14 @@ namespace Laurion
 		buffer.WriteUInt32(stacksize);
 
 		structs::InventorySlot_Struct slot_id{};
-		// A corpse item is addressed by its corpse container index, not by an equipment slot. This has to
-		// cover the profile-insert packet types as well (ItemPacketViewLink / ItemPacketWorldContainer), which
-		// is the only way an AdvLoot row ever gets an item object the client can look up.
-		if (packet_type == ItemPacketLoot || IsLaurionCorpseSlot(slot_id_in)) {
+		// Canonical ids 23..35 are shared by the general slots and the corpse container (CORPSE_BEGIN is
+		// slotGeneral1), so the slot number alone cannot tell the two apart - only the packet type can.
+		// Routing every possession item through the corpse conversion made all general slots resolve to a
+		// corpse container index, which is why the inventory window showed nothing and the food/water check
+		// failed. Keep the corpse branch for the loot packet and for canonical ids above the possessions
+		// range, which is where the AdvLoot rows actually live.
+		if (packet_type == ItemPacketLoot ||
+			(IsLaurionCorpseSlot(slot_id_in) && slot_id_in > EQ::invslot::PossessionsEnd(EQ::versions::ClientVersion::Laurion))) {
 			slot_id = ServerToLaurionCorpseSlot(slot_id_in);
 		}
 		else {
