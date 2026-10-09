@@ -14889,6 +14889,20 @@ void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)
 				inst2->SetMerchantCount(merchant_quantity);
 
 				SendItemPacket(freeslot - 1, inst2, ItemPacketMerchant);
+
+				// The client's Recover page is not filled by the item packet. Its handler for 0x4ce4
+				// (live thunk 0x7FF7840EC8C0 -> FUN_140455510) reads a u64 at payload +8 and passes it to
+				// MerchantPageHandler::AddItemToArray. Live capture confirmed that u64 is the merchant slot,
+				// not an item instance id, so the sell path has to send this or the Recover tab stays empty.
+				auto delitempacket = new EQApplicationPacket(OP_ShopDelItem, sizeof(Merchant_DelItem_Struct));
+				Merchant_DelItem_Struct* delitem = (Merchant_DelItem_Struct*)delitempacket->pBuffer;
+				delitem->npcid      = vendor->GetID();
+				delitem->playerid   = GetID();
+				delitem->itemslot   = freeslot - 1;
+				delitem->unknown012 = 0;
+				QueuePacket(delitempacket);
+				safe_delete(delitempacket);
+
 				safe_delete(inst2);
 
 				break;
