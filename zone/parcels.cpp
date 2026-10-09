@@ -668,6 +668,12 @@ void Client::SendParcelDeliveryToWorld(const Parcel_Struct &parcel)
 
 void Client::DoParcelRetrieve(const ParcelRetrieve_Struct &parcel_in)
 {
+	// Diagnostic: the client sends a single u64 at payload +10, so the split fields here are what the
+	// packet actually carried. LogNetcode is Detail level, so enable LogNetcode in the zone logs to see it.
+	Log(Logs::Detail, Logs::Netcode,
+		"DoParcelRetrieve: merchant_entity_id={} parcel_slot_id={} parcel_item_id={} loaded_parcels={}",
+		parcel_in.merchant_entity_id, parcel_in.parcel_slot_id, parcel_in.parcel_item_id, m_parcels.size());
+
 	auto merchant = entity_list.GetNPCByID(parcel_in.merchant_entity_id);
 	if (!merchant) {
 		SendParcelRetrieveAck();
@@ -688,7 +694,10 @@ void Client::DoParcelRetrieve(const ParcelRetrieve_Struct &parcel_in)
 		}
 	);
 	if (p != m_parcels.end()) {
-		uint32 item_id       = parcel_in.parcel_item_id;
+		// Take the item id from the parcel row, not from the packet. Laurion's retrieve packet carries a
+		// single u64 (the parcel slot) and no item id, so parcel_item_id is zero for this client. The
+		// canonical clients still send an item id, so keep it when it is present.
+		uint32 item_id       = parcel_in.parcel_item_id ? parcel_in.parcel_item_id : p->second.item_id;
 		uint32 item_quantity = p->second.quantity;
 		if (!item_id) {
 			LogError(
