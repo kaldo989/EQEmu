@@ -680,4 +680,5 @@ N(OP_CharListReady),
 N(OP_CharListWindowUpdate),
 N(OP_ServerList),
 N(OP_CharacterSelectRequest),
+N(OP_ItemLuck),
 // mail and chat opcodes located in ../mail_oplist.h

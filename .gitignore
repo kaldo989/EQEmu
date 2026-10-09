@@ -70,6 +70,8 @@ compile_flags.txt
 /charselect.md
 /crashfix.md
 /docs_unknown_opcodes.md
+/itemdisplay.md
+/merchant.md
 
 # Local tooling / scratch artifacts
 /.mcp.json
@@ -80,6 +82,7 @@ compile_flags.txt
 /_confbak/
 /_d*.txt
 /savedChanges.patch
+/*.log
 
 # Build pipeline
 !utils/scripts/build/

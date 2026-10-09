@@ -458,6 +458,7 @@ set(gm_command_sources
     gm_commands/instance.cpp
     gm_commands/interrogateinv.cpp
     gm_commands/interrupt.cpp
+    gm_commands/itemluck.cpp
     gm_commands/invsnapshot.cpp
     gm_commands/ipban.cpp
     gm_commands/kick.cpp

@@ -254,7 +254,7 @@ namespace Laurion
 			ItemPacketLoot = 0x66,
 			ItemPacketTrade = 0x67,
 			//looks like they added something at 0x68 that didn't exist before and shifted everything after it up by 1
-			ItemPacketUnknown068 = 0x68, //Not sure but it seems to deal with the cursor somehow.
+			ItemPacketViewLink = 0x68, // FUN_1401ee360 routes this type to the profile insert (FUN_140658890).
 			ItemPacketCharInventory = 0x6A, //Rof 0x69 -> Larion 0x6a (requires translation)
 			ItemPacketLimbo = 0x6B, //0x6A -> 0x6B
 			ItemPacketWorldContainer = 0x6C,

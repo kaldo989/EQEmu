@@ -106,6 +106,12 @@ namespace Laurion
 		return server_slot;
 	}
 
+	// EQEmu addresses a corpse with canonical ids 23..58, the client's corpse container is indexed 0..35.
+	static inline bool IsLaurionCorpseSlot(int16 server_slot)
+	{
+		return server_slot >= EQ::invslot::CORPSE_BEGIN && server_slot <= EQ::invslot::CORPSE_END;
+	}
+
 	void Register(EQStreamIdentifier& into)
 	{
 		//create our opcode manager if we havent already
@@ -875,6 +881,105 @@ namespace Laurion
 			dest->FastQueuePacket(&outapp, ack_req);
 		}
 		}
+
+		delete in;
+	}
+
+	ENCODE(OP_ItemLinkResponse) // 0x609c
+	{
+		// Reply to CItemDisplayWnd::SendItemLink, consumed by FUN_1401fb540 -> FUN_140410b20. Every
+		// string here is length prefixed and not null terminated (FUN_1405646e0). The client only
+		// enriches a display window that is already open, so this cannot open the window by itself.
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+		uchar* __emu_buffer = in->pBuffer;
+
+		EQ::InternalSerializedItem_Struct* int_struct = (EQ::InternalSerializedItem_Struct*)(&__emu_buffer[4]);
+		const EQ::ItemInstance* inst = (const EQ::ItemInstance*)int_struct->inst;
+
+		if (!inst) {
+			delete in;
+			return;
+		}
+
+		const EQ::ItemData* item = inst->GetItem();
+		if (!item) {
+			delete in;
+			return;
+		}
+
+		// Field order as read by FUN_1401fb540, and where FUN_140410b20 lands each one:
+		//   u32 item number   -> matched against CItemDisplayWnd::pItem (offset 0x3f8)
+		//   u8  bCollected    -> window offset 0x488
+		//   u8  bScribed      -> window offset 0x498
+		//   IString           -> display name, window offset 0x490 (falls back to the definition when empty)
+		//   IString           -> advanced lore text, window offset 0x3d8
+		//   u8                -> window offset 0x48b
+		//   u32               -> window offset 0x48c, only applied when non zero
+		//   IString           -> "Made By:" text, window offset 0x3e0
+		// EQEmu has no maker or advanced lore tables and no per character collected/scribed state, so
+		// those stay empty and the client keeps whatever the item definition already gave it.
+		SerializeBuffer buffer;
+		buffer.WriteUInt32(item->ID);
+		buffer.WriteUInt8(0);
+		buffer.WriteUInt8(0);
+		buffer.WriteLengthString(std::string(item->Name));
+		buffer.WriteLengthString(std::string(""));
+		buffer.WriteUInt8(0);
+		buffer.WriteUInt32(0);
+		buffer.WriteLengthString(std::string(""));
+
+		auto outapp = new EQApplicationPacket(OP_ItemLinkResponse, buffer.size());
+		outapp->WriteData(buffer.buffer(), buffer.size());
+		dest->FastQueuePacket(&outapp, ack_req);
+
+		delete in;
+	}
+
+	ENCODE(OP_ItemLuck) // 0x1d00
+	{
+		// Item instance luck roll, consumed by FUN_1401fb190. Variable length wire form:
+		//   null terminated GUID string  (FUN_1401f0b50 keeps at most 16 bytes, then zero pads)
+		//   u32 length + bytes           (FUN_1405646e0; this handler reads it and never uses it)
+		//   u32                          (item number, also unused by this handler)
+		//   u32 luck                     (gated by ItemDefinition::MinLuck .. MaxLuck, FUN_14060e5c0)
+		// The GUID is resolved by FUN_1402cfce0, which walks the profile container array and compares
+		// ItemBase + 0xc / + 0x14 / + 0x1c. On a match the client writes ItemBase::Luck (0x100) and then
+		// calls CItemDisplayManager::UpdateItem(item, 2) and CItemFuseWnd::UpdateItem(item). Both only
+		// repaint windows that already show this GUID, so this packet can refresh an open item stats
+		// popup but cannot open one.
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+		uchar* __emu_buffer = in->pBuffer;
+
+		uint32_t item_number = *(uint32_t*)&__emu_buffer[0];
+		uint32_t luck        = *(uint32_t*)&__emu_buffer[4];
+
+		EQ::InternalSerializedItem_Struct* int_struct = (EQ::InternalSerializedItem_Struct*)(&__emu_buffer[8]);
+		const EQ::ItemInstance* inst = (const EQ::ItemInstance*)int_struct->inst;
+
+		if (!inst) {
+			delete in;
+			return;
+		}
+
+		const EQ::ItemData* item = inst->GetItem();
+		if (!item) {
+			delete in;
+			return;
+		}
+
+		// SerializeItemDefinition writes MinLuck and MaxLuck as 0, so the client gate currently accepts
+		// only 0. Anything else is dropped before the display window is touched.
+		SerializeBuffer buffer;
+		buffer.WriteString(fmt::format("{:016}", inst->GetSerialNumber()));
+		buffer.WriteLengthString(std::string(""));
+		buffer.WriteUInt32(item_number ? item_number : item->ID);
+		buffer.WriteUInt32(luck);
+
+		auto outapp = new EQApplicationPacket(OP_ItemLuck, buffer.size());
+		outapp->WriteData(buffer.buffer(), buffer.size());
+		dest->FastQueuePacket(&outapp, ack_req);
 
 		delete in;
 	}
@@ -4042,10 +4147,45 @@ namespace Laurion
 
 		IN(lootee);
 		IN(looter);
-		emu->slot_id = static_cast<uint16>(eq->slot_id);
+		// The client echoes back the main_slot it was handed for the row, which is a corpse container index
+		// (0..CORPSE_SIZE-1), not EQEmu's canonical corpse id.
+		emu->slot_id = static_cast<uint16>(LaurionToServerCorpseMainSlot(eq->slot_id));
 		emu->unknown3[0] = 0;
 		emu->unknown3[1] = 0;
 		IN(auto_loot);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_ItemLinkResponse) // 0x609c
+	{
+		// CItemDisplayWnd::SendItemLink (FUN_14040fbf0) sends the item stats request on the same opcode
+		// the client reads the reply on. EQEmu resolves 0x609c to OP_ItemLinkResponse, so this decoder is
+		// what sees the incoming request, and Handle_OP_ItemLinkResponse then expects the fixed size
+		// LDONItemViewRequest_Struct. Rebuild that from the variable length wire form.
+		DECODE_LENGTH_ATLEAST(structs::ItemDisplayRequest_Struct);
+
+		unsigned char* __eq_buffer = __packet->pBuffer;
+		uint32 wire_size = __packet->size;
+		char* InBuffer = (char*)__eq_buffer;
+
+		uint32 item_number = VARSTRUCT_DECODE_TYPE(uint32, InBuffer);
+		uint32 maker_id = VARSTRUCT_DECODE_TYPE(uint32, InBuffer);
+		uint32 name_length = VARSTRUCT_DECODE_TYPE(uint32, InBuffer);
+
+		__packet->size = sizeof(LDONItemViewRequest_Struct);
+		__packet->pBuffer = new unsigned char[__packet->size] {};
+		LDONItemViewRequest_Struct* emu = (LDONItemViewRequest_Struct*)__packet->pBuffer;
+
+		// The name is length prefixed and not null terminated, so clamp it to what actually arrived.
+		if (name_length > wire_size - 12)
+			name_length = wire_size - 12;
+		if (name_length > sizeof(emu->item_name) - 1)
+			name_length = sizeof(emu->item_name) - 1;
+
+		emu->item_id = item_number;
+		memcpy(emu->unknown004, &maker_id, sizeof(emu->unknown004));
+		memcpy(emu->item_name, InBuffer, name_length);
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -5148,13 +5288,14 @@ namespace Laurion
 		buffer.WriteUInt32(stacksize);
 
 		structs::InventorySlot_Struct slot_id{};
-		switch (packet_type) {
-		case ItemPacketLoot:
+		// A corpse item is addressed by its corpse container index, not by an equipment slot. This has to
+		// cover the profile-insert packet types as well (ItemPacketViewLink / ItemPacketWorldContainer), which
+		// is the only way an AdvLoot row ever gets an item object the client can look up.
+		if (packet_type == ItemPacketLoot || IsLaurionCorpseSlot(slot_id_in)) {
 			slot_id = ServerToLaurionCorpseSlot(slot_id_in);
-			break;
-		default:
+		}
+		else {
 			slot_id = ServerToLaurionSlot(slot_id_in);
-			break;
 		}
 
 		//u32 slot_type;
@@ -5673,7 +5814,10 @@ namespace Laurion
 		uint32 LaurionSlot = invslot::SLOT_INVALID;
 
 		if (server_corpse_slot <= EQ::invslot::CORPSE_END && server_corpse_slot >= EQ::invslot::CORPSE_BEGIN) {
-			LaurionSlot = server_corpse_slot;
+			// FUN_140657530 validates a global index as container < 0x2a && slot < container size, and the
+			// client's corpse container is CORPSE_SIZE (36) slots indexed from 0. EQEmu's canonical ids have to
+			// be rebased - anything from 36 up is rejected, so those loot rows can never be resolved.
+			LaurionSlot = server_corpse_slot - EQ::invslot::CORPSE_BEGIN;
 		}
 
 		LogNetcode("Convert Server Corpse Slot [{}] to Laurion Corpse Main Slot [{}]", server_corpse_slot, LaurionSlot);
@@ -5864,8 +6008,8 @@ namespace Laurion
 	{
 		uint32 ServerSlot = EQ::invslot::SLOT_INVALID;
 
-		if (laurion_corpse_slot <= invslot::CORPSE_END && laurion_corpse_slot >= invslot::CORPSE_BEGIN) {
-			ServerSlot = laurion_corpse_slot;
+		if (laurion_corpse_slot < static_cast<uint32>(invtype::CORPSE_SIZE)) {
+			ServerSlot = laurion_corpse_slot + EQ::invslot::CORPSE_BEGIN;
 		}
 
 		LogNetcode("Convert Laurion Corpse Main Slot [{}] to Server Corpse Slot [{}]", laurion_corpse_slot, ServerSlot);

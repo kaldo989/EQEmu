@@ -22,6 +22,7 @@
 #include "common/evolving_items.h"
 #include "common/repositories/character_corpse_items_repository.h"
 #include "common/strings.h"
+#include "common/patches/laurion_structs.h"
 #include "zone/bot.h"
 #include "zone/queryserv.h"
 #include "zone/quest_parser_collection.h"
@@ -3038,6 +3039,34 @@ void Client::SendItemPacket(int16 slot_id, const EQ::ItemInstance* inst, ItemPac
 	itempacket = (ItemPacket_Struct*)outapp->pBuffer;
 	memcpy(itempacket->SerializedItem, packet.c_str(), packet.length());
 	itempacket->PacketType = packet_type;
+
+#if EQDEBUG >= 9
+		DumpPacket(outapp);
+#endif
+	FastQueuePacket(&outapp);
+}
+
+// Opcode 0x1d00. The Laurion encoder turns this internal carrier into the variable length wire form
+// FUN_1401fb190 reads. The client resolves the GUID through the profile container walk, so the instance
+// must already be known to the client at the slot we sent it to - a freshly created item has a different
+// serial number and will not match. The packet only repaints a display window that is already showing
+// this instance, so open the stats popup first and this will re-render it.
+void Client::SendItemLuckPacket(int16 slot_id, const EQ::ItemInstance* inst, uint32 luck)
+{
+	if (!inst || !eqs) {
+		return;
+	}
+
+	EQApplicationPacket* outapp = new EQApplicationPacket(OP_ItemLuck,
+		sizeof(Laurion::structs::ItemLuck_Struct) + sizeof(EQ::InternalSerializedItem_Struct));
+
+	Laurion::structs::ItemLuck_Struct* p = (Laurion::structs::ItemLuck_Struct*)outapp->pBuffer;
+	p->item_number = inst->GetItem() ? inst->GetItem()->ID : 0;
+	p->luck = luck;
+
+	EQ::InternalSerializedItem_Struct* isi = (EQ::InternalSerializedItem_Struct*)(outapp->pBuffer + sizeof(Laurion::structs::ItemLuck_Struct));
+	isi->slot_id = slot_id;
+	isi->inst = (const void*)inst;
 
 #if EQDEBUG >= 9
 		DumpPacket(outapp);

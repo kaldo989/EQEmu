@@ -1436,6 +1436,19 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 		if (!c->advloot_enabled) {
 			c->SendItemPacket(loot_slot, inst, ItemPacketLoot);
 		}
+		else {
+			// AdvLoot has no inv slots, so a row can only be inspected if the client can resolve the item
+			// through the corpse container. ItemPacketWorldContainer (Laurion 0x6C) is the packet type
+			// FUN_1401ee360 routes straight to the profile insert (FUN_140658890) without touching CLootWnd,
+			// so the row gets an item object at its corpse container index without opening the legacy window.
+			c->SendItemPacket(loot_slot, inst, ItemPacketWorldContainer);
+		}
+
+		// Follow the insert with the GUID keyed refresh. This is the half of the 0x1d00 path that can be
+		// observed: the instance is now in the client's corpse container, so FUN_1401fb190 can resolve the
+		// GUID and repaint any display window already showing it. It cannot open one by itself.
+		c->SendItemLuckPacket(loot_slot, inst, 0);
+
 		safe_delete(inst);
 
 		i->lootslot = loot_slot++;

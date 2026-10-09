@@ -1236,6 +1236,26 @@ namespace Laurion {
 			/*20*/
 		};
 
+		// OP_0x609c request. CItemDisplayWnd::SendItemLink (FUN_14040fbf0) writes the item number and
+		// maker id, then appends a length prefixed name through FUN_1405645d0 (u32 length + bytes, no
+		// terminator). The same opcode carries the reply back, so this is the fixed part only.
+		struct ItemDisplayRequest_Struct { // OP_0x609c, variable payload (FUN_14040fbf0)
+			/*00*/	uint32	item_number;    // ItemDefinition::ItemNumber (FUN_140612830)
+			/*04*/	uint32	maker_id;       // ItemDefinition::MakerID (FUN_140610b80)
+			/*08*/	uint32	name_length;    // length prefix, not null terminated
+			/*12*/	char	name[1];
+			/*xx*/
+		};
+
+		// OP_0x1d00 wire form is variable length (null terminated GUID, then length prefixed strings),
+		// so this is only the internal carrier EQEmu uses to reach the encoder. The instance pointer is
+		// carried by the standard EQ::InternalSerializedItem_Struct that follows it.
+		struct ItemLuck_Struct { // OP_0x1d00 internal carrier
+			/*00*/	uint32	item_number;    // ItemDefinition::ItemNumber, informational
+			/*04*/	uint32	luck;           // must fall inside ItemDefinition::MinLuck .. MaxLuck
+			/*08*/
+		};
+
 		struct Consume_Struct { // OP_0x5ef7, 20 byte payload (FUN_1401d4020)
 			/*00*/	uint32	slot;           // inventory slot of the item being consumed
 			/*04*/	uint32	unknown4;       // item global index

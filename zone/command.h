@@ -123,6 +123,7 @@ void command_illusion_block(Client* c, const Seperator* sep);
 void command_instance(Client *c, const Seperator *sep);
 void command_interrogateinv(Client *c, const Seperator *sep);
 void command_interrupt(Client *c, const Seperator *sep);
+void command_itemluck(Client *c, const Seperator *sep);
 void command_invsnapshot(Client *c, const Seperator *sep);
 void command_ipban(Client *c, const Seperator *sep);
 void command_kick(Client *c, const Seperator *sep);
