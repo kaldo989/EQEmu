@@ -18,6 +18,7 @@
 #include "entity.h"
 
 #include "common/data_verification.h"
+#include "common/patches/laurion_structs.h"
 #include "common/features.h"
 #include "common/guilds.h"
 #include "zone/bot.h"
@@ -4993,9 +4994,26 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 			Buffer += sizeof(WhoAllPlayerPart1) + strlen(WAPP1->Name);
 			WhoAllPlayerPart2* WAPP2 = (WhoAllPlayerPart2*)Buffer;
 
-			if (ClientEntry->IsTrader())
+			// Laurion reads the status markers as a bitmask at entry +4, a slot the base struct
+			// does not have. Unknown80[1] is the only status slot available, so it carries the
+			// bitmask for Laurion and keeps the string ids for older clients.
+			bool is_laurion = (c->ClientVersion() == EQ::versions::ClientVersion::Laurion);
+			uint32 StatusFlags = 0xFFFFFFFF;
+
+			if (is_laurion) {
+				StatusFlags = 0;
+				if (ClientEntry->GetAFK())    StatusFlags |= Laurion::structs::WHOAF_AFK;
+				if (ClientEntry->IsLD())      StatusFlags |= Laurion::structs::WHOAF_LINKDEAD;
+				if (ClientEntry->IsTrader())  StatusFlags |= Laurion::structs::WHOAF_TRADER;
+				if (ClientEntry->IsBuyer())   StatusFlags |= Laurion::structs::WHOAF_BUYER;
+				if (ClientEntry->IsDead())    StatusFlags |= Laurion::structs::WHOAF_RIP;
+			}
+
+			// Trader and buyer are bitmask bits on Laurion, so they must not also be written as
+			// rank strings there.
+			if (!is_laurion && ClientEntry->IsTrader())
 				WAPP2->RankMSGID = 12315;
-			else if (ClientEntry->IsBuyer())
+			else if (!is_laurion && ClientEntry->IsBuyer())
 				WAPP2->RankMSGID = 6056;
 			else if (ClientEntry->Admin() >= AccountStatus::Steward && ClientEntry->GetGM())
 				WAPP2->RankMSGID = 12312;
@@ -5007,7 +5025,9 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 			WhoAllPlayerPart3* WAPP3 = (WhoAllPlayerPart3*)Buffer;
 			WAPP3->Unknown80[0] = 0xFFFFFFFF;
 
-			if (ClientEntry->IsLD())
+			if (is_laurion)
+				WAPP3->Unknown80[1] = StatusFlags;
+			else if (ClientEntry->IsLD())
 				WAPP3->Unknown80[1] = 12313; // LinkDead
 			else
 				WAPP3->Unknown80[1] = 0xFFFFFFFF;

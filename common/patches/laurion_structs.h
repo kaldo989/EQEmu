@@ -1433,6 +1433,62 @@ namespace Laurion {
 			/*008*/
 		};
 
+		/* 0x6404 OP_WhoAllResponse - /who all reply - variable length */
+		/* Handler: FUN_140204e70. The 64 byte header matches the base WhoAllReturnStruct. */
+		/* Laurion carries one extra dword per player entry: a status bitmask at +4, which
+		 * shifts the pid string id to +8 and the name to +12. Everything after the name is in
+		 * the same order as the base struct, except for an additional string between Zone and
+		 * Class that is only present when bit 9 of the bitmask is set.
+		 *   +0  uint32 FormatStringID   eqstr 5022-5025 (player line), 5026/5027 (zone line)
+		 *   +4  uint32 Flags            see WhoAllFlags below
+		 *   +8  uint32 PidStringID      eqstr 5003 "(USER %1: PID %2)" / 5004 "(USER PID %1)"
+		 *   +12 char Name[]             null terminated
+		 *       uint32 RankStringID     guild rank / status string id
+		 *       char Guild[]            null terminated
+		 *       uint32 Field0           base Unknown80[0]
+		 *       uint32 Field1           base Unknown80[1]
+		 *       uint32 ZoneStringID     base ZoneMSGID, eqstr 5006 "ZONE: %1"
+		 *       uint32 Zone             base Zone
+		 *       [char Extra[]]          only when Flags & 0x200
+		 *       uint32 Class            base Class_
+		 *       uint32 Level            base Level
+		 *       uint32 Race             base Race
+		 *       char Account[]          base Account
+		 *       uint32 Field100         base Unknown100
+		 */
+		struct WhoAllPlayerHead_Struct {
+			/*000*/	uint32	FormatStringID;
+			/*004*/	uint32	Flags;
+			/*008*/	uint32	PidStringID;
+			/*012*/	char	Name[1];
+		};
+
+		/* Status bitmask bits decoded by FUN_140204e70 */
+		static const uint32 WHOAF_AFK      = 0x001;	// eqstr 12311 " AFK "
+		static const uint32 WHOAF_LINKDEAD = 0x008;	// eqstr 12313 " <LINKDEAD>"
+		static const uint32 WHOAF_TRADER   = 0x010;	// eqstr 12315 " TRADER"
+		static const uint32 WHOAF_BUYER    = 0x020;	// eqstr 6056  " BUYER"
+		static const uint32 WHOAF_RIP      = 0x040;	// eqstr 12958 " * RIP *"
+		static const uint32 WHOAF_EXTRA    = 0x200;	// extra string present in the entry
+		static const uint32 WHOAF_OFFLINE  = 0x400;	// eqstr 767   "OFFLINE "
+
+		/* 0x2a09 OP_WhoAllRequest - /who / /who all - payload 168 */
+		/* Sender: FUN_140281340, which copies the whole 168 byte stack frame out verbatim. */
+		struct WhoAllRequest_Struct {
+			/*000*/	char	Name[64];           /* search word, or guild name when LookupType == -6 */
+			/*064*/	char	Unknown064[64];     /* zeroed, never written by the sender */
+			/*128*/	uint32	Race;               /* -1 = any race */
+			/*132*/	uint32	Class;              /* -1 = any class */
+			/*136*/	uint32	LevelLow;           /* -1 = any level */
+			/*140*/	uint32	LevelHigh;          /* -1 = any level */
+			/*144*/	uint32	GmLookup;           /* -1 unspecified, 0 = NONGM, 1 = GM */
+			/*148*/	uint32	LookupType;         /* -1 none, -2 friend, -3 LFG, -4 trader, -5 buyer, -6 guild */
+			/*152*/	uint64	GuildID;            /* 0 unless LookupType == -6 */
+			/*160*/	uint32	Type;               /* matched word slot: 0 = /who, 3 = /who all */
+			/*164*/	uint32	Unknown164;         /* zeroed, never written by the sender */
+			/*168*/
+		};
+
 #pragma pack()
 
 	};	//end namespace structs

@@ -4376,6 +4376,105 @@ namespace Laurion
 		// subcommands 0 and 1 carry a runtime record block that cannot be described statically
 	}
 
+	DECODE(OP_WhoAllRequest) // 0x2a09 - /who and /who all
+	{
+		DECODE_LENGTH_EXACT(structs::WhoAllRequest_Struct);
+		SETUP_DIRECT_DECODE(Who_All_Struct, structs::WhoAllRequest_Struct);
+
+		// field names differ between the base struct and the Laurion wire struct
+		strncpy(emu->whom, eq->Name, sizeof(emu->whom));
+		emu->whom[sizeof(emu->whom) - 1] = '\0';
+
+		emu->wrace   = eq->Race;
+		emu->wclass  = eq->Class;
+		emu->lvllow  = eq->LevelLow;
+		emu->lvlhigh = eq->LevelHigh;
+		emu->gmlookup = eq->GmLookup;
+
+		// Laurion keeps the filter mode in its own field and the guild id as a 64 bit value.
+		// The base struct folds both into guildid, so rebuild it here.
+		if (eq->LookupType == 0xFFFFFFFF) {
+			emu->guildid = 0xFFFFFFFF;             // no guild filter
+		} else if (eq->LookupType == 0xFFFFFFFA) { // guild
+			emu->guildid = static_cast<uint32>(eq->GuildID);
+		} else {
+			emu->guildid = eq->LookupType;          // LFG / trader / buyer specials
+		}
+
+		emu->type = eq->Type;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	ENCODE(OP_WhoAllResponse) // 0x6404 - /who all reply
+	{
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		WhoAllReturnStruct* emu = (WhoAllReturnStruct*)in->pBuffer;
+		uint32 entry_count = emu->playercount;
+		uint32 old_size = in->size;
+
+		unsigned char* old_buffer = in->pBuffer;
+
+		// Laurion carries one extra dword per player entry (the status bitmask at +4), so the
+		// outgoing packet is 4 bytes larger per entry. The 64 byte header is unchanged.
+		in->size = old_size + 4 * entry_count;
+		in->pBuffer = new unsigned char[in->size];
+		memset(in->pBuffer, 0, in->size);
+
+		memcpy(in->pBuffer, old_buffer, sizeof(WhoAllReturnStruct));
+
+		char* src = (char*)old_buffer + sizeof(WhoAllReturnStruct);
+		char* end = (char*)old_buffer + old_size;
+		char* OutBuffer = (char*)in->pBuffer + sizeof(WhoAllReturnStruct);
+
+		for (uint32 i = 0; i < entry_count && src < end; ++i) {
+			uint32 FormatStringID = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 PidStringID    = VARSTRUCT_DECODE_TYPE(uint32, src);
+			char Name[128];       VARSTRUCT_DECODE_STRING(Name, src);
+			uint32 RankStringID   = VARSTRUCT_DECODE_TYPE(uint32, src);
+			char Guild[128];      VARSTRUCT_DECODE_STRING(Guild, src);
+			uint32 Field0         = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 Field1         = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 ZoneStringID   = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 Zone           = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 ClassID         = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 Level          = VARSTRUCT_DECODE_TYPE(uint32, src);
+			uint32 RaceID          = VARSTRUCT_DECODE_TYPE(uint32, src);
+			char Account[128];    VARSTRUCT_DECODE_STRING(Account, src);
+			uint32 Field100       = VARSTRUCT_DECODE_TYPE(uint32, src);
+
+			// ZoneWho writes the status bitmask into Unknown80[1] for Laurion clients. -1 means the
+			// sender had no status information for this entry (the world server path, which does not
+			// track AFK / linkdead / trader state), so it encodes as "no flags".
+			uint32 Flags = (Field1 == 0xFFFFFFFF) ? 0 : Field1;
+
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, FormatStringID);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, Flags);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, PidStringID);
+			VARSTRUCT_ENCODE_STRING(OutBuffer, Name);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, RankStringID);
+			VARSTRUCT_ENCODE_STRING(OutBuffer, Guild);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, Field0);
+			// Field1 only carried the bitmask; the client prints it as a number when it is not -1,
+			// so emit -1 here to keep the flags string clean.
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, 0xFFFFFFFF);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, ZoneStringID);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, Zone);
+			// Laurion has an extra string here, but only when Flags & structs::WHOAF_EXTRA.
+			// Nothing in the base struct can fill it, so that bit is never set.
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, ClassID);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, Level);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, RaceID);
+			VARSTRUCT_ENCODE_STRING(OutBuffer, Account);
+			VARSTRUCT_ENCODE_TYPE(uint32, OutBuffer, Field100);
+		}
+
+		delete[] old_buffer;
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
 	int ExtractIDFile(const std::string& input) {
 		std::string number;
 		for (char ch : input) {
