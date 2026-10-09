@@ -404,6 +404,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_ShopPlayerBuy] = &Client::Handle_OP_ShopPlayerBuy;
 	ConnectedOpcodes[OP_ShopPlayerSell] = &Client::Handle_OP_ShopPlayerSell;
 	ConnectedOpcodes[OP_ShopItem] = &Client::Handle_OP_ShopItem;
+	ConnectedOpcodes[OP_ShopRequestItem] = &Client::Handle_OP_ShopRequestItem;
 	ConnectedOpcodes[OP_ShopRequest] = &Client::Handle_OP_ShopRequest;
 	ConnectedOpcodes[OP_Sneak] = &Client::Handle_OP_Sneak;
 	ConnectedOpcodes[OP_SpawnAppearance] = &Client::Handle_OP_SpawnAppearance;
@@ -12720,6 +12721,9 @@ void Client::Handle_OP_QueryUCSServerStatus(const EQApplicationPacket *app)
 		case EQ::versions::ClientVersion::RoF2:
 			ConnectionType = EQ::versions::ucsRoF2Combined;
 			break;
+		case EQ::versions::ClientVersion::Laurion:
+			ConnectionType = EQ::versions::ucsLaurionCombined;
+			break;
 		default:
 			ConnectionType = EQ::versions::ucsUnknown;
 			break;
@@ -14743,6 +14747,70 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 
 	safe_delete(inst);
 	safe_delete(outapp);
+}
+
+void Client::Handle_OP_ShopRequestItem(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(MerchantRequestItem_Struct)) {
+		LogError("Invalid size on OP_ShopRequestItem: Expected [{}], Got [{}]",
+			sizeof(MerchantRequestItem_Struct), app->size);
+		return;
+	}
+
+	MerchantRequestItem_Struct* mri = (MerchantRequestItem_Struct*)app->pBuffer;
+
+	// Laurion opcode 0x7bcd. The packet carries the local player's spawn id, not the merchant, and the
+	// client only sends it while pinstActiveMerchant is set, so the server resolves the merchant from the
+	// session id recorded by Handle_OP_ShopRequest.
+	Mob* vendor = entity_list.GetMob(GetMerchantSessionEntityID());
+	if (!vendor || !vendor->IsNPC() || vendor->GetClass() != Class::Merchant) {
+		return;
+	}
+
+	if (DistanceSquared(m_Position, vendor->GetPosition()) > USE_NPC_RANGE2) {
+		return;
+	}
+
+	if (mri->quantity < 1) {
+		return;
+	}
+
+	// This request is keyed by item number rather than merchant slot, so find the slot in the merchant
+	// table (and the temporary table) before reusing the buy handler.
+	int merchant_id = vendor->CastToNPC()->MerchantType;
+	uint32 merchant_slot = 0;
+
+	for (const auto& ml : zone->merchanttable[merchant_id]) {
+		if (mri->item_id == ml.item) {
+			merchant_slot = ml.slot;
+			break;
+		}
+	}
+
+	if (!merchant_slot) {
+		for (const auto& ml : zone->tmpmerchanttable[vendor->GetNPCTypeID()]) {
+			if (mri->item_id == ml.item) {
+				merchant_slot = ml.slot;
+				break;
+			}
+		}
+	}
+
+	if (!merchant_slot) {
+		return;
+	}
+
+	auto synthesized = new EQApplicationPacket(OP_ShopPlayerBuy, sizeof(Merchant_Sell_Struct));
+	Merchant_Sell_Struct* mp = (Merchant_Sell_Struct*)synthesized->pBuffer;
+	mp->npcid     = vendor->GetID();
+	mp->playerid  = GetID();
+	mp->itemslot  = merchant_slot;
+	mp->unknown12 = 0;
+	mp->quantity  = mri->quantity;
+	mp->price     = 0;
+
+	Handle_OP_ShopPlayerBuy(synthesized);
+	safe_delete(synthesized);
 }
 
 void Client::Handle_OP_ShopItem(const EQApplicationPacket *app)
