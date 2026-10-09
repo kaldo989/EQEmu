@@ -1278,6 +1278,9 @@ bool Client::HandleEnterWorldPacket(const EQApplicationPacket *app) {
 			case EQ::versions::ClientVersion::RoF2:
 				connection_type = EQ::versions::ucsRoF2Combined;
 				break;
+			case EQ::versions::ClientVersion::Laurion:
+				connection_type = EQ::versions::ucsLaurionCombined;
+				break;
 			default:
 				connection_type = EQ::versions::ucsUnknown;
 				break;

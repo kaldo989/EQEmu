@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <list>
 #include <string>
 #include <vector>
@@ -658,6 +659,14 @@ void Clientlist::Process()
 				char ConnectionTypeIndicator;
 
 				VARSTRUCT_DECODE_STRING(MailBox, PacketBuffer);
+
+				// Laurion clients send the "SOE.EQ." prefix as its own field instead of
+				// embedding it in the mailbox string, so the name part follows it.
+				if (strcmp(MailBox, "SOE.EQ.") == 0) {
+					char NamePart[64];
+					VARSTRUCT_DECODE_STRING(NamePart, PacketBuffer);
+					snprintf(MailBox, sizeof(MailBox), "%s%s", "SOE.EQ.", NamePart);
+				}
 
 				if (strlen(PacketBuffer) != 9) {
 					LogInfo("Mail key is the wrong size. Version of world incompatible with UCS.");
@@ -2264,6 +2273,14 @@ void Client::SetConnectionType(char c) {
 		ClientVersion_ = EQ::versions::ClientVersion::RoF2;
 		UnderfootOrLater = true;
 		LogInfo("Connection type is Combined (RoF2)");
+		break;
+	}
+	case EQ::versions::ucsLaurionCombined:
+	{
+		TypeOfConnection = ConnectionTypeCombined;
+		ClientVersion_ = EQ::versions::ClientVersion::Laurion;
+		UnderfootOrLater = true;
+		LogInfo("Connection type is Combined (Laurion)");
 		break;
 	}
 	default:
