@@ -403,6 +403,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_ShopEnd] = &Client::Handle_OP_ShopEnd;
 	ConnectedOpcodes[OP_ShopPlayerBuy] = &Client::Handle_OP_ShopPlayerBuy;
 	ConnectedOpcodes[OP_ShopPlayerSell] = &Client::Handle_OP_ShopPlayerSell;
+	ConnectedOpcodes[OP_ShopItem] = &Client::Handle_OP_ShopItem;
 	ConnectedOpcodes[OP_ShopRequest] = &Client::Handle_OP_ShopRequest;
 	ConnectedOpcodes[OP_Sneak] = &Client::Handle_OP_Sneak;
 	ConnectedOpcodes[OP_SpawnAppearance] = &Client::Handle_OP_SpawnAppearance;
@@ -14742,6 +14743,30 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 
 	safe_delete(inst);
 	safe_delete(outapp);
+}
+
+void Client::Handle_OP_ShopItem(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(MerchantSellItem_Struct)) {
+		LogError("Invalid size on OP_ShopItem: Expected [{}], Got [{}]",
+			sizeof(MerchantSellItem_Struct), app->size);
+		return;
+	}
+
+	MerchantSellItem_Struct* msi = (MerchantSellItem_Struct*)app->pBuffer;
+
+	// Laurion opcode 0x1634. It carries slot + subindex instead of the 8 byte typeless slot struct
+	// and has no quantity field (the client sells exactly one item). The item id is informational.
+	// The sell rules are identical to 0x6489, so rebuild a canonical request and reuse the handler.
+	auto synthesized = new EQApplicationPacket(OP_ShopPlayerSell, sizeof(Merchant_Purchase_Struct));
+	Merchant_Purchase_Struct* mp = (Merchant_Purchase_Struct*)synthesized->pBuffer;
+	mp->npcid   = msi->npcid;
+	mp->itemslot = msi->itemslot;
+	mp->quantity = 1;
+	mp->price = 0;
+
+	Handle_OP_ShopPlayerSell(synthesized);
+	safe_delete(synthesized);
 }
 
 void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)

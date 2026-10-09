@@ -3893,6 +3893,53 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_ShopItem)
+	{
+		DECODE_LENGTH_EXACT(structs::MerchantSellItem_Request_Struct);
+		SETUP_DIRECT_DECODE(MerchantSellItem_Struct, structs::MerchantSellItem_Request_Struct);
+
+		IN(npcid);
+		// The client only carries slot + subindex here, so rebuild the full struct before converting.
+		structs::TypelessInventorySlot_Struct laurion_slot{};
+		laurion_slot.Slot = eq->slot;
+		laurion_slot.SubIndex = eq->subindex;
+		laurion_slot.AugIndex = -1;
+		laurion_slot.Padding = 0;
+		emu->itemslot = LaurionToServerTypelessSlot(laurion_slot, invtype::typePossessions);
+		IN(item_id);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_ShopSellItemBulk)
+	{
+		DECODE_LENGTH_EXACT(structs::MerchantSellItemBulk_Request_Struct);
+		SETUP_DIRECT_DECODE(MerchantSellItemBulk_Struct, structs::MerchantSellItemBulk_Request_Struct);
+
+		IN(slot_index);
+		IN(npcid);
+		IN(container0d4);
+		IN(container0d8);
+		IN(padding);
+		IN(item_id);
+		IN(price);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_ShopRequestItem)
+	{
+		DECODE_LENGTH_EXACT(structs::MerchantRequestItem_Request_Struct);
+		SETUP_DIRECT_DECODE(MerchantRequestItem_Struct, structs::MerchantRequestItem_Request_Struct);
+
+		IN(ldtype);
+		IN(spawn_id);
+		IN(item_id);
+		IN(quantity);
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_ShopRequest)
 	{
 		DECODE_LENGTH_EXACT(structs::MerchantClickRequest_Struct);

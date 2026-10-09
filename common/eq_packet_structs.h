@@ -2265,6 +2265,35 @@ struct Merchant_DelItem_Struct{
 /*008*/	uint32	itemslot;
 /*012*/	uint32	unknown012;
 };
+
+// Client->server, Laurion opcode 0x1634 (12 bytes). Slot fields are u16 here, not the 8 byte
+// TypelessInventorySlot_Struct used by 0x6489.
+struct MerchantSellItem_Struct {
+/*000*/	uint32	npcid;			// Merchant NPC's entity id
+/*004*/	uint32	itemslot;		// flat typeless slot id after Laurion conversion
+/*008*/	uint32	item_id;
+};
+
+// Client->server, Laurion opcode 0x3c87 (24 bytes). Bulk/stack sell. The price at +20 is computed
+// client side and must be recomputed by the server.
+struct MerchantSellItemBulk_Struct {
+/*000*/	uint32	slot_index;
+/*004*/	uint32	npcid;
+/*008*/	uint32	container0d4;
+/*012*/	int16	container0d8;
+/*014*/	int16	padding;
+/*016*/	uint32	item_id;
+/*020*/	uint32	price;
+};
+
+// Client->server, Laurion opcode 0x7bcd (16 bytes). Purchase request keyed by item number rather
+// than merchant slot.
+struct MerchantRequestItem_Struct {
+/*000*/	uint32	ldtype;
+/*004*/	uint32	spawn_id;
+/*008*/	uint32	item_id;
+/*012*/	uint32	quantity;
+};
 struct Adventure_Purchase_Struct {
 /*000*/	uint32	Type;	// 1 = LDoN, 2 = Discord, 4 = Norrath's Keepers, 5 = Dark Reign
 /*000*/	uint32	npcid;

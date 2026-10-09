@@ -1133,6 +1133,36 @@ namespace Laurion {
 			/*224*/
 		};
 
+		// 0x1634 MerchantSellItem (12 bytes) - shape matches the canonical struct, no padding.
+		struct MerchantSellItem_Request_Struct {
+			/*000*/	uint32	npcid;
+			/*004*/	int16		slot;
+			/*006*/	int16		subindex;
+			/*008*/	uint32	item_id;
+			/*012*/
+		};
+
+		// 0x3c87 MerchantSellItemBulk (24 bytes).
+		struct MerchantSellItemBulk_Request_Struct {
+			/*000*/	uint32	slot_index;
+			/*004*/	uint32	npcid;
+			/*008*/	uint32	container0d4;
+			/*012*/	int16		container0d8;
+			/*014*/	int16		padding;
+			/*016*/	uint32	item_id;
+			/*020*/	uint32	price;
+			/*024*/
+		};
+
+		// 0x7bcd merchant purchase request (16 bytes).
+		struct MerchantRequestItem_Request_Struct {
+			/*000*/	uint32	ldtype;
+			/*004*/	uint32	spawn_id;
+			/*008*/	uint32	item_id;
+			/*012*/	uint32	quantity;
+			/*016*/
+		};
+
 		/*
 		** Cancel Trade struct
 		** Sent when a player cancels a trade
