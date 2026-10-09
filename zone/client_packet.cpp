@@ -14986,11 +14986,21 @@ void Client::Handle_OP_ShopRequest(const EQApplicationPacket *app)
 
 	merchant_id = tmp->CastToNPC()->MerchantType;
 
-	if (ClientVersion() == EQ::versions::ClientVersion::RoF2 && tmp->CastToNPC()->GetParcelMerchant()) {
-		tabs_to_display = SellBuyParcel;
+	// Laurion reports its own client version, so the RoF2-only parcel check below never fired for it and
+	// the parcel tab was unreachable even for a parcel merchant. The Laurion merchant window has three
+	// tabs (Purchase/Sell, Recover, Parcels) and the Recover bit is only meaningful for merchants that
+	// keep sold items, which is what the client's recover page handler reads the list from.
+	bool show_parcel = tmp->CastToNPC()->GetParcelMerchant() &&
+		(ClientVersion() == EQ::versions::ClientVersion::RoF2 ||
+		 ClientVersion() == EQ::versions::ClientVersion::Laurion);
+	bool show_recover = tmp->CastToNPC()->GetKeepsSoldItems() &&
+		ClientVersion() == EQ::versions::ClientVersion::Laurion;
+
+	if (show_parcel) {
+		tabs_to_display = show_recover ? SellBuyRecoverParcel : SellBuyParcel;
 	}
 	else {
-		tabs_to_display = SellBuy;
+		tabs_to_display = show_recover ? SellBuyRecover : SellBuy;
 	}
 
 	int action = MerchantActions::Open;
