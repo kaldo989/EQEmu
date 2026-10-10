@@ -41,6 +41,19 @@ extern FastMath g_Math;
 extern EntityList entity_list;
 extern Zone* zone;
 
+// Death_Struct.attack_skill is not always a skill id. It is either a skill id (0..HIGHEST_SKILL) or
+// already one of the special damage types - DamageTypeSpell (0xE7), DamageTypeBurning (0xFA),
+// DamageTypeChoking (0xFB), DamageTypeFalling (0xFC), DamageTypeUnknown (0xFF). The client reads the
+// field as a signed char and branches on the special values to choose the death message, so they must
+// reach the wire unchanged. SkillDamageTypes has only HIGHEST_SKILL + 1 entries, so indexing it with a
+// special value reads past the end of the array.
+static uint8 ResolveDeathAttackSkill(EQ::skills::SkillType attack_skill) {
+	if (attack_skill > EQ::skills::HIGHEST_SKILL) {
+		return static_cast<uint8>(attack_skill);
+	}
+	return SkillDamageTypes[attack_skill];
+}
+
 //SYNC WITH: tune.cpp, mob.h TuneAttackAnimation
 EQ::skills::SkillType Mob::AttackAnimation(int Hand, const EQ::ItemInstance* weapon, EQ::skills::SkillType skillinuse)
 {
@@ -1892,7 +1905,7 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 			d->spell_id = (is_buff_tic) ? UINT32_MAX : spell;
 	}
 	else {
-		d->attack_skill = SkillDamageTypes[attack_skill];
+		d->attack_skill = ResolveDeathAttackSkill(attack_skill);
 		d->spell_id = UINT32_MAX;
 	}
 
@@ -2602,7 +2615,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			d->spell_id = (is_buff_tic) ? UINT32_MAX : spell;
 	}
 	else {
-		d->attack_skill = SkillDamageTypes[attack_skill];
+		d->attack_skill = ResolveDeathAttackSkill(attack_skill);
 		d->spell_id = UINT32_MAX;
 	}
 

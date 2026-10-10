@@ -820,7 +820,17 @@ typedef enum {
 #define STAT_FRENZY              41
 
 static const uint8 DamageTypeSomething	= 0x1C;	//0x1c is something...
-static const uint8 DamageTypeFalling	= 0xFC;
+// The three values below are the environmental damage types (EQ::constants::EnvironmentalDamage:
+// Lava = 250, Drowning = 251, Falling = 252). The client's death handler (FUN_14026FB00) reads
+// Death_Struct.attack_skill as a signed char and picks the death message from it, so these numbers are
+// what the client expects to see on the wire for an environmental kill:
+//   250 -> 12105 "You have burned to death!"   (other spawn: 12111 "%1 has burned to death!")
+//   251 -> 12104 "You have choked to death, unable to breathe!" (other: 12110)
+//   252 -> 12103 "You have fallen to your death!" (other: 12109 "%1 has fallen to their death!")
+// String texts verified against G:/Games/LS/eqstr_us.txt.
+static const uint8 DamageTypeBurning		= 0xFA;	// 250 - EnvironmentalDamage::Lava
+static const uint8 DamageTypeChoking		= 0xFB;	// 251 - EnvironmentalDamage::Drowning
+static const uint8 DamageTypeFalling	= 0xFC;	// 252 - EnvironmentalDamage::Falling
 static const uint8 DamageTypeSpell		= 0xE7;
 static const uint8 DamageTypeUnknown	= 0xFF;
 

@@ -5732,7 +5732,16 @@ void Client::Handle_OP_Death(const EQApplicationPacket *app)
 	Death_Struct* ds = (Death_Struct*)app->pBuffer;
 
 	//I think this attack_skill value is really a value from SkillDamageTypes...
-	if (ds->attack_skill > EQ::skills::HIGHEST_SKILL) {
+	// It is, but only for values <= HIGHEST_SKILL (77). Above that the field is already a damage type,
+	// and these are the values EQEmu itself sends - DamageTypeSpell (0xE7) and the environmental types
+	// 0xFA/0xFB/0xFC. The guard rejected all of them, so a client-reported spell or environmental kill
+	// was dropped before Death() could run.
+	if (ds->attack_skill > EQ::skills::HIGHEST_SKILL &&
+		ds->attack_skill != DamageTypeSpell &&
+		ds->attack_skill != DamageTypeBurning &&
+		ds->attack_skill != DamageTypeChoking &&
+		ds->attack_skill != DamageTypeFalling &&
+		ds->attack_skill != DamageTypeUnknown) {
 		return;
 	}
 
@@ -6491,7 +6500,14 @@ void Client::Handle_OP_EnvDamage(const EQApplicationPacket *app)
 	}
 
 	if (GetHP() <= 0) {
-		Death(0, 32000, SPELL_UNKNOWN, EQ::skills::SkillHandtoHand);
+		// Pass the environmental type through as the death message type. The client's death handler
+		// (FUN_14026FB00) reads Death_Struct.attack_skill as a signed char and picks the message from it:
+		// 250 -> "You have burned to death!", 251 -> "You have choked to death, unable to breathe!",
+		// 252 -> "You have fallen to your death!" - which are exactly EnvironmentalDamage::Lava,
+		// Drowning and Falling (the same values the EnvDamage2_Struct dmgtype comment lists). Passing
+		// SkillHandtoHand made every environmental death print the generic "You died." instead, because
+		// SkillDamageTypes[HandtoHand] is 4 and the client has no branch for it.
+		Death(0, 32000, SPELL_UNKNOWN, static_cast<EQ::skills::SkillType>(ed->dmgtype));
 	}
 	SendHPUpdate();
 	return;
