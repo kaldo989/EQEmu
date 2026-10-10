@@ -4587,25 +4587,38 @@ namespace Laurion
 
 	DECODE(OP_GroupFollow)
 	{
-		DECODE_LENGTH_EXACT(structs::GroupFollow_Struct);
-		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollow_Struct);
+		// The group invite accept, sent by FUN_140260420 when the invitee clicks FOLLOW in the group
+		// window (also reachable from /follow and the hot button). Laurion sends 156 payload bytes (two
+		// names plus a 28 byte tail), not the 128 byte GroupGeneric_Struct, so normalise down to the emu
+		// struct. Handle_OP_GroupFollow2 only consumes the two names.
+		//
+		// FUN_140260420 picks the opcode from the one shot flag DAT_140eb0b9c, which FUN_1402827f0 sets
+		// only when the invite arrived on 0x1d90. So 0x8de answers an invite from a player who was not
+		// yet in a group (the group is being formed) and 0x70b7 answers an invite from a player already
+		// in a group. Same function, same layout, so both names share this decoder.
+		DECODE_LENGTH_EXACT(structs::GroupFollowAccept_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollowAccept_Struct);
 
-		strn0cpy(emu->name1, eq->Name, sizeof(emu->name1));
-		// name2 is filled by the handler
+		memcpy(emu->name1, eq->inviter_name, sizeof(emu->name1));
+		memcpy(emu->name2, eq->invitee_name, sizeof(emu->name2));
 
 		FINISH_DIRECT_DECODE();
 	}
 
 	DECODE(OP_GroupFollow2)
 	{
-		// The group invite accept. Laurion sends 156 payload bytes (two names plus a 28 byte tail), not
-		// the 128 byte GroupGeneric_Struct, so normalise down to the emu struct. Handle_OP_GroupFollow2
-		// only consumes the two names.
-		DECODE_LENGTH_EXACT(structs::GroupFollowAccept_Struct);
-		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollowAccept_Struct);
+		DECODE_FORWARD(OP_GroupFollow);
+	}
 
-		memcpy(emu->name1, eq->inviter_name, sizeof(emu->name1));
-		memcpy(emu->name2, eq->invitee_name, sizeof(emu->name2));
+	DECODE(OP_GroupAutoFollow)
+	{
+		// /follow <name> - the auto follow request, single null terminated name. This is a different
+		// send site (FUN_14020ee10) from the group window accept, so it needs its own opcode name.
+		DECODE_LENGTH_EXACT(structs::GroupFollow_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollow_Struct);
+
+		strn0cpy(emu->name1, eq->Name, sizeof(emu->name1));
+		// name2 is filled by the handler
 
 		FINISH_DIRECT_DECODE();
 	}

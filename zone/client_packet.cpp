@@ -249,6 +249,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_GroupDisband] = &Client::Handle_OP_GroupDisband;
 	ConnectedOpcodes[OP_GroupFollow] = &Client::Handle_OP_GroupFollow;
 	ConnectedOpcodes[OP_GroupFollow2] = &Client::Handle_OP_GroupFollow2;
+	ConnectedOpcodes[OP_GroupAutoFollow] = &Client::Handle_OP_GroupFollow;
 	ConnectedOpcodes[OP_GroupInvite] = &Client::Handle_OP_GroupInvite;
 	ConnectedOpcodes[OP_GroupInvite2] = &Client::Handle_OP_GroupInvite2;
 	ConnectedOpcodes[OP_GroupMakeLeader] = &Client::Handle_OP_GroupMakeLeader;

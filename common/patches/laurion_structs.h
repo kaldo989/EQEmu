@@ -992,11 +992,13 @@ namespace Laurion {
 			/*0152*/
 		};
 
-		// Opcode 0x70b7 (OP_GroupFollow2) - the group invite accept, sent by FUN_140260420 when the
-		// invitee clicks FOLLOW in the group window (also reachable from /follow and the hot button).
-		// Payload 156 bytes. The u32 at +152 is the value the client stored from the invite packet's
-		// +152 (DAT_140eb0ba0) and echoes it back unchanged. The second pass, taken after the Advanced
-		// Loot warning, uses opcode 0x8de with the same layout.
+		// Opcodes 0x8de (OP_GroupFollow) and 0x70b7 (OP_GroupFollow2) - the group invite accept, sent by
+		// FUN_140260420 when the invitee clicks FOLLOW in the group window (also reachable from /follow and
+		// the hot button). Payload 156 bytes. The u32 at +152 is the value the client stored from the invite
+		// packet's +152 (DAT_140eb0ba0) and echoes it back unchanged.
+		// FUN_140260420 emits 0x8de when DAT_140eb0b9c is set and 0x70b7 otherwise; DAT_140eb0b9c is set by
+		// the invite handler FUN_1402827f0 only for an invite arriving on 0x1d90, so the two values are the
+		// same packet selected by which invite opcode was used, not a first/second pass.
 		struct GroupFollowAccept_Struct {
 			/*0000*/ char	inviter_name[64];
 			/*0064*/ char	invitee_name[64];
