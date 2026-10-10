@@ -4854,8 +4854,9 @@ namespace Laurion
 		EQApplicationPacket* in = *p;
 		*p = nullptr;
 
-		// XTARGET_HARDCAP is 20 (zone/client.h); the client itself allows up to 30 slots.
-		const uint32 xtarget_hardcap = 20;
+		// Mirrors XTARGET_HARDCAP (zone/client.h) = 30. The client's slot vector is resized by whatever
+		// max_slots the server sends (FUN_140691bc0 has no cap); 30 is the client's own target-set limit.
+		const uint32 xtarget_hardcap = 30;
 
 		if (in->size < 12) {
 			LogNetcode("[STRUCTS] XTargetRequest too short: got [{}], expected at least 12", in->size);

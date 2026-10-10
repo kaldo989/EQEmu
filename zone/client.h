@@ -83,7 +83,11 @@ namespace EQ
 
 #define CLIENT_LD_TIMEOUT 30000 // length of time client stays in zone after LDing
 #define TARGETING_RANGE 200 // range for /assist and /target
-#define XTARGET_HARDCAP 20
+#define XTARGET_HARDCAP 30 // Laurion client: the slot vector is resized by whatever max_slots the server
+                           // sends (FUN_140691bc0 has no cap), and the client's own target-set table is 30
+                           // entries (/xtarget load loop caps at 0x1e). Verified live: pinstLocalPC + 0x2EA0
+                           // -> list, +8 count = 5, +0x10 array of 0x4C records
+                           // (u32 type, u32 status, u32 spawn_id, char name[64]).
 #define MAX_SPECIALIZED_SKILL 50
 
 extern Zone* zone;
