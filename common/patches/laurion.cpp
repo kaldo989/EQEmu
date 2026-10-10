@@ -3667,6 +3667,227 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	// 0x57b2 - the group roster. Client receive handler FUN_1402c2c40 (dispatcher branch 0x1401e5cb6,
+	// reached by CMP opcode 0x57b2 at 0x1401e45a8) creates the CGroup object at pinstLocalPC + 0x2eb8 and
+	// runs the variable length deserializer FUN_140637630. This is the packet that populates the group
+	// window. Wire order is cursor based, strings are null terminated, and every read is guarded by the
+	// remaining size:
+	//   u32 group id            -> CGroupBase::m_id (+0x40)
+	//   u32 member count
+	//   char[] leader name      -> matched against each entry to pick CGroupBase::m_groupLeader (+0x38)
+	//   per entry:
+	//     u32 slot index        -> CGroupBase::m_groupMembers[slot]
+	//     char[] name           -> CGroupMemberBase::Name (+0x08)
+	//     u16 type              -> CGroupMemberBase::Type (+0x10), MQ EQP_PC = 0
+	//     char[] owner name     -> CGroupMemberBase::OwnerName (+0x18)
+	//     u32 level             -> CGroupMemberBase::Level (+0x20)
+	//     5 x u8 role flags     -> CGroupMemberBase::bRoleStates[1..5] (+0x2c..+0x30)
+	//     u32 offline flag      -> CGroupMemberBase::bIsOffline (+0x24)
+	//     u64 online timestamp  -> CGroupMemberBase::OnlineTimestamp (+0x38)
+	//     u32 unique player id  -> CGroupMemberBase::UniquePlayerID (+0x28)
+	//
+	// EQEmu builds the fixed size GroupUpdate_Struct / GroupUpdate2_Struct / GroupJoin_Struct, which share
+	// the first 452 bytes: action, yourname, membername[5], leadersname. The group id, slot, type, level,
+	// roles, offline flag, timestamp and unique player id are not carried by that struct, so they are
+	// emitted as zero. The action is dropped: the Laurion deserializer has no action field, it rebuilds the
+	// roster from the entries, so a disband is expressed as an empty roster.
+	//
+	// OP_GroupUpdate and OP_GroupUpdateB both map to 0x57b2, so both encoders emit this shape.
+	ENCODE(OP_GroupUpdate)
+	{
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		if (in->size < sizeof(GroupUpdate_Struct)) {
+			LogNetcode("[STRUCTS] GroupUpdate too short: got [{}], expected at least [{}]",
+				in->size, sizeof(GroupUpdate_Struct));
+			delete in;
+			return;
+		}
+
+		GroupUpdate_Struct* gu = (GroupUpdate_Struct*)in->pBuffer;
+
+		uint32 count = 0;
+		for (uint32 i = 0; i < 5; ++i) {
+			if (gu->membername[i][0] != '\0') ++count;
+		}
+
+		SerializeBuffer buffer;
+		buffer.WriteUInt32(0);                // group id - not carried by EQEmu's struct
+		buffer.WriteUInt32(count);
+		buffer.WriteString(gu->leadersname);  // leader name
+
+		for (uint32 i = 0; i < 5; ++i) {
+			if (gu->membername[i][0] == '\0') continue;
+
+			buffer.WriteUInt32(i);                 // slot
+			buffer.WriteString(gu->membername[i]); // name
+			buffer.WriteUInt16(0);                 // type, MQ EQP_PC
+			buffer.WriteString(gu->membername[i]); // owner name - same as name for a player entry
+			buffer.WriteUInt32(0);                 // level
+			for (uint32 r = 0; r < 5; ++r) buffer.WriteUInt8(0);   // role flags
+			buffer.WriteUInt32(0);                 // offline
+			buffer.WriteUInt64(0);                 // online timestamp
+			buffer.WriteUInt32(0);                 // unique player id
+		}
+
+		in->size = buffer.size();
+		in->pBuffer = new unsigned char[buffer.size()];
+		memcpy(in->pBuffer, buffer.buffer(), buffer.size());
+
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
+	// Client::SendGroupCreatePacket already writes the variable length shape, but with EQEmu's older field
+	// widths: 3 role bytes instead of 5, a u32 timestamp instead of u64, and no unique player id. Re-read
+	// it with EQEmu's widths and re-emit with the client's.
+	ENCODE(OP_GroupUpdateB)
+	{
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		if (in->size < 12) {
+			LogNetcode("[STRUCTS] GroupUpdateB too short: got [{}], expected at least 12", in->size);
+			delete in;
+			return;
+		}
+
+		uint32 group_id = 0;
+		uint32 count = 0;
+		memcpy(&group_id, in->pBuffer, 4);
+		memcpy(&count, in->pBuffer + 4, 4);
+
+		if (count > MAX_GROUP_MEMBERS) {
+			LogNetcode("[STRUCTS] GroupUpdateB count [{}] exceeds MAX_GROUP_MEMBERS [{}]", count, MAX_GROUP_MEMBERS);
+			delete in;
+			return;
+		}
+
+		struct Entry {
+			uint32 slot;
+			char   name[64];
+			uint16 type;
+			char   owner[64];
+			uint32 level;
+			uint8  roles[5];
+			uint32 offline;
+			uint64 timestamp;
+			uint32 unique_id;
+		};
+
+		auto read_string = [&](uint32& pos, char* out) -> bool {
+			uint32 len = 0;
+			while (pos + len < in->size && in->pBuffer[pos + len] != 0) ++len;
+			if (pos + len >= in->size) return false;
+			if (len > 63) return false;
+			memcpy(out, in->pBuffer + pos, len);
+			out[len] = '\0';
+			pos += len + 1;
+			return true;
+		};
+
+		uint32 pos = 8;
+		char leader[64];
+		if (!read_string(pos, leader)) {
+			LogNetcode("[STRUCTS] GroupUpdateB leader name is not null terminated within size [{}]", in->size);
+			delete in;
+			return;
+		}
+
+		Entry entries[MAX_GROUP_MEMBERS];
+		for (uint32 i = 0; i < count; ++i) {
+			Entry& e = entries[i];
+			memset(&e, 0, sizeof(e));
+
+			if (pos + 4 > in->size) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] slot truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+			memcpy(&e.slot, in->pBuffer + pos, 4);
+			pos += 4;
+
+			if (!read_string(pos, e.name)) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] name truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+
+			if (pos + 2 > in->size) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] type truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+			memcpy(&e.type, in->pBuffer + pos, 2);
+			pos += 2;
+
+			if (!read_string(pos, e.owner)) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] owner name truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+
+			if (pos + 4 > in->size) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] level truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+			memcpy(&e.level, in->pBuffer + pos, 4);
+			pos += 4;
+
+			// EQEmu writes 3 role bytes, the client reads 5. Take what is there, zero the rest.
+			for (uint32 r = 0; r < 5; ++r) {
+				if (pos < in->size) {
+					e.roles[r] = in->pBuffer[pos];
+					pos += 1;
+				}
+			}
+
+			if (pos + 4 > in->size) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] offline truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+			memcpy(&e.offline, in->pBuffer + pos, 4);
+			pos += 4;
+
+			if (pos + 4 > in->size) {
+				LogNetcode("[STRUCTS] GroupUpdateB entry [{}] timestamp truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+			uint32 ts32 = 0;
+			memcpy(&ts32, in->pBuffer + pos, 4);
+			pos += 4;
+			e.timestamp = ts32;
+
+			e.unique_id = 0;   // not carried by EQEmu's packet
+		}
+
+		SerializeBuffer buffer;
+		buffer.WriteUInt32(group_id);
+		buffer.WriteUInt32(count);
+		buffer.WriteString(leader);
+		for (uint32 i = 0; i < count; ++i) {
+			const Entry& e = entries[i];
+			buffer.WriteUInt32(e.slot);
+			buffer.WriteString(e.name);
+			buffer.WriteUInt16(e.type);
+			buffer.WriteString(e.owner);
+			buffer.WriteUInt32(e.level);
+			for (uint32 r = 0; r < 5; ++r) buffer.WriteUInt8(e.roles[r]);
+			buffer.WriteUInt32(e.offline);
+			buffer.WriteUInt64(e.timestamp);
+			buffer.WriteUInt32(e.unique_id);
+		}
+
+		in->size = buffer.size();
+		in->pBuffer = new unsigned char[buffer.size()];
+		memcpy(in->pBuffer, buffer.buffer(), buffer.size());
+
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
 	// DECODE methods
 	DECODE(OP_Animation)
 	{
