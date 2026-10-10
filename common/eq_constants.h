@@ -834,6 +834,47 @@ static const uint8 DamageTypeFalling	= 0xFC;	// 252 - EnvironmentalDamage::Falli
 static const uint8 DamageTypeSpell		= 0xE7;
 static const uint8 DamageTypeUnknown	= 0xFF;
 
+// CombatDamage_Struct.special is a bitmask. The names below are the values listed in
+// common/patches/laurion_structs.h:637, plus three bits found by reading the client's combat-log builder
+// CEverQuest__ReportSuccessfulHit (0x140271140), which tests exactly these bits:
+//   & 0x120180  -> opens the " (" prefix
+//   >> 0x14     -> "Locked " and then overwrites special with 0x100000
+//   >> 8        -> "Lucky " and string 14578 "luckily "
+//   & 0x80      -> "Critical " and chat colour 0x18e instead of 0x18d
+//   & 0x20000   -> "Twincast "
+//   & 4         -> gates the combat-log chat filter
+//   >> 0x10     -> string 14578 with Lucky
+//   >> 0x12     -> strings 8313/8315 "%1 %2block(s) with %3 shield"
+//   >> 0x13     -> strings 8314/8316 "%1 %2block(s) with %3 staff"
+// So the client only consumes bits 2, 7, 8, 16, 17, 18, 19 and 20 for the combat log. The remaining bits
+// are documented but not read there - the client sets Riposte (0x40), Flurry (0x20) and Twincast (0x20000)
+// for its own hits at the send site, so they are kept for completeness.
+namespace HitFlags {
+	// Read by the client's combat log:
+	constexpr uint32 NoCastOnText    = 0x4;
+	constexpr uint32 Critical        = 0x80;
+	constexpr uint32 Lucky           = 0x100;
+	constexpr uint32 LuckyRiposte    = 0x10000;
+	constexpr uint32 Twincast        = 0x20000;
+	constexpr uint32 BlockWithShield = 0x40000; // beyond the documented list
+	constexpr uint32 BlockWithStaff  = 0x80000; // beyond the documented list
+	constexpr uint32 Locked          = 0x100000; // beyond the documented list
+	// Documented in laurion_structs.h, not read by ReportSuccessfulHit:
+	constexpr uint32 WildRampage     = 0x1;
+	constexpr uint32 Rampage         = 0x2;
+	constexpr uint32 DoubleBowShot   = 0x8;
+	constexpr uint32 UnknownSpellFlag = 0x10;
+	constexpr uint32 Flurry          = 0x20;
+	constexpr uint32 Riposte         = 0x40;
+	constexpr uint32 FinishingBlow   = 0x200;
+	constexpr uint32 CripplingBlow   = 0x400;
+	constexpr uint32 Assassinate     = 0x800;
+	constexpr uint32 DeadlyStrike    = 0x1000;
+	constexpr uint32 SlayUndead      = 0x2000;
+	constexpr uint32 Headshot        = 0x4000;
+	constexpr uint32 Strikethrough   = 0x8000;
+}
+
 /*
 **	Skill damage types
 **

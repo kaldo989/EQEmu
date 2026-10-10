@@ -1184,6 +1184,17 @@ public:
 	void AreaRampage(ExtraAttackOptions *opts);
 	inline bool IsSpecialAttack(eSpecialAttacks in) { return m_specialattacks == in; }
 
+	// CombatDamage_Struct.special is a bitmask, but eSpecialAttacks is not: it is a small enum whose
+	// values 1 and 2 happen to coincide with the WildRampage and Rampage bits, and ChaoticStab (3) has no
+	// wire bit at all. So the flags cannot be carried in m_specialattacks without breaking the equality
+	// checks above. They are carried here instead, set while the swing is resolved (AvoidDamage on the
+	// defender, TryCriticalHit/TryTwincast on the attacker) and consumed once by CommonDamage when it
+	// builds the packet. Mob::Attack clears both sides before a swing so a flag never survives into the
+	// next hit.
+	inline void AddHitFlag(uint32 flag) { last_hit_flags |= flag; }
+	inline uint32 GetLastHitFlags() const { return last_hit_flags; }
+	inline void ClearLastHitFlags() { last_hit_flags = 0; }
+
 	void StartEnrage();
 	void ProcessEnrage();
 	bool IsEnraged();
@@ -1639,6 +1650,7 @@ protected:
 	int base_fearspeed;
 	int current_speed;
 	eSpecialAttacks m_specialattacks;
+	uint32 last_hit_flags = 0;
 
 	bool held;
 	bool gheld;

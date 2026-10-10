@@ -5960,6 +5960,10 @@ void Mob::TryTwincast(Mob *caster, Mob *target, uint32 spell_id)
 				if (IsClient()) {
 					Message(Chat::Spells,"You twincast %s!", spells[spell_id].name);
 				}
+				// Bit 0x20000 is the only twincast bit the client reads - ReportSuccessfulHit (0x140271140)
+				// prefixes the combat log line with "Twincast ". Set it before SpellFinished so the damage
+				// packet that SpellFinished produces carries it.
+				AddHitFlag(HitFlags::Twincast);
 				SpellFinished(spell_id, target, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].resist_difficulty);
 			}
 		}

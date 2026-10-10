@@ -636,6 +636,9 @@ bool Mob::AvoidDamage(Mob *other, DamageHitInfo &hit)
 		}
 		if (zone->random.Roll(chance)) {
 			hit.damage_done = DMG_BLOCKED;
+			// The client distinguishes how a block happened: this branch is the shield one, which selects
+			// strings 8313/8315 "%1 %2block(s) with %3 shield".
+			AddHitFlag(HitFlags::BlockWithShield);
 			return true;
 		}
 	}
@@ -648,6 +651,9 @@ bool Mob::AvoidDamage(Mob *other, DamageHitInfo &hit)
 		}
 		if (zone->random.Roll(chance)) {
 			hit.damage_done = DMG_BLOCKED;
+			// Two-hand blunt block is what the client calls "block with %3 staff" (strings 8314/8316), so
+			// this branch sets the staff bit rather than the shield bit.
+			AddHitFlag(HitFlags::BlockWithStaff);
 			return true;
 		}
 	}
@@ -1725,6 +1731,11 @@ bool Mob::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 
 		my_hit.tohit = GetTotalToHit(my_hit.skill, hit_chance_bonus);
 
+		// Flags belong to this swing only. Clear both sides so a flag from an earlier swing cannot leak into
+		// this packet when this swing is not resolved through AvoidDamage or TryCriticalHit.
+		ClearLastHitFlags();
+		other->ClearLastHitFlags();
+
 		DoAttack(other, my_hit, opts, bRiposte);
 
 		LogCombatDetail("Final damage after all reductions [{}]", my_hit.damage_done);
@@ -2403,6 +2414,9 @@ bool NPC::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 
 		my_hit.offense = offense(my_hit.skill);
 		my_hit.tohit = GetTotalToHit(my_hit.skill, hit_chance_bonus);
+
+		ClearLastHitFlags();
+		other->ClearLastHitFlags();
 
 		DoAttack(other, my_hit, opts, bRiposte);
 
@@ -4566,13 +4580,27 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		a->damage = damage;
 		a->spellid = spell_id;
 
+		// eSpecialAttacks is not a bitmask: ChaoticStab (3) has no wire bit, so it must not be OR'd in as
+		// bit 2 (NoCastOnText). Only the two rampage values map to bits. The combat-log flags come from
+		// last_hit_flags, which AvoidDamage and TryCriticalHit filled while resolving this swing.
+		uint32 wire_special = 0;
 		if (special == eSpecialAttacks::AERampage) {
-			a->special = 1;
+			wire_special = HitFlags::WildRampage;
 		} else if (special == eSpecialAttacks::Rampage) {
-			a->special = 2;
-		} else {
-			a->special = 0;
+			wire_special = HitFlags::Rampage;
 		}
+		if (attacker) {
+			wire_special |= attacker->GetLastHitFlags();
+		}
+		wire_special |= last_hit_flags;
+		a->special = wire_special;
+
+		// Consume the flags: a spell nuke or a damage shield tick that never went through AvoidDamage or
+		// TryCriticalHit would otherwise inherit whatever the previous melee swing left behind.
+		if (attacker) {
+			attacker->ClearLastHitFlags();
+		}
+		ClearLastHitFlags();
 
 		a->hit_heading = attacker ? attacker->GetHeading() : 0.0f;
 		// p is static and hit_pitch is never assigned anywhere in this function, so it carried the value
@@ -5382,6 +5410,7 @@ void Mob::TryPetCriticalHit(Mob *defender, DamageHitInfo &hit)
 
 	if (critChance > 0) {
 		if (zone->random.Roll(critChance)) {
+			AddHitFlag(HitFlags::Critical);
 			critMod += GetCritDmgMod(hit.skill, owner);
 			hit.damage_done += 5;
 			hit.damage_done = (hit.damage_done * critMod) / 100;
@@ -5526,6 +5555,8 @@ void Mob::TryCriticalHit(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *
 
 		// check if we crited
 		if (roll < dex_bonus) {
+			// "Critical " prefix and chat colour 0x18e in the client's combat log.
+			AddHitFlag(HitFlags::Critical);
 			// step 1: check for finishing blow
 			if (TryFinishingBlow(defender, hit.damage_done)) {
 				return;
