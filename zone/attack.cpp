@@ -3389,7 +3389,19 @@ void Mob::DamageShield(Mob* attacker, bool spell_ds) {
 		b->source  = GetID();
 		b->type    = spellbonuses.DamageShieldType;
 		b->spellid = 0x0;
-		b->damage  = DS;
+		// DS is negative in this branch (the comment above: "spells yield negative values for a true
+		// damage shield"), and the damage actually dealt is -DS, as used in attacker->Damage() above.
+		// The client's OP_Damage handler treats a positive damage as damage and a negative one as
+		// healing (JNS at 0x140202EBB, NEG at 0x140202EE7 in FUN_140202DF0), so the packet must carry
+		// -DS. Sending DS itself told the client the attacker was being healed.
+		b->damage  = -DS;
+		// p is static: force, hit_heading, hit_pitch and special were never assigned in this function,
+		// so they carried values from the previous call. No push force or pitch is computed for a damage
+		// shield, so 0 is the neutral value for each.
+		b->force = 0.0f;
+		b->hit_heading = 0.0f;
+		b->hit_pitch = 0.0f;
+		b->special = 0;
 		entity_list.QueueCloseClients(this, &p);
 	}
 	else if (DS > 0 && !spell_ds) {
@@ -4533,6 +4545,9 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		}
 
 		a->hit_heading = attacker ? attacker->GetHeading() : 0.0f;
+		// p is static and hit_pitch is never assigned anywhere in this function, so it carried the value
+		// from the previous call. No pitch is computed for melee, so 0 is the neutral value.
+		a->hit_pitch = 0.0f;
 		if (RuleB(Combat, MeleePush) && damage > 0 && !IsRooted() &&
 			(IsClient() || zone->random.Roll(RuleI(Combat, MeleePushChance)))) {
 			a->force = EQ::skills::GetSkillMeleePushForce(skill_used);

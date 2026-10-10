@@ -3823,6 +3823,39 @@ namespace Laurion
 
 	DECODE(OP_ConsiderCorpse) { DECODE_FORWARD(OP_Consider); }
 
+	DECODE(OP_Damage)
+	{
+		DECODE_LENGTH_EXACT(structs::CombatDamage_Struct);
+		SETUP_DIRECT_DECODE(CombatDamage_Struct, structs::CombatDamage_Struct);
+
+		IN(target);
+		IN(source);
+		IN(type);
+		IN(spellid);
+
+		// structs::CombatDamage_Struct::damage is int64 and the client branches on its sign
+		// (JNS at 0x140202EBB in FUN_140202DF0). The emu field is int32, so saturate instead of
+		// wrapping - a wrapped negative would reach every other client as a huge positive hit.
+		// The client itself clamps resulting HP to +/-10000000 (FUN_1400F7DE0), so this clamp is
+		// not expected to trigger in normal play.
+		int64 dmg = eq->damage;
+		if (dmg > INT32_MAX) {
+			LogNetcode("[OP_Damage] damage [{}] clamped to INT32_MAX", dmg);
+			dmg = INT32_MAX;
+		} else if (dmg < INT32_MIN) {
+			LogNetcode("[OP_Damage] damage [{}] clamped to INT32_MIN", dmg);
+			dmg = INT32_MIN;
+		}
+		emu->damage = static_cast<int32>(dmg);
+
+		IN(force);
+		IN(hit_heading);
+		IN(hit_pitch);
+		IN(special);
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_DeleteItem)
 	{
 		DECODE_LENGTH_EXACT(structs::DeleteItem_Struct);

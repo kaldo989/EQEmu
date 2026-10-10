@@ -964,6 +964,13 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						cd->type = action->type;
 						cd->spellid = action->spell;
 						cd->hit_heading = action->hit_heading;
+						// p is static, so every field must be set on each call or it carries the value from
+						// the previous one. Bind affinity deals no damage, so damage is 0 - matching the
+						// canonical pattern in zone/spells.cpp:4690.
+						cd->force = action->force;
+						cd->hit_pitch = action->hit_pitch;
+						cd->damage = 0;
+						cd->special = 0;
 
 						CastToClient()->QueuePacket(action_packet);
 
@@ -1012,6 +1019,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 								cd->type = action->type;
 								cd->spellid = action->spell;
 								cd->hit_heading = action->hit_heading;
+								// p is static - see the note at the first BindAffinity site.
+								cd->force = action->force;
+								cd->hit_pitch = action->hit_pitch;
+								cd->damage = 0;
+								cd->special = 0;
 
 								CastToClient()->QueuePacket(action_packet);
 
@@ -1051,6 +1063,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							cd->type = action->type;
 							cd->spellid = action->spell;
 							cd->hit_heading = action->hit_heading;
+							// p is static - see the note at the first BindAffinity site.
+							cd->force = action->force;
+							cd->hit_pitch = action->hit_pitch;
+							cd->damage = 0;
+							cd->special = 0;
 
 							CastToClient()->QueuePacket(action_packet);
 

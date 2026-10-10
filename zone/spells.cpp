@@ -4688,6 +4688,10 @@ bool Mob::SpellOnTarget(
 	cd->hit_heading = action->hit_heading;
 	cd->hit_pitch = action->hit_pitch;
 	cd->damage = 0;
+	// p is static: special is the only field this block did not set, so it carried the value from the
+	// previous call. For a spell packet there is no special-attack flag, so 0 is the neutral value.
+	// (Melee sets it to 1/2 for Wild Rampage/Rampage in zone/attack.cpp:4527-4531.)
+	cd->special = 0;
 
 	if (
 		!IsLifetapSpell(spell_id) &&

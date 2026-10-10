@@ -1353,7 +1353,9 @@ struct CombatDamage_Struct
 /* 02 */	uint16	source;
 /* 04 */	uint8	type; //slashing, etc. 231 (0xE7) for spells, skill
 /* 05 */	uint16	spellid;
-/* 07 */	uint32	damage;
+/* 07 */	int32	damage;	// signed: the client handler reads this as i64 and branches on the sign
+							// (JNS at 0x140202EBB in FUN_140202DF0); negative is healing, and only for
+							// type 0xE7 (DamageTypeSpell). Size unchanged, so legacy wire length is unaffected.
 /* 11 */	float force;
 /* 15 */	float hit_heading;	// see above notes in Action_Struct
 /* 19 */	float hit_pitch;
