@@ -72,6 +72,7 @@ compile_flags.txt
 /docs_unknown_opcodes.md
 /itemdisplay.md
 /merchant.md
+/docs/
 
 # Local tooling / scratch artifacts
 /.mcp.json
