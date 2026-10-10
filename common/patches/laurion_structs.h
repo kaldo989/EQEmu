@@ -992,6 +992,25 @@ namespace Laurion {
 			/*0152*/
 		};
 
+		// Opcode 0x70b7 (OP_GroupFollow2) - the group invite accept, sent by FUN_140260420 when the
+		// invitee clicks FOLLOW in the group window (also reachable from /follow and the hot button).
+		// Payload 156 bytes. The u32 at +152 is the value the client stored from the invite packet's
+		// +152 (DAT_140eb0ba0) and echoes it back unchanged. The second pass, taken after the Advanced
+		// Loot warning, uses opcode 0x8de with the same layout.
+		struct GroupFollowAccept_Struct {
+			/*0000*/ char	inviter_name[64];
+			/*0064*/ char	invitee_name[64];
+			/*0128*/ uint16	unknown0128;
+			/*0130*/ uint32	unknown0130;
+			/*0134*/ uint32	unknown0134;
+			/*0138*/ uint32	unknown0138;
+			/*0142*/ uint32	unknown0142;
+			/*0146*/ uint16	unknown0146;	// observed 0x100 on the client send path
+			/*0148*/ uint32	unknown0148;
+			/*0152*/ uint32	echoed_from_invite;
+			/*0156*/
+		};
+
 		// Opcode 0x7e71 (OP_GroupInvitePrompt), server -> client. Handler FUN_1403aa570 reads only the
 		// u64 at payload+0x18 and resolves the inviter through PlayerManagerClient::GetPlayerFromHashKey
 		// (vtable slot 3), then shows the fellowship invite popup. There is no size gate, so 32 bytes is

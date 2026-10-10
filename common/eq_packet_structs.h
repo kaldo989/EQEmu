@@ -5119,6 +5119,12 @@ struct GroupInvitePrompt_Struct {
 // Live capture: docs/op_groupinvite-investigation.md
 static const uint32 LAURION_GROUP_INVITE_PAYLOAD_SIZE = 152;
 
+// Laurion sends the group invite accept (OP_GroupFollow2, opcode 0x70b7) as two names plus a 28 byte
+// tail, so the payload is 156 bytes rather than 128. EQEmu only consumes the two names, so accept
+// either size. The client handler is FUN_140260420; the second pass after the Advanced Loot warning
+// uses opcode 0x8de with the same layout.
+static const uint32 LAURION_GROUP_FOLLOW_PAYLOAD_SIZE = 156;
+
 struct ColoredText_Struct {
 	uint32 color;
 	char msg[1];

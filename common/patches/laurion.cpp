@@ -4596,6 +4596,20 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_GroupFollow2)
+	{
+		// The group invite accept. Laurion sends 156 payload bytes (two names plus a 28 byte tail), not
+		// the 128 byte GroupGeneric_Struct, so normalise down to the emu struct. Handle_OP_GroupFollow2
+		// only consumes the two names.
+		DECODE_LENGTH_EXACT(structs::GroupFollowAccept_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupFollowAccept_Struct);
+
+		memcpy(emu->name1, eq->inviter_name, sizeof(emu->name1));
+		memcpy(emu->name2, eq->invitee_name, sizeof(emu->name2));
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_GroupMakeLeader)
 	{
 		DECODE_LENGTH_EXACT(structs::GroupMakeLeader_Struct);

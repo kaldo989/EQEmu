@@ -7537,9 +7537,9 @@ void Client::Handle_OP_GroupFollow(const EQApplicationPacket *app)
 
 void Client::Handle_OP_GroupFollow2(const EQApplicationPacket *app)
 {
-	if (app->size != sizeof(GroupGeneric_Struct)) {
-		LogError("Invalid size for OP_GroupFollow: Expected: [{}], Got: [{}]",
-			sizeof(GroupGeneric_Struct), app->size);
+	if (app->size != sizeof(GroupGeneric_Struct) && app->size != LAURION_GROUP_FOLLOW_PAYLOAD_SIZE) {
+		LogError("Invalid size for OP_GroupFollow: Expected: [{}] (or Laurion [{}]), Got: [{}]",
+			sizeof(GroupGeneric_Struct), LAURION_GROUP_FOLLOW_PAYLOAD_SIZE, app->size);
 		return;
 	}
 
@@ -7612,13 +7612,16 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 		if (invitee->IsClient()) {
 			if (invitee->CastToClient()->MercOnlyOrNoGroup() && !invitee->IsRaidGrouped()) {
 				if (invitee->CastToClient()->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
-					// Laurion has no receive handler for OP_GroupInvite (0x1d90), so forwarding the packet
-					// produces nothing on the invitee. The client shows the fellowship invite prompt from
-					// opcode 0x7e71 (FUN_1403aa570), which resolves the inviter by hash key - the entity id
-					// EQEmu writes in ENCODE(OP_ZoneSpawns).
-					auto outapp = new EQApplicationPacket(OP_GroupInvitePrompt, sizeof(GroupInvitePrompt_Struct));
-					GroupInvitePrompt_Struct* gips = (GroupInvitePrompt_Struct*)outapp->pBuffer;
-					gips->inviter_id = GetID();
+					// Laurion does have a group invite receive handler: FUN_1402827f0, dispatched for both
+					// 0x1d90 and 0x1e7e. It prints eqstr 12280 "%1 invites you to join a group." from the
+					// inviter name at payload+64, then sets PlayerClient::InvitedToGroup (+0x13b1) and updates
+					// the group window - that is what drives the FOLLOW/DECLINE buttons. It also reads a u32
+					// at payload+152 and echoes it back on accept, so forward the full Laurion payload rather
+					// than truncating to the 128 byte emu struct.
+					auto outapp = new EQApplicationPacket(OP_GroupInvite, LAURION_GROUP_INVITE_PAYLOAD_SIZE);
+					GroupInvite_Struct* out = (GroupInvite_Struct*)outapp->pBuffer;
+					strn0cpy(out->invitee_name, gis->invitee_name, sizeof(out->invitee_name));
+					strn0cpy(out->inviter_name, gis->inviter_name, sizeof(out->inviter_name));
 					invitee->CastToClient()->QueuePacket(outapp);
 					safe_delete(outapp);
 					return;
