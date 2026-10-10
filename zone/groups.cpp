@@ -2731,3 +2731,28 @@ void Group::RemoveClientsBots(Client* c) {
 		}
 	}
 }
+
+// Decision 4: the group leader is the default master looter. /advloot mol moves it to a member flagged
+// master_loot_candidate. Re-evaluated on leadership and membership change, then broadcast through
+// subcmd 0x13.
+Client* Group::GetMasterLooter()
+{
+	if (!master_looter_name.empty()) {
+		Client* c = entity_list.GetClientByName(master_looter_name.c_str());
+		if (c && IsGroupMember(c)) {
+			return c;
+		}
+	}
+
+	Mob* group_leader = GetLeader();
+	if (group_leader && group_leader->IsClient()) {
+		return group_leader->CastToClient();
+	}
+
+	return nullptr;
+}
+
+void Group::SetMasterLooter(Client* c)
+{
+	master_looter_name = c ? c->GetCleanName() : "";
+}

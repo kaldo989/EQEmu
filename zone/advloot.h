@@ -20,8 +20,11 @@
 
 #include "common/types.h"
 
+#include "common/timer.h"
+
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 class EQApplicationPacket;
@@ -81,9 +84,23 @@ namespace AdvLoot {
 		FilterBitNeverLoot   = 1 << 3,
 	};
 
+	// Per-participant opt-in. The client keeps its choice in the row flags (row +0x8e need,
+	// +0x8f greed, +0x90 never) which are fed from its own ini loader, and no OP_AdvLoot
+	// sub-command carries a choice - the 0x11 state is Ask/AutoRoll only (FUN_1400a5330 sets
+	// row +0x68 bAutoRoll and sends 0x11 with state 1 or 2). So the server's choice record comes
+	// from /advloot need|greed|never, which is also the only capture path for filter persistence.
+	enum Choice : uint32_t {
+		ChoiceNone  = 0,
+		ChoiceNeed  = 1,
+		ChoiceGreed = 2,
+		ChoiceNever = 3,
+	};
+
 	const char* SubcommandName(uint16_t subcmd);
 	const char* StateName(uint32_t state);
 	const char* ModeName(uint32_t mode);
+	const char* ChoiceName(uint32_t choice);
+
 
 	// Bounds-checked cursor reader mirroring the client's CUnSerializeBuffer readers.
 	// The client leaves a field at 0 when the packet is too short, so we flag
@@ -268,5 +285,66 @@ namespace AdvLoot {
 		const std::string& name
 	);
 
+	// Client string block eqstr_us.txt 11300-11323 - the Advanced Loot wording. Using the client's
+	// own ids keeps the chat identical to the live client.
+	namespace StringId {
+		const uint32 MasterLooter        = 11300;  // "Master Looter"
+		const uint32 GroupMasterLooter   = 11301;  // "Group Master Looter"
+		const uint32 RaidMasterLooter    = 11302;  // "Raid Master Looter"
+		const uint32 MLDelegated         = 11303;  // "%1 has been delegated Raid Master Looter."
+		const uint32 MLUndelegated       = 11304;  // "%1 is no longer delegated Raid Master Looter."
+		const uint32 CorpseAccessList    = 11305;  // "You have been added to the corpse access list."
+		const uint32 AdvLootCorpse       = 11306;  // "This corpse is using advanced looting..."
+		const uint32 MLLooted            = 11307;  // "The master looter, %1, looted %2 from the corpse%3."
+		const uint32 NoRoomForStack      = 11308;  // "You cannot loot this entire stack of items, no room in your inventory."
+		const uint32 YouLeftOnCorpse     = 11309;  // "--You left %1 %2 on %3.--"
+		const uint32 GivenTo             = 11310;  // "%1 %2 %3 given to %4."
+		const uint32 AlreadyHasLore      = 11311;  // "%1 already has %2 and it is lore."
+		const uint32 DoesNotWant         = 11312;  // "%1 does not want %2. It is either on their never list or they have selected No."
+		const uint32 LeftOnCorpse        = 11313;  // "--%1 left %2 %3 on %4.--"
+		const uint32 WonRoll             = 11314;  // "%1 won the %2 roll on %3 item(s): %4 with a roll of %5."
+		const uint32 NoOneInterested     = 11315;  // "No one was interested in the %1 item(s): %2..."
+		const uint32 RolledOn            = 11316;  // "%1 rolled a %2 on %3."
+		const uint32 CannotNeedGreedLore = 11317;  // "You cannot choose to need or greed on %1 because you already have one and it is lore."
+		const uint32 CannotLootWhileDead = 11318;  // "You cannot loot while dead."
+		const uint32 AskAlreadyCompleted = 11319;  // "The ask has already completed. Your selection has been changed from %1 back to %2."
+		const uint32 MLUpdatedChoice     = 11320;  // "The master looter has updated your choice on %1 from %2 to %3."
+		const uint32 ItemsLocked         = 11321;  // "These item(s) are locked because you were not present when the enemy died..."
+		const uint32 SplitShare          = 11322;  // "Alive %1 members received %2 as their share of the split from the corpse."
+		const uint32 GrabbedFrom         = 11323;  // "%1 grabbed %2 %3 from %4."
+	}
+
+	// One row on one corpse: the roll the server owns. The client's row state mirrors this.
+	struct Participant {
+		uint32_t    character_id = 0;
+		std::string name;
+		uint32_t    choice = ChoiceNone;
+		uint32_t    roll = 0;          // 1..1000, drawn at resolution
+		uint32_t    opt_in_order = 0;  // monotonic counter, the tie-break (decision 2)
+	};
+
+	struct Roll {
+		uint32_t      corpse_key = 0;
+		uint32_t      item_id = 0;
+		std::string   item_name;
+		uint32_t      state = StateWaiting;
+		Timer         ask_timer;
+		bool          armed = false;   // timer running
+		std::vector<Participant> participants;
+	};
+
+	// subcmd 0x13 - FUN_140086fa0: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
+	// The client compares each name with the local name and prints the loot mode from the string
+	// table at 0x14086b440 (invalid/solo/molo/group/raid). This is the master looter announcement.
+	EQApplicationPacket* BuildLootModePacket(
+		uint32_t field_a,
+		uint32_t field_b,
+		uint8_t  field_c,
+		const std::vector<std::pair<uint16_t, std::string>>& members
+	);
+
+	// One-line, human readable description of a payload. Falls back to a hex dump for
+	// sub-commands whose layout is not yet confirmed.
 	std::string DescribePayload(const uint8_t* payload, uint32_t size);
 }
+

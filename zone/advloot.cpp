@@ -19,16 +19,23 @@
 #include "advloot.h"
 
 #include "common/emu_opcodes.h"
+#include "common/eq_constants.h"
 #include "common/eq_packet.h"
 #include "common/eqemu_logsys.h"
+#include "common/random.h"
+#include "common/seperator.h"
 #include "common/strings.h"
 #include "fmt/format.h"
 #include "zone/client.h"
+#include "zone/corpse.h"
 #include "zone/entity.h"
+#include "zone/groups.h"
+#include "zone/raids.h"
 #include "zone/zonedb.h"
 
 #include <cctype>
 #include <cstring>
+#include <list>
 
 namespace AdvLoot {
 
@@ -78,6 +85,16 @@ namespace AdvLoot {
 			case ModeGroup:        return "group";
 			case ModeRaid:         return "raid";
 			default:               return "UNKNOWN";
+		}
+	}
+
+	const char* ChoiceName(uint32_t choice) {
+		switch (choice) {
+			case ChoiceNone:  return "None";
+			case ChoiceNeed:  return "Need";
+			case ChoiceGreed: return "Greed";
+			case ChoiceNever: return "Never";
+			default:          return "UNKNOWN";
 		}
 	}
 
@@ -582,6 +599,34 @@ namespace AdvLoot {
 		return app;
 	}
 
+	// subcmd 0x13 - FUN_140086fa0 reader: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
+	// FUN_140154200 prints the loot mode name per member from the string table at 0x14086b440, and the
+	// local player gets "molo" when it is the master looter.
+	EQApplicationPacket* BuildLootModePacket(
+		uint32_t field_a,
+		uint32_t field_b,
+		uint8_t  field_c,
+		const std::vector<std::pair<uint16_t, std::string>>& members
+	)
+	{
+		Writer writer;
+
+		writer.write_u16(SubLootModeList);
+		writer.write_u32(field_a);
+		writer.write_u32(field_b);
+		writer.write_u8(field_c);
+		writer.write_u16(static_cast<uint16_t>(members.size()));
+
+		for (const auto& member: members) {
+			writer.write_u16(member.first);
+			writer.write_string(member.second, 64);
+		}
+
+		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
+		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
+		return app;
+	}
+
 }
 
 void Client::LoadAdvLootFilters()
@@ -749,4 +794,215 @@ void Client::SendAdvLootCorpseRebuild()
 
 	QueuePacket(app);
 	delete app;
+}
+
+// Decision 4: the AdvLoot mode is a derived display value, not a configured setting. Raid wins over
+// group, group wins over solo, and the member that is the master looter reads molo. Authority comes
+// from RaidLootType, which is a separate rule and is not changed here.
+void Client::SendAdvLootLootMode()
+{
+	std::vector<std::pair<uint16_t, std::string>> members;
+
+	Raid* raid = GetRaid();
+	Group* group = GetGroup();
+
+	if (raid) {
+		Client* ml = raid->GetMasterLooter();
+		for (const auto& member: raid->GetMembers()) {
+			if (!member.member) {
+				continue;
+			}
+			members.emplace_back(member.member == ml ? AdvLoot::ModeMasterLooter : AdvLoot::ModeRaid, member.member->GetCleanName());
+		}
+	} else if (group) {
+		Client* ml = group->GetMasterLooter();
+		std::list<Mob*> member_list;
+		group->GetMemberList(member_list);
+		for (Mob* member: member_list) {
+			if (!member || !member->IsClient()) {
+				continue;
+			}
+			Client* c = member->CastToClient();
+			members.emplace_back(c == ml ? AdvLoot::ModeMasterLooter : AdvLoot::ModeGroup, c->GetCleanName());
+		}
+	} else {
+		members.emplace_back(advloot_enabled ? AdvLoot::ModeSolo : AdvLoot::ModeInvalid, GetCleanName());
+	}
+
+	if (members.empty()) {
+		return;
+	}
+
+	EQApplicationPacket* app = AdvLoot::BuildLootModePacket(0, 0, 0, members);
+	if (!app) {
+		return;
+	}
+
+	LogLootFilters("[{}] loot mode [{}] broadcast to [{}] member(s)", GetCleanName(), AdvLoot::ModeName(advloot_mode), members.size());
+
+	if (raid) {
+		raid->QueueClients(this, app, true);
+	} else if (group) {
+		group->QueueClients(this, app, true);
+	} else {
+		QueuePacket(app);
+	}
+
+	delete app;
+}
+
+// /advloot need|greed|never <item_id> | /advloot mol [name]
+//
+// The choice sub-commands exist because the client has no wire path for a Need/Greed selection:
+// FUN_1400a5330 sends subcmd 0x11 with state 1 or 2 derived from row +0x68 (bAutoRoll), and the Loot
+// Filters window only writes its own ini files. So the command is the server's capture path, and it is
+// also the only way to populate character_loot_filters from the client side.
+void command_advloot(Client *c, const Seperator *sep)
+{
+	if (!c->advloot_enabled) {
+		c->Message(Chat::Red, "Advanced Loot is not enabled for this character. Enable it in the Loot Settings window.");
+		return;
+	}
+
+	std::string sub = Strings::ToLower(sep->arg[1]);
+
+	if (sub == "mol") {
+		Group* group = c->GetGroup();
+		Raid* raid = c->GetRaid();
+
+		if (!group && !raid) {
+			c->Message(Chat::Red, "/advloot mol needs a group or a raid.");
+			return;
+		}
+
+		Client* current = raid ? raid->GetMasterLooter() : group->GetMasterLooter();
+		if (!current) {
+			c->Message(Chat::Red, "You are not the master looter.");
+			return;
+		}
+
+		if (!sep->arg[2][0]) {
+			c->Message(Chat::Yellow, "[%s] is the master looter.", current->GetCleanName());
+			return;
+		}
+
+		Client* target = entity_list.GetClientByName(sep->arg[2]);
+		if (!target) {
+			c->Message(Chat::Red, "No player named [%s] is in the zone.", sep->arg[2]);
+			return;
+		}
+
+		// Decision 4: the override is candidate-gated.
+		if (!target->advloot_master_looter_candidate) {
+			c->Message(Chat::Red, "[%s] is not a master looter candidate.", target->GetCleanName());
+			return;
+		}
+
+		current->MessageString(Chat::Yellow, AdvLoot::StringId::MLUndelegated, current->GetCleanName());
+
+		if (raid) {
+			raid->SetMasterLooter(target);
+		} else {
+			group->SetMasterLooter(target);
+		}
+
+		target->MessageString(Chat::Yellow, AdvLoot::StringId::MLDelegated, target->GetCleanName());
+
+		// Re-derive the mode list for everyone (decision 4).
+		c->SendAdvLootLootMode();
+		return;
+	}
+
+	if (sub == "assign") {
+		// Decision 3: assignment is an override that resolves immediately and cancels the row's timer.
+		// The client has no confirmed packet path for a master looter right-click assignment, so the
+		// command is the server-side trigger.
+		Group* group = c->GetGroup();
+		Raid* raid = c->GetRaid();
+
+		Client* ml = raid ? raid->GetMasterLooter() : (group ? group->GetMasterLooter() : c);
+		if (ml != c) {
+			c->Message(Chat::Red, "Only the master looter can assign an item.");
+			return;
+		}
+
+		uint32_t item_id = Strings::ToUnsignedInt(sep->arg[2]);
+		Client* target = entity_list.GetClientByName(sep->arg[3]);
+
+		if (!item_id || !target) {
+			c->Message(Chat::Red, "Usage: /advloot assign <item_id> <name>");
+			return;
+		}
+
+		bool assigned = false;
+		for (uint16_t corpse_id : c->advloot_corpses) {
+			Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+			if (!corpse) {
+				continue;
+			}
+
+			AdvLoot::Roll* roll = corpse->GetAdvLootRoll(item_id);
+			if (!roll) {
+				continue;
+			}
+
+			corpse->AssignAdvLootRoll(*roll, target);
+			assigned = true;
+		}
+
+		if (!assigned) {
+			c->Message(Chat::Red, "No tracked corpse row for item [%u].", item_id);
+		}
+
+		return;
+	}
+
+	uint32_t choice = AdvLoot::ChoiceNone;
+	if (sub == "need") {
+		choice = AdvLoot::ChoiceNeed;
+	} else if (sub == "greed") {
+		choice = AdvLoot::ChoiceGreed;
+	} else if (sub == "never") {
+		choice = AdvLoot::ChoiceNever;
+	}
+
+	if (choice == AdvLoot::ChoiceNone) {
+		c->Message(Chat::Yellow, "Usage: /advloot need|greed|never <item_id> | /advloot assign <item_id> <name> | /advloot mol [name]");
+		return;
+	}
+
+	uint32_t item_id = Strings::ToUnsignedInt(sep->arg[2]);
+	if (!item_id) {
+		c->Message(Chat::Red, "Usage: /advloot %s <item_id>", sub.c_str());
+		return;
+	}
+
+	const auto* item = database.GetItem(item_id);
+	if (!item) {
+		c->Message(Chat::Red, "Item [%u] is not in the item table.", item_id);
+		return;
+	}
+
+	// FilterBit: AutoRoll 1 << 0, AlwaysNeed 1 << 1, AlwaysGreed 1 << 2, NeverLoot 1 << 3, so
+	// 1 << choice lands on the right bit for Need (2), Greed (4) and Never (8).
+	c->SaveAdvLootFilter(item_id, 1 << choice, item->Icon, item->Name);
+
+	bool applied = false;
+	for (uint16_t corpse_id : c->advloot_corpses) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (!corpse) {
+			continue;
+		}
+
+		corpse->RecordAdvLootChoice(c, item_id, choice);
+		applied = true;
+	}
+
+	c->Message(
+		Chat::Yellow,
+		"[%s] set to %s - %s",
+		item->Name,
+		AdvLoot::ChoiceName(choice),
+		applied ? "applied to the tracked corpse" : "saved for future corpse rows"
+	);
 }

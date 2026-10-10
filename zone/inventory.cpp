@@ -1165,6 +1165,12 @@ bool Client::TryStacking(EQ::ItemInstance* item, uint8 type, bool try_worn, bool
 		if ((((uint64)1 << i) & GetInv().GetLookup()->PossessionsBitmask) == 0)
 			continue;
 
+		// Canonical slot 33 is the cursor for every client version, but for a Laurion client slot 33 is also
+		// general11 in the client's own numbering. GetItem(33) reads the cursor queue, so a RoF2-based
+		// iteration can stack onto the cursor. Skip it here - FindFreeSlot already excludes it.
+		if (!EQ::invslot::IsGeneralSlot(GetInv().SlotVersion(), i))
+			continue;
+
 		EQ::ItemInstance* tmp_inst = m_inv.GetItem(i);
 		if(tmp_inst && tmp_inst->GetItem()->ID == item_id && tmp_inst->GetCharges() < tmp_inst->GetItem()->StackSize){
 			MoveItemCharges(*item, i, type);

@@ -1055,6 +1055,11 @@ RULE_BOOL(Inventory, SendFeatureList, true, "Send the feature/entitlement list p
 RULE_STRING(Inventory, FeatureList, "2012274=1", "Feature id=value pairs sent in the feature list packet, comma separated (id=value,id=value). The id is the client feature key, decimal or 0x hex. 2012274 (0x1eb472) is the Laurion inventory slot feature that enables general slots 11 and 12")
 RULE_CATEGORY_END()
 
+RULE_CATEGORY(Loot)
+RULE_INT(Loot, AdvLootAskTimerSeconds, 60, "Advanced Loot per-item ask/roll window, in seconds. The timer is armed when the master looter sets a row to Auto Ask/Roll (OP_AdvLoot subcmd 0x11 state 2), or at the first opt-in when AdvLootAutoStartTimer is on")
+RULE_BOOL(Loot, AdvLootAutoStartTimer, true, "Arm the Advanced Loot roll timer at the first opt-in when the master looter has not armed it. Set to false for strict live parity, where only the master looter starts the roll")
+RULE_CATEGORY_END()
+
 RULE_CATEGORY(Client)
 RULE_BOOL(Client, UseLiveFactionMessage, false, "Allows players to see detailed faction adjustments as on the live servers")
 RULE_BOOL(Client, UseLiveBlockedMessage, false, "Setting whether detailed spell block messages should be used as on the live servers")

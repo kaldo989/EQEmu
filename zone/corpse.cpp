@@ -24,6 +24,7 @@
 #include "common/repositories/character_corpse_items_repository.h"
 #include "common/repositories/character_corpses_repository.h"
 #include "common/rulesys.h"
+#include "common/random.h"
 #include "common/say_link.h"
 #include "common/strings.h"
 #include "zone/bot.h"
@@ -1005,6 +1006,10 @@ bool Corpse::Process()
 		return false;
 	}
 
+	// Per-item ask/roll window. Resolved here so it runs alongside the decay and unlock timers and can
+	// still see the loot list.
+	ProcessAdvLootRolls();
+
 	if (m_check_owner_online_timer.Check() && m_is_rezzable) {
 		CheckIsOwnerOnline();
 	}
@@ -1522,7 +1527,7 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 	}
 }
 
-void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
+void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback)
 {
 	if (!c) {
 		return;
@@ -1560,6 +1565,17 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 
 	/* To prevent item loss for a player using 'Loot All' who doesn't have inventory space for all their items. */
 	if (RuleB(Character, CheckCursorEmptyWhenLooting) && !c->GetInv().CursorEmpty()) {
+		// The server cursor is a FIFO queue, but the Laurion client only renders one cursor item, so the
+		// two can diverge: a stack merge onto canonical slot 33 (the cursor) or a second PushCursor leaves
+		// entries in the queue the client never shows. Log the queue so a desync is visible.
+		const EQ::ItemInstance* cursor_item = c->GetInv().GetCursorItem();
+		LogLootFilters(
+			"[{}] cursor check failed - queue size [{}], front item [{}]",
+			c->GetCleanName(),
+			c->GetInv().CursorSize(),
+			cursor_item ? cursor_item->GetItem()->ID : 0
+		);
+
 		c->Message(Chat::Red, "You may not loot an item while you have an item on your cursor.");
 		c->QueuePacket(app);
 		SendEndLootErrorPacket(c);
@@ -1795,7 +1811,21 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 
 		/* First add it to the looter - this will do the bag contents too */
 		if (lootitem->auto_loot > 0) {
-			if (!c->AutoPutLootInInventory(*inst, true, true, bag_item_data)) {
+			if (!c->AutoPutLootInInventory(*inst, true, allow_cursor_fallback, bag_item_data)) {
+				if (!allow_cursor_fallback) {
+					// The AdvLoot loot button means "put it in my bags". Pushing to the cursor here is what
+					// creates the desync: the server queue grows past the single cursor slot the Laurion
+					// client can render, and every later loot then fails with the cursor error. Refuse and
+					// leave the item on the corpse instead.
+					c->Message(
+						Chat::Red,
+						"No inventory space for [%s] - it stays on the corpse.",
+						inst->GetItem()->Name
+					);
+					safe_delete(inst);
+					return;
+				}
+
 				c->PutLootInInventory(EQ::invslot::slotCursor, *inst, bag_item_data);
 			}
 		}
@@ -2559,7 +2589,17 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 		return;
 	}
 
-	uint16 slot = GetFirstLootSlotByItemID(item_id);
+	// GetFirstLootSlotByItemID() returns 0 for a miss, and slot 0 is a real loot slot, so resolve the
+	// slot from the loot list directly here - otherwise a stale AdvLoot row loots whatever happens to sit
+	// at slot 0.
+	uint16 slot = 0xFFFF;
+	for (const auto* loot_item: GetLootItems()) {
+		if (loot_item && loot_item->item_id == item_id) {
+			slot = loot_item->lootslot;
+			break;
+		}
+	}
+
 	if (slot == 0xFFFF) {
 		return;
 	}
@@ -2581,16 +2621,37 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 	EQApplicationPacket app(OP_LootItem, sizeof(LootingItem_Struct));
 	memcpy(app.pBuffer, &lootitem, sizeof(LootingItem_Struct));
 
+	// Diagnostic for the Laurion/RoF2 slot overlap: EQEmu's canonical slot space is RoF2 based (general
+	// 23-32, cursor 33) and Laurion's two extra general slots ride on canonical 34/35. Free-slot
+	// resolution goes through SlotVersion(), so if the inventory version is not Laurion the extra slots are
+	// invisible and FindFreeSlot falls through to the cursor queue - which is what makes the cursor error
+	// stick, because the server cursor is a queue while the client renders a single cursor item.
+	const auto* item_data = database.GetItem(item_id);
+	if (item_data) {
+		const int16 free_slot = c->GetInv().FindFreeSlot(item_data->IsClassBag(), false, item_data->Size, false);
+		LogLootFilters(
+			"[{}] slot space check - slot_version [{}] general_end [{}] free_slot [{}]",
+			c->GetCleanName(),
+			static_cast<int>(c->GetInv().SlotVersion()),
+			c->GetInv().GeneralEnd(),
+			free_slot
+		);
+	}
+
 	LogLootFilters(
-		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}]",
+		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}] cursor queue [{}]",
 		c->GetCleanName(),
 		item_id,
 		slot,
 		quantity,
-		GetID()
+		GetID(),
+		c->GetInv().CursorSize()
 	);
 
-	LootCorpseItem(c, &app);
+	// allow_cursor_fallback = false: the AdvLoot button is "put it in my bags", and the cursor queue is the
+	// thing that desyncs against the Laurion client (the client renders one cursor item, the server queue
+	// holds many).
+	LootCorpseItem(c, &app, false);
 
 	// The row is resolved from the client's point of view whether the loot succeeded or not (the client
 	// already moved the unit out of the shared pool), so release the lockout either way.
@@ -2602,6 +2663,275 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 	if (!c->HasGroup() && !c->HasRaid()) {
 		c->SendAdvLootCorpseRebuild();
 	}
+}
+
+AdvLoot::Roll* Corpse::GetAdvLootRoll(uint32_t item_id)
+{
+	auto it = m_advloot_rolls.find(item_id);
+	return it == m_advloot_rolls.end() ? nullptr : &it->second;
+}
+
+void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll)
+{
+	roll.armed = true;
+	roll.ask_timer.SetTimer(RuleI(Loot, AdvLootAskTimerSeconds) * 1000);
+
+	LogLootFilters(
+		"[{}] advloot roll armed item [{}] corpse [{}] window [{}]s",
+		roll.item_name,
+		roll.item_id,
+		GetID(),
+		RuleI(Loot, AdvLootAskTimerSeconds)
+	);
+}
+
+// Chat line to every participant on the row. The client's own AdvLoot window shows the same state, so
+// using the string ids from eqstr_us.txt 11300-11323 keeps the wording identical to the client.
+void Corpse::AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
+	const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5)
+{
+	for (const auto& participant: roll.participants) {
+		Client* client = entity_list.GetClientByCharID(participant.character_id);
+		if (!client) {
+			continue;
+		}
+		client->MessageString(Chat::Yellow, string_id, arg1, arg2, arg3, arg4, arg5);
+	}
+}
+
+AdvLoot::Roll& Corpse::RecordAdvLootChoice(Client* c, uint32_t item_id, uint32_t choice)
+{
+	auto it = m_advloot_rolls.find(item_id);
+	if (it == m_advloot_rolls.end()) {
+		AdvLoot::Roll roll;
+		roll.corpse_key = GetID();
+		roll.item_id    = item_id;
+
+		const auto* item = database.GetItem(item_id);
+		if (item) {
+			roll.item_name = item->Name;
+		}
+
+		it = m_advloot_rolls.insert(std::make_pair(item_id, roll)).first;
+	}
+
+	AdvLoot::Roll& roll = it->second;
+
+	AdvLoot::Participant* participant = nullptr;
+	for (auto& p: roll.participants) {
+		if (p.character_id == c->CharacterID()) {
+			participant = &p;
+			break;
+		}
+	}
+
+	if (!participant) {
+		AdvLoot::Participant p;
+		p.character_id = c->CharacterID();
+		p.name         = c->GetCleanName();
+		p.choice       = choice;
+		p.opt_in_order = ++m_advloot_opt_in_counter;
+		roll.participants.push_back(p);
+		participant = &roll.participants.back();
+	} else {
+		participant->choice = choice;
+	}
+
+	// Solo never arms a timer - there is no competition, so the choice resolves immediately.
+	if (!c->HasGroup() && !c->HasRaid()) {
+		ResolveAdvLootRoll(roll);
+		return roll;
+	}
+
+	// No competition yet: the first participant on a row in a group is not a roll, so award it now.
+	// A roll only exists once a second Need/Greed participant appears on the same row.
+	if (roll.participants.size() == 1) {
+		ResolveAdvLootRoll(roll);
+		return roll;
+	}
+
+	// Decision 1: the master looter arms the window by moving the row to AskAutoRoll (subcmd 0x11
+	// state 2). The rule lets the first opt-in arm it when the master looter has not, so a group whose
+	// master looter never acts still resolves.
+	if (!roll.armed && RuleB(Loot, AdvLootAutoStartTimer)) {
+		ArmAdvLootRoll(roll);
+	}
+
+	return roll;
+}
+
+void Corpse::ProcessAdvLootRolls()
+{
+	for (auto& entry: m_advloot_rolls) {
+		AdvLoot::Roll& roll = entry.second;
+		if (!roll.armed) {
+			continue;
+		}
+
+		if (roll.ask_timer.Check()) {
+			ResolveAdvLootRoll(roll);
+		}
+	}
+}
+
+void Corpse::ResolveAdvLootRoll(AdvLoot::Roll& roll)
+{
+	std::vector<AdvLoot::Participant*> need;
+	std::vector<AdvLoot::Participant*> greed;
+
+	for (auto& p: roll.participants) {
+		if (p.choice == AdvLoot::ChoiceNeed) {
+			need.push_back(&p);
+		} else if (p.choice == AdvLoot::ChoiceGreed) {
+			greed.push_back(&p);
+		}
+	}
+
+	// Need tier beats Greed. With only Greed present, the highest roll wins.
+	std::vector<AdvLoot::Participant*>& tier = need.empty() ? greed : need;
+
+	roll.armed = false;
+	roll.ask_timer.Disable();
+
+	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
+	if (!quantity) {
+		quantity = 1;
+	}
+
+	char count_str[32];
+	char roll_str[32];
+
+	if (tier.empty()) {
+		// Nothing claimed: the item stays on the corpse and the row drops.
+		roll.state = AdvLoot::StateRemoved;
+
+		const char* count = ConvertArray(static_cast<int64>(quantity), count_str);
+
+		// The participants list is empty in this branch, so the line goes to the players who had rows on
+		// this corpse.
+		for (const auto& entry: m_advloot_pending_rows) {
+			Client* client = entity_list.GetClientByCharID(entry.first);
+			if (client) {
+				client->MessageString(Chat::Yellow, AdvLoot::StringId::NoOneInterested, count, roll.item_name.c_str());
+			}
+		}
+
+		LogLootFilters(
+			"advloot resolve item [{}] corpse [{}] - no Need or Greed participant, left on corpse",
+			roll.item_id,
+			GetID()
+		);
+
+		return;
+	}
+
+	// Rolls are drawn at resolution, one per participant.
+	for (auto* p: tier) {
+		p->roll = EQ::Random::Instance()->Int(1, 1000);
+	}
+
+	AdvLoot::Participant* winner = tier[0];
+	for (auto* p: tier) {
+		if (p->roll > winner->roll) {
+			winner = p;
+		} else if (p->roll == winner->roll && p->opt_in_order < winner->opt_in_order) {
+			// Decision 2: earliest opt-in wins a tie. No re-roll - the client stores one roll value per
+			// participant and has no packet path that clears it.
+			winner = p;
+		}
+	}
+
+	Client* winner_client = entity_list.GetClientByCharID(winner->character_id);
+	if (!winner_client) {
+		// Decision 4 edge case: a participant who disconnected before expiry is dropped. If the tier
+		// empties, the item is left on the corpse.
+		LogLootFilters(
+			"advloot winner [{}] for item [{}] is not online - item left on corpse",
+			winner->name,
+			roll.item_id
+		);
+		roll.state = AdvLoot::StateRemoved;
+		return;
+	}
+
+	roll.state = AdvLoot::StateAskCompleted;
+
+	if (tier.size() > 1) {
+		for (auto* p: tier) {
+			Client* client = entity_list.GetClientByCharID(p->character_id);
+			if (!client) {
+				continue;
+			}
+
+			char participant_roll[32];
+			client->MessageString(Chat::Yellow, AdvLoot::StringId::RolledOn,
+				p->name.c_str(),
+				ConvertArray(static_cast<int64>(p->roll), participant_roll),
+				roll.item_name.c_str());
+		}
+	}
+
+	AdvLootChatToRoll(roll, AdvLoot::StringId::WonRoll,
+		winner->name.c_str(),
+		need.empty() ? "Greed" : "Need",
+		ConvertArray(static_cast<int64>(tier.size()), count_str),
+		roll.item_name.c_str(),
+		ConvertArray(static_cast<int64>(winner->roll), roll_str));
+
+	LogLootFilters(
+		"advloot resolve item [{}] corpse [{}] tier [{}] winner [{}] roll [{}]",
+		roll.item_id,
+		GetID(),
+		need.empty() ? "Greed" : "Need",
+		winner->name,
+		winner->roll
+	);
+
+	// The client's CAdvancedLootWnd::DoAdvLootAction only fires when the assignee is non-zero, so the
+	// winner is shown by the state 4 packet with the assignee set. Send it before the delivery so the
+	// row and the chat line agree.
+	EQApplicationPacket* state_packet = AdvLoot::BuildStatePacket(roll.item_id, winner->character_id, AdvLoot::StateAskCompleted, 0);
+	if (state_packet) {
+		for (const auto& participant: roll.participants) {
+			Client* client = entity_list.GetClientByCharID(participant.character_id);
+			if (client) {
+				client->QueuePacket(state_packet);
+			}
+		}
+		delete state_packet;
+	}
+
+	AdvLootTransaction(winner_client, roll.item_id, quantity);
+}
+
+void Corpse::AssignAdvLootRoll(AdvLoot::Roll& roll, Client* target)
+{
+	// Decision 3: assignment is an override that resolves immediately and cancels the timer.
+	roll.armed = false;
+	roll.ask_timer.Disable();
+	roll.state = AdvLoot::StateAskCompleted;
+
+	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
+	if (!quantity) {
+		quantity = 1;
+	}
+
+	char count_str[32];
+
+	AdvLootChatToRoll(roll, AdvLoot::StringId::GivenTo,
+		roll.item_name.c_str(),
+		ConvertArray(static_cast<int64>(quantity), count_str),
+		corpse_name,
+		target->GetCleanName());
+
+	LogLootFilters(
+		"advloot assignment item [{}] corpse [{}] to [{}] - timer cancelled",
+		roll.item_id,
+		GetID(),
+		target->GetCleanName()
+	);
+
+	AdvLootTransaction(target, roll.item_id, quantity);
 }
 
 void Corpse::LoadPlayerCorpseDecayTime(uint32 corpse_db_id)

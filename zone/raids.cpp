@@ -2991,3 +2991,23 @@ void Raid::EmptyRaidMembers()
 		members[i].member_name[0]  = '\0';
 	}
 }
+
+// Decision 4: RaidLootType is the authority rule, the AdvLoot mode string is derived from it. The raid
+// leader is the default master looter; /advloot mol moves it to a member flagged
+// master_loot_candidate.
+Client* Raid::GetMasterLooter()
+{
+	if (!master_looter_name.empty()) {
+		Client* c = entity_list.GetClientByName(master_looter_name.c_str());
+		if (c && IsRaidMember(c)) {
+			return c;
+		}
+	}
+
+	return leader;
+}
+
+void Raid::SetMasterLooter(Client* c)
+{
+	master_looter_name = c ? c->GetCleanName() : "";
+}

@@ -221,7 +221,7 @@ public:
 	uint32 GetLootQuantityByItemID(uint32 item_id);
 	std::vector<int> GetLootList();
 	inline const LootItems &GetLootItems() { return m_item_list; }
-	void LootCorpseItem(Client *c, const EQApplicationPacket *app);
+	void LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback = true);
 	void EndLoot(Client *c, const EQApplicationPacket *app);
 	void MakeLootRequestPackets(Client *c, const EQApplicationPacket *app);
 	void AllowPlayerLoot(Mob *them, uint8 slot);
@@ -263,6 +263,24 @@ public:
 	// and then reuses LootCorpseItem so all the existing checks (lore, cooldown, lock, bag limits)
 	// still apply.
 	void AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity);
+
+	// Advanced Loot roll state owned by the server. One Roll per item on this corpse.
+	// The client cannot report a player's Need/Greed choice over the wire (no sub-command carries it -
+	// 0x11 is the Ask/AutoRoll state only), so the choice is recorded from /advloot need|greed|never
+	// and pushed back to the window through subcmd 0x0b.
+	AdvLoot::Roll* GetAdvLootRoll(uint32_t item_id);
+	AdvLoot::Roll& RecordAdvLootChoice(Client *c, uint32_t item_id, uint32_t choice);
+	void ArmAdvLootRoll(AdvLoot::Roll& roll);
+	void ProcessAdvLootRolls();
+	void ResolveAdvLootRoll(AdvLoot::Roll& roll);
+	void AssignAdvLootRoll(AdvLoot::Roll& roll, Client *target);
+
+private:
+	void AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
+		const char* arg1, const char* arg2 = nullptr, const char* arg3 = nullptr,
+		const char* arg4 = nullptr, const char* arg5 = nullptr);
+
+public:
 	uint32 CountItems();
 	bool CanPlayerLoot(int character_id);
 
@@ -337,6 +355,8 @@ private:
 	Timer                    m_check_owner_online_timer;
 	Timer                    m_check_rezzable_timer;
 	std::map<uint32_t, uint32_t> m_advloot_pending_rows;   // character id -> unresolved AdvLoot rows
+	std::map<uint32_t, AdvLoot::Roll> m_advloot_rolls;     // item id -> roll
+	uint32_t m_advloot_opt_in_counter = 0;                 // monotonic, the tie-break order
 	uint8                    m_killed_by_type;
 	bool                     m_is_rezzable;
 	EQ::TintProfile          m_item_tint;

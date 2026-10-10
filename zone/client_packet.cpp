@@ -1418,6 +1418,9 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	LoadAdvLootSettings();
 	LoadAdvLootFilters();
 	SendAdvLootFilterSet();
+	// The name gate is opened by the filter set reply above; the loot mode is the master looter
+	// announcement (decision 4), so it follows it.
+	SendAdvLootLootMode();
 
 	// this pattern is strange
 	// this is remnants of the old way of doing things
@@ -10604,7 +10607,13 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				return;
 			}
 
-			Corpse* corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+			// field_b is the corpse spawn id, so it wins over advloot_corpse: the window can hold rows from
+			// several corpses at once, and the last corpse the client opened is not necessarily the one the
+			// clicked row came from (live capture showed a row from corpse 175 looting against corpse 29).
+			Corpse* corpse = entity_list.GetCorpseByID(static_cast<uint16_t>(corpse_key));
+			if (!corpse) {
+				corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+			}
 			if (!corpse) {
 				LogLootFilters(
 					"[{}] transaction for item [{}] but no corpse is tracked",
@@ -10619,7 +10628,38 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				transfer_quantity = 1;
 			}
 
-			corpse->AdvLootTransaction(this, static_cast<uint32_t>(item_id), transfer_quantity);
+			// The client's Need/Greed choice is not carried on any sub-command: FUN_1400a5330 sends 0x11
+			// with state 1 or 2 from row +0x68 (bAutoRoll) only, so 0x11 is the Ask/AutoRoll state, not a
+			// choice. The server reads the choice from its own record, which /advloot need|greed|never
+			// writes - the only capture path (advloot.md S3.12).
+			uint32_t choice = AdvLoot::ChoiceNone;
+			uint32_t bits = AdvLootFilterBits(static_cast<uint32_t>(item_id));
+			if (bits & AdvLoot::FilterBitNeverLoot) {
+				choice = AdvLoot::ChoiceNever;
+			} else if (bits & AdvLoot::FilterBitAlwaysNeed) {
+				choice = AdvLoot::ChoiceNeed;
+			} else if (bits & AdvLoot::FilterBitAlwaysGreed) {
+				choice = AdvLoot::ChoiceGreed;
+			}
+
+			if (choice == AdvLoot::ChoiceNone) {
+				// No recorded choice - this is the plain loot button, so loot it now as before.
+				corpse->AdvLootTransaction(this, static_cast<uint32_t>(item_id), transfer_quantity);
+			} else {
+				// Resolves immediately when there is no competition (solo, or a single participant);
+				// otherwise it arms the ask window and delivery happens at resolution.
+				AdvLoot::Roll& roll = corpse->RecordAdvLootChoice(this, static_cast<uint32_t>(item_id), choice);
+				LogLootFilters(
+					"[{}] choice [{}] item [{}] corpse [{}] - [{}], [{}], armed [{}]",
+					GetCleanName(),
+					AdvLoot::ChoiceName(choice),
+					item_id,
+					corpse->GetID(),
+					roll.participants.size(),
+					AdvLoot::StateName(roll.state),
+					roll.armed ? "yes" : "no"
+				);
+			}
 
 			// Subcmd 0x0e wire order (FUN_140086cb0 -> FUN_140151c60 case 0xe):
 			//   u32 A, u32 B, u64 item_id, u16 quantity, u8 flag, string name
@@ -10627,6 +10667,12 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 			// record's managed flag, which we always write as 1). uVar9 - the flag that lets
 			// FUN_1400a4eb0 create the Personal Loot row - is only 1 when the name matches the local
 			// player AND the reply's flag byte is 0, so do not echo the request's flag.
+			//
+			// Known limitation: the reply is sent even when the row is waiting for a roll, because the
+			// clicker's CLootInProgress (record +0x6C) is only cleared by an exact-match 0x0e - without it
+			// a second click errors with string 643. The client therefore shows the quantity as moved to
+			// the clicker's personal pool before the roll resolves; the winner is shown by the 0x11
+			// state 4 + assignee packet at resolution.
 			EQApplicationPacket* out = AdvLoot::BuildTransactionPacket(
 				record_c,
 				corpse_key,
@@ -10692,6 +10738,25 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 
 			if (reader.truncated) {
 				return;
+			}
+
+			// Decision 1: state 2 (AskAutoRoll) is the master looter arming the per-item window. State 3
+			// (Stop) cancels it, and Stop -> Ask re-arms on the next opt-in.
+			if (state == AdvLoot::StateAskAutoRoll || state == AdvLoot::StateStop) {
+				Corpse* corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+				if (corpse) {
+					AdvLoot::Roll* roll = corpse->GetAdvLootRoll(item_id);
+					if (roll) {
+						if (state == AdvLoot::StateAskAutoRoll) {
+							corpse->ArmAdvLootRoll(*roll);
+						} else {
+							roll->armed = false;
+							roll->ask_timer.Disable();
+							roll->state = state;
+							LogLootFilters("[{}] stop cancelled the roll window on item [{}]", GetCleanName(), item_id);
+						}
+					}
+				}
 			}
 
 			EQApplicationPacket* out = AdvLoot::BuildStatePacket(item_id, assignee, state, flag);

@@ -801,7 +801,12 @@ bool SharedDatabase::GetInventory(Client *c)
 
 		int16 put_slot_id;
 		// this had  || slot_id == EQ::invslot::slotCursor ??s
-		if (EQ::ValueWithin(slot_id, EQ::invbag::CURSOR_BAG_BEGIN, EQ::invbag::CURSOR_BAG_END)) {
+		if (slot_id == EQ::invslot::slotCursor) {
+			// SaveCursor writes the first queue entry to canonical slotCursor (33), but the branch below only
+			// covers the cursor BAG slots, so a persisted cursor item lands in m_inv[33] while GetItem(33)
+			// reads the queue. Route it to the queue so the two agree.
+			put_slot_id = inv.PushCursor(*inst);
+		} else if (EQ::ValueWithin(slot_id, EQ::invbag::CURSOR_BAG_BEGIN, EQ::invbag::CURSOR_BAG_END)) {
 			put_slot_id = inv.PushCursor(*inst);
 		} else {
 			put_slot_id = inv.PutItem(slot_id, *inst);

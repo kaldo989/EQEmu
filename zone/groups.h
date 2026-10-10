@@ -94,6 +94,12 @@ public:
 	void	MemberZoned(Mob* removemob);
 	bool	IsLeader(const char* name);
 	inline bool IsLeader(Mob* m) { return m == leader; };
+
+	// Decision 4: the group leader is the default master looter. /advloot mol moves it to a member
+	// flagged master_loot_candidate. Re-evaluated on leadership and membership change.
+	Client* GetMasterLooter();
+	void SetMasterLooter(Client* c);
+	std::string GetMasterLooterName() const { return master_looter_name; }
 	uint8	GroupCount();
 	uint32	GetHighestLevel();
 	uint32	GetLowestLevel();
@@ -176,6 +182,7 @@ public:
 
 private:
 	Mob*	leader;
+	std::string master_looter_name;
 	GroupLeadershipAA_Struct LeaderAbilities;
 	std::string	MainTankName;
 	std::string	MainAssistName;

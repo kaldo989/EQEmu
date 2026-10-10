@@ -142,6 +142,13 @@ public:
 	uint16	GetAvgLevel();
 
 	uint32	GetLootType() { return LootType; }
+
+	// Decision 4: RaidLootType is the authority rule (who may resolve or assign), the AdvLoot mode
+	// string is a derived display value. The raid leader is the default master looter; /advloot mol
+	// moves it to a member flagged master_loot_candidate.
+	Client* GetMasterLooter();
+	void SetMasterLooter(Client* c);
+	std::string GetMasterLooterName() const { return master_looter_name; }
 	void	ChangeLootType(uint32 type);
 	void	AddRaidLooter(const char* looter);
 	void	RemoveRaidLooter(const char* looter);
@@ -286,6 +293,7 @@ public:
 	Raid_Marked_NPC	marked_npcs[MAX_MARKED_NPCS];
 protected:
 	Client *leader;
+	std::string master_looter_name;
 	bool locked;
 	uint32 LootType;
 	bool disbandCheck;

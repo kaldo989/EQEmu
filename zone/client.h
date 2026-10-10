@@ -1042,6 +1042,9 @@ public:
 	uint32_t AdvLootFilterBits(uint32_t item_id) const;
 	void SendAdvLootCorpse(const AdvLoot::CorpseGroup& corpse_group);
 	void SendAdvLootCorpseRebuild();
+	// subcmd 0x13 - the master looter announcement. The client prints the loot mode name for the member
+	// whose name matches the local player, so the mode is derived per viewer (decision 4).
+	void SendAdvLootLootMode();
 	void SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t icon, const std::string& name);
 
 	void SummonHorse(uint16 spell_id);
