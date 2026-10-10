@@ -20,6 +20,7 @@ N(OP_ExploreUnknown),
 // start (please add new opcodes in descending order and re-order any name changes where applicable)
 N(OP_0x0193),
 N(OP_0x0347),
+N(OP_0x0ede),	// SoF x64: xtarget single slot update (u32 spawn_id, u32 slot), bidirectional
 // SoF x64 (Laurion) zone opcodes still unresolved by RE - kept as raw hex names
 N(OP_0x59bd),
 N(OP_0x5e4a),

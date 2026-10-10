@@ -1541,12 +1541,25 @@ namespace Laurion {
 			/*009*/	char	Name[64];
 		};
 
-		/* 0x0ede OP_XTargetRequest - payload 8, used in both directions */
-		// Client send site FUN_140229f50 (/xtarget set) and client receive handler branch 0x1401e02cb
-		// use the same opcode and the same layout. The receive handler resolves spawn_id, derives the
-		// slot type (2 = PC, 3 = pet) and calls FUN_14028fb90(list, slot, type, name), which clears the
-		// slot's spawn id and status before writing the name.
+		/* 0x5c3e OP_XTargetRequest - variable length (12 + strlen(name) + 1) */
+		// Client send site FUN_14028fb90 (xtarget slot setter, reached from __ExecuteCmd and from the
+		// 0x0ede receive branch). This is the only packet that carries the slot TYPE, so it is what lets
+		// the server know a slot is MyPetTarget (24) - the Pet window reads that slot.
+		// The list is pinstLocalPC + 0x2EA0 (pExtendedTargetList), record 0x4C bytes:
+		//   u32 xTargetType, u32 status, u32 spawn_id, char name[64].
+		// The name is null terminated on the wire, so only the fixed header is a struct here.
 		struct XTargetRequest_Struct {
+			/*000*/	uint32	Flag;      /* constant 1 */
+			/*004*/	uint32	Slot;
+			/*008*/	uint32	Type;      /* XTargetType, MQ XTargetTypes 0..26 */
+			/*012*/	char	Name[64];  /* null terminated string on the wire */
+		};
+
+		/* 0x0ede OP_0x0ede - payload 8, used in both directions */
+		// Send site FUN_140229f50 (/xtarget set <slot> <name>) and receive branch 0x1401e02cb share this
+		// opcode and layout. The receive handler derives the type from the spawn (2 = PC, 3 = NPC) and
+		// calls FUN_14028fb90(), the same slot setter that drives 0x5c3e.
+		struct XTargetSlotUpdate_Struct {
 			/*000*/	uint32	SpawnID;
 			/*004*/	uint32	Slot;
 			/*008*/

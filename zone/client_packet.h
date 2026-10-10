@@ -40,6 +40,8 @@
 	/* Connected opcode handlers*/
 	void Handle_0x0193(const EQApplicationPacket *app);
 	void Handle_0x01e7(const EQApplicationPacket *app);
+	// RE SoF x64: 0x0ede xtarget single slot update (u32 spawn_id, u32 slot), bidirectional.
+	void Handle_0x0ede(const EQApplicationPacket *app);
 	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
 	void Handle_0x59bd(const EQApplicationPacket *app);
 	void Handle_0x5e4a(const EQApplicationPacket *app);

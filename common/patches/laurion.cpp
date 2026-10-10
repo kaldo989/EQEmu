@@ -4844,13 +4844,72 @@ namespace Laurion
 		dest->FastQueuePacket(&in, ack_req);
 	}
 
-	// 0x0ede - extended target slot. Client send site FUN_140229f50 (/xtarget set) and client receive
-	// branch 0x1401e02cb use the same opcode and the same 8 byte layout: u32 spawn_id, u32 slot.
-	// The receive handler derives the slot type (2 = PC, 3 = pet) from the spawn and calls
-	// FUN_14028fb90(), which clears the slot status and spawn id before writing the name.
+	// 0x5c3e - extended target slot assignment. Client send site FUN_14028fb90 (the slot setter, reached
+	// from __ExecuteCmd and from the 0x0ede receive branch). Variable length:
+	//   u32 flag (constant 1), u32 slot, u32 type, null terminated name
+	// The type is the XTargetType enum (MQ XTargetTypes 0..26). This is the only packet that tells the
+	// server what a slot IS, so it is what makes MyPetTarget (24) - the slot the Pet window reads - work.
+	// Client::Handle_OP_XTargetRequest already reads this exact field order.
 	ENCODE(OP_XTargetRequest) {
-		ENCODE_LENGTH_EXACT(structs::XTargetRequest_Struct);
-		SETUP_DIRECT_ENCODE(structs::XTargetRequest_Struct, structs::XTargetRequest_Struct);
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		// XTARGET_HARDCAP is 20 (zone/client.h); the client itself allows up to 30 slots.
+		const uint32 xtarget_hardcap = 20;
+
+		if (in->size < 12) {
+			LogNetcode("[STRUCTS] XTargetRequest too short: got [{}], expected at least 12", in->size);
+			delete in;
+			return;
+		}
+
+		uint32 flag = 0;
+		memcpy(&flag, in->pBuffer, 4);
+		if (flag != 1) {
+			LogNetcode("[STRUCTS] XTargetRequest flag [{}] is not the constant 1", flag);
+			delete in;
+			return;
+		}
+
+		uint32 slot = 0;
+		memcpy(&slot, in->pBuffer + 4, 4);
+		if (slot >= xtarget_hardcap) {
+			LogNetcode("[STRUCTS] XTargetRequest slot [{}] >= hardcap [{}]", slot, xtarget_hardcap);
+			delete in;
+			return;
+		}
+
+		uint32 type = 0;
+		memcpy(&type, in->pBuffer + 8, 4);
+		if (type > 26) {
+			LogNetcode("[STRUCTS] XTargetRequest type [{}] outside XTargetType range 0..26", type);
+			delete in;
+			return;
+		}
+
+		uint32 name_len = 0;
+		while (name_len < 64 && 12 + name_len < in->size && in->pBuffer[12 + name_len] != 0) ++name_len;
+		if (name_len >= 64) {
+			LogNetcode("[STRUCTS] XTargetRequest name length [{}] exceeds client slot name [64]", name_len);
+			delete in;
+			return;
+		}
+
+		if (in->size != 12 + name_len + 1) {
+			LogNetcode("[STRUCTS] XTargetRequest size [{}] != 12 + name [{}] + null", in->size, name_len);
+			delete in;
+			return;
+		}
+
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
+	// 0x0ede - single extended target slot update, used in both directions. Client send site
+	// FUN_140229f50 (/xtarget set <slot> <name>) and client receive branch 0x1401e02cb share this opcode
+	// and layout: u32 spawn_id, u32 slot. It carries no type, so it can only ever fill a PC/NPC slot.
+	ENCODE(OP_0x0ede) {
+		ENCODE_LENGTH_EXACT(structs::XTargetSlotUpdate_Struct);
+		SETUP_DIRECT_ENCODE(structs::XTargetSlotUpdate_Struct, structs::XTargetSlotUpdate_Struct);
 
 		OUT(SpawnID);
 		OUT(Slot);

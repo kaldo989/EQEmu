@@ -1,5 +1,6 @@
 
 //list of packets we need to encode on the way out:
+E(OP_0x0ede)
 E(OP_AggroMeterTargetInfo)
 E(OP_AggroMeterUpdate)
 E(OP_Action)

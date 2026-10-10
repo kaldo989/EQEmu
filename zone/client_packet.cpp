@@ -108,6 +108,8 @@ void MapOpcodes()
 
 	// connected opcode handler assignments:
 	ConnectedOpcodes[OP_0x0193] = &Client::Handle_0x0193;
+	// RE SoF x64: 0x0ede xtarget single slot update, resolved.
+	ConnectedOpcodes[OP_0x0ede] = &Client::Handle_0x0ede;
 	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
 	ConnectedOpcodes[OP_0x59bd] = &Client::Handle_0x59bd;
 	ConnectedOpcodes[OP_0x5e4a] = &Client::Handle_0x5e4a;
@@ -16840,35 +16842,45 @@ void Client::Handle_OP_XTargetOpen(const EQApplicationPacket *app)
 	FastQueuePacket(&outapp);
 }
 
-void Client::Handle_OP_XTargetRequest(const EQApplicationPacket *app)
+void Client::Handle_0x0ede(const EQApplicationPacket *app)
 {
-	// Laurion sends u32 spawn_id, u32 slot (8 bytes) from FUN_140229f50 (/xtarget set). The classic
-	// layout is u32 flag(1), u32 slot, u32 type, char name[] (12+ bytes). Both are accepted.
-	if (app->size == 8)
+	// RE SoF x64: send site FUN_140229f50 (/xtarget set <slot> <name>) and client receive branch
+	// 0x1401e02cb share this opcode. Layout: u32 spawn_id, u32 slot.
+	// This form carries no slot type, so the type is derived from the spawn exactly as the client's
+	// branch does it (2 = PC, 3 = NPC). The type-carrying form is OP_XTargetRequest (0x5c3e).
+	if (app->size != 8)
 	{
-		uint32 SpawnID = app->ReadUInt32(0);
-		uint32 Slot = app->ReadUInt32(4);
-
-		if (Slot >= XTARGET_HARDCAP)
-			return;
-
-		Mob *m = entity_list.GetMob(SpawnID);
-		if (!m)
-			return;
-
-		// The client derives the slot type from the spawn here: 2 = PC, 3 = NPC, which matches
-		// XTargetType CurrentTargetPC / CurrentTargetNPC (see FUN_140229f50 and branch 0x1401e02cb).
-		XTargets[Slot].Type = m->IsClient() ? CurrentTargetPC : CurrentTargetNPC;
-		XTargets[Slot].ID = m->GetID();
-		strncpy(XTargets[Slot].Name, m->GetName(), 64);
-
-		SendXTargetPacket(Slot, m);
+		LogDebug("Size mismatch in OP_0x0ede, expected 8, got [{}]", app->size);
+		DumpPacket(app);
 		return;
 	}
 
+	uint32 SpawnID = app->ReadUInt32(0);
+	uint32 Slot = app->ReadUInt32(4);
+
+	if (Slot >= XTARGET_HARDCAP)
+		return;
+
+	Mob *m = entity_list.GetMob(SpawnID);
+	if (!m)
+		return;
+
+	XTargets[Slot].Type = m->IsClient() ? CurrentTargetPC : CurrentTargetNPC;
+	XTargets[Slot].ID = m->GetID();
+	strncpy(XTargets[Slot].Name, m->GetCleanName(), 64);
+
+	SendXTargetPacket(Slot, m);
+}
+
+void Client::Handle_OP_XTargetRequest(const EQApplicationPacket *app)
+{
+	// Laurion 0x5c3e (send site FUN_14028fb90, the xtarget slot setter). Layout:
+	//   u32 flag (constant 1), u32 slot, u32 type, null terminated name
+	// This is the only packet that carries the slot TYPE, so it is what lets a slot be typed
+	// MyPetTarget (24) - the slot the Pet window reads. The 8 byte /xtarget set form is OP_0x0ede.
 	if (app->size < 12)
 	{
-		LogDebug("Size mismatch in OP_XTargetRequest, expected 8 (Laurion) or at least 12, got [{}]", app->size);
+		LogDebug("Size mismatch in OP_XTargetRequest, expected at least 12, got [{}]", app->size);
 		DumpPacket(app);
 		return;
 	}
