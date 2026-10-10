@@ -1506,6 +1506,18 @@ namespace Laurion {
 			/*004*/
 		};
 
+		/* 0x5b2d OP_PetHoTT - payload 4 */
+		// Client handler ZonePacket__dispatchRecv branch 0x1401d7274: payload dword 0 is the pet's target
+		// spawn id. It resolves the pet object from [pinstLocalPlayer + 0x630], then writes
+		// [pet_spawn + 0xF58] (the pet's Target pointer) with GetSpawnByID(payload dword 0), or clears
+		// +0xF58 when payload dword 0 is 0. __GetGaugeValueFromEQ case 0x29 (GAUGETYPE_TARGET_OF_PET)
+		// reads that same +0xF58, so this packet is what the Pet Info window's target gauge is fed by.
+		// The xtarget slot (type 24 MyPetTarget) only drives the xtarget list, not this window.
+		struct PetHoTT_Struct {
+			/*000*/	uint32	PetTarget;
+			/*004*/
+		};
+
 		/* 0x5479 OP_AggroMeterTargetInfo - payload 8 */
 		// Client handler FUN_1400ac650: payload[0] -> AggroMeterManagerClient + 0x1E0 (AggroLockID),
 		// payload[4] -> + 0x1E4 (AggroTargetID).

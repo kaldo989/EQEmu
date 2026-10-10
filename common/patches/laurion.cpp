@@ -4737,6 +4737,19 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	// 0x5b2d - pet's target. Client branch 0x1401d7274 stores payload dword 0 as the pet's Target
+	// pointer (or clears it when 0). The Pet Info window reads that field via
+	// __GetGaugeValueFromEQ case 0x29, so this is the only packet that can populate the window.
+	// NPC::SetTarget() is the only producer.
+	ENCODE(OP_PetHoTT) {
+		ENCODE_LENGTH_EXACT(structs::PetHoTT_Struct);
+		SETUP_DIRECT_ENCODE(structs::PetHoTT_Struct, structs::PetHoTT_Struct);
+
+		OUT(PetTarget);
+
+		FINISH_ENCODE();
+	}
+
 	// 0x5479 - aggro meter lock + target id. Client handler FUN_1400ac650 writes payload[0] to
 	// AggroMeterManagerClient + 0x1E0 (AggroLockID) and payload[4] to + 0x1E4 (AggroTargetID).
 	ENCODE(OP_AggroMeterTargetInfo) {
