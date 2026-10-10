@@ -15374,6 +15374,13 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		if (IsAIControlled())
 			return;
 
+		// Laurion sends the stand state as type 6; the patch layer maps it onto AppearanceType::Animation
+		// (structs::LaurionAppearance::Animation == 6). FUN_1402F6C40 is the client's stand-state setter and
+		// the only thing that sends this packet, and the values it passes are MQ2's STANDSTATE_* set: 100
+		// stand, 102 casting, 105 bind, 110 sit, 111 duck, 115 lie, 120 dead. EQEmu previously accepted
+		// only five of them and dropped the rest as "unknown appearance", so the client's own state change
+		// never reached the other clients.
+
 		if (sa->parameter == Animation::Standing) {
 			SetAppearance(eaStanding);
 			playeraction = 0;
@@ -15381,6 +15388,10 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 			BindWound(this, false, true);
 			camp_timer.Disable();
 			bot_camp_timer.Disable();
+		}
+		else if (sa->parameter == Animation::Freeze) { // 102, casting
+			// The server has no casting appearance - the spell timer owns it. Nothing to change here, but
+			// the client's state change still has to reach everyone else.
 		}
 		else if (sa->parameter == Animation::Sitting) {
 			SetAppearance(eaSitting);
@@ -15404,10 +15415,21 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 			playeraction = 3;
 			InterruptSpell();
 		}
-		else if (sa->parameter == Animation::Looting) {
+		else if (sa->parameter == Animation::Looting) { // 105: bind on Laurion, looting on older clients
 			SetAppearance(eaLooting);
 			playeraction = 4;
 			SetFeigned(false);
+		}
+		else if (sa->parameter == Animation::Dead) { // 120
+			// Do not let a client declare itself dead. Death is decided by HasDied() and announced with
+			// OP_Death. This is the desync path: a client whose HP display is a large negative number goes to
+			// the ground and reports 120 while the server still thinks it is on its feet. Accept the report
+			// only when we already agree, and echo it so the corpse renders for everyone else.
+			if (!dead) {
+				LogError("Client [{}] reported stand state 120 (dead) while server HP is [{}]", name, GetHP());
+				return;
+			}
+			SetAppearance(eaDead);
 		}
 
 		else {

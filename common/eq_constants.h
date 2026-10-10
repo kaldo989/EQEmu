@@ -68,12 +68,18 @@ namespace AppearanceType {
 }
 
 namespace Animation {
-	constexpr uint32 Standing  = 100;
-	constexpr uint32 Freeze    = 102;
-	constexpr uint32 Looting   = 105;
-	constexpr uint32 Sitting   = 110;
-	constexpr uint32 Crouching = 111;
-	constexpr uint32 Lying     = 115;
+	// These are the stand-state values the client sends with OP_SpawnAppearance type 6. Laurion's type 6
+	// is mapped onto AppearanceType::Animation by LaurionToServerSpawnAppearanceType
+	// (structs::LaurionAppearance::Animation == 6), so this namespace is the stand-state vocabulary.
+	// MQ2 STANDSTATE_* (EQData.h:267-273) agrees with every value below.
+	constexpr uint32 Standing  = 100; // 'd' STANDSTATE_STAND
+	constexpr uint32 Freeze    = 102; // 'f' STANDSTATE_CASTING - the client's casting/freeze state
+	constexpr uint32 Looting   = 105; // 'i' STANDSTATE_BIND - Laurion uses 105 for binding; "Looting" is
+	                                  // the legacy label from older clients, which had no bind state
+	constexpr uint32 Sitting   = 110; // 'n' STANDSTATE_SIT
+	constexpr uint32 Crouching = 111; // 'o' STANDSTATE_DUCK
+	constexpr uint32 Lying     = 115; // 's' STANDSTATE_FEIGN - feign death / knocked out
+	constexpr uint32 Dead      = 120; // 'x' STANDSTATE_DEAD - the corpse state
 }
 
 constexpr int16 RECAST_TYPE_UNLINKED_ITEM = -1;

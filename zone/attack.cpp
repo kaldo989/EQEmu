@@ -1913,6 +1913,12 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 	SetHorseId(0);
 	ShieldAbilityClearVariables();
 	dead = true;
+	// The appearance has to follow the death. Client::Death() used to leave it at whatever the client was
+	// doing when the killing blow landed, so a player killed while standing stayed eaStanding on the server
+	// and a client zoning in later got StandState 100 for a corpse. GetAppearanceValue(eaDead) is 115 (lie
+	// down), which is the state the client itself reaches first - FUN_1402FB7F0 lies the spawn down and
+	// only then writes 120 straight into +0x290 without sending anything.
+	SetAppearance(eaDead);
 	// The knocked out state ends at death - the appearance is already eaDead, so clear the flag
 	// directly instead of going through SetKnockedOut(), which would stand the client back up.
 	knocked_out = false;
