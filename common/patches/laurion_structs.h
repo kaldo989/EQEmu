@@ -1656,6 +1656,41 @@ namespace Laurion {
 			/*168*/
 		};
 
+		// OP_CharacterCreate (0x6a3c), client -> world, 168 byte body.
+		// Built by FUN_140380ed0; the sibling send site FUN_1403811b0 (0x6ccc) uses the same layout
+		// but fills char_name from the CCharacterCreation window (window + 0x3600).
+		// Only fields with direct evidence are named; the rest stay placeholders.
+		// Evidence: docs/OP_CharacterCreatePacket.md
+		struct CharCreate_Struct {
+			/*000*/	char	char_name[64];   // empty on the 0x6a3c path (name comes from OP_ApproveName)
+			/*064*/	uint64	unknown064;      // CEverQuest + 0x5f0 at send time
+			/*072*/	uint32	gender;          // profile + 0x1544
+			/*076*/	uint32	race;            // profile + 0x1548
+			/*080*/	uint32	class_;          // profile + 0x154c
+			/*084*/	uint32	deity;           // profile + 0x6ea8
+			/*088*/	uint32	start_zone;      // profile + 0x15f4 (StartingCity)
+			/*092*/	uint32	unknown092;      // appearance byte, pinstLocalPlayer + 0xfc5
+			/*096*/	uint32	unknown096;      // appearance byte, pinstLocalPlayer + 0xfca
+			/*100*/	uint32	unknown100;      // appearance byte, pinstLocalPlayer + 0xfc6
+			/*104*/	uint32	unknown104;      // appearance byte, pinstLocalPlayer + 0xfc9
+			/*108*/	uint32	unknown108;      // appearance byte, pinstLocalPlayer + 0xfc4
+			/*112*/	uint32	unknown112;      // appearance byte, pinstLocalPlayer + 0xfc7
+			/*116*/	uint32	unknown116;      // appearance byte, pinstLocalPlayer + 0xfc8
+			/*120*/	uint32	unknown120;      // pinstLocalPlayer + 0x1044
+			/*124*/	uint32	unknown124;      // pinstLocalPlayer + 0x1048
+			/*128*/	uint32	unknown128;      // pinstLocalPlayer + 0x104c
+			/*132*/	uint32	STR;             // CCharacterCreation stat entry 0
+			/*136*/	uint32	STA;             // CCharacterCreation stat entry 3
+			/*140*/	uint32	AGI;             // CCharacterCreation stat entry 2
+			/*144*/	uint32	DEX;             // CCharacterCreation stat entry 1
+			/*148*/	uint32	WIS;             // CCharacterCreation stat entry 5
+			/*152*/	uint32	INT;             // CCharacterCreation stat entry 4
+			/*156*/	uint32	CHA;             // CCharacterCreation stat entry 6
+			/*160*/	uint32	unknown160;      // CCharacterCreation + 0x3874 (combo box choice)
+			/*164*/	uint32	unknown164;      // CCharacterCreation + 0x3876/0x3877/0x3878 selector
+			/*168*/
+		};
+
 #pragma pack()
 
 	};	//end namespace structs

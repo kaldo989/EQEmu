@@ -3823,6 +3823,33 @@ namespace Laurion
 
 	DECODE(OP_ConsiderCorpse) { DECODE_FORWARD(OP_Consider); }
 
+	DECODE(OP_CharacterCreate)
+	{
+		// Incoming body is 168 bytes (opcode 0x6a3c), the emu struct is 92. Only the fields that
+		// are directly evidenced by the client send site FUN_140380ed0 are mapped; the unmapped
+		// appearance / unknown fields are left zero. See docs/OP_CharacterCreatePacket.md.
+		DECODE_LENGTH_EXACT(structs::CharCreate_Struct);
+		SETUP_DIRECT_DECODE(CharCreate_Struct, structs::CharCreate_Struct);
+
+		IN(gender);
+		IN(race);
+		IN(class_);
+		IN(deity);
+		IN(start_zone);
+		IN(STR);
+		IN(STA);
+		IN(AGI);
+		IN(DEX);
+		IN(WIS);
+		IN(INT);
+		IN(CHA);
+
+		// char_name is not carried on the 0x6a3c path and the emu CharCreate_Struct has no name
+		// field; the world handler takes the name from OP_ApproveName.
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_Damage)
 	{
 		DECODE_LENGTH_EXACT(structs::CombatDamage_Struct);
