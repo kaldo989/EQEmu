@@ -533,7 +533,7 @@ bool Mob::DoCastingChecksOnCaster(int32 spell_id, CastingSlot slot) {
 	/*
 		Cannot cast if stunned or mezzed, unless spell has 'cast_not_standing' flag.
 	*/
-	if ((IsStunned() || IsMezzed()) && !IsCastNotStandingSpell(spell_id)) {
+	if ((IsStunned() || IsMezzed() || IsKnockedOut()) && !IsCastNotStandingSpell(spell_id)) {
 		LogSpells("Spell casting canceled [{}] : can not cast spell when stunned.", spell_id);
 		return false;
 	}

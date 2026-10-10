@@ -304,6 +304,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_Jump] = &Client::Handle_OP_Jump;
 	ConnectedOpcodes[OP_KeyRing] = &Client::Handle_OP_KeyRing;
 	ConnectedOpcodes[OP_KickPlayers] = &Client::Handle_OP_KickPlayers;
+	ConnectedOpcodes[OP_Knockout] = &Client::Handle_OP_Knockout;
 	ConnectedOpcodes[OP_LDoNButton] = &Client::Handle_OP_LDoNButton;
 	ConnectedOpcodes[OP_LDoNDisarmTraps] = &Client::Handle_OP_LDoNDisarmTraps;
 	ConnectedOpcodes[OP_LDoNInspect] = &Client::Handle_OP_LDoNInspect;
@@ -5689,16 +5690,37 @@ void Client::Handle_OP_CrystalReclaim(const EQApplicationPacket *app)
 
 void Client::Handle_OP_Damage(const EQApplicationPacket *app)
 {
+	// A Laurion client sends 48 bytes. common/patches/laurion.cpp:3826 DECODE(OP_Damage) (registered
+	// by D(OP_Damage) in laurion_ops.h:86) normalises that into the 27 byte emu struct before we are
+	// called, so app->size is already the emu size here. Older clients send the emu layout directly.
 	if (app->size != sizeof(CombatDamage_Struct)) {
 		LogError("Received invalid sized OP_Damage: got [{}], expected [{}]", app->size, sizeof(CombatDamage_Struct));
 		DumpPacket(app);
 		return;
 	}
 
-	// Broadcast to other clients
 	CombatDamage_Struct* damage = (CombatDamage_Struct*)app->pBuffer;
-	//dont send to originator of falling damage packets
-	entity_list.QueueClients(this, app, (damage->type == DamageTypeFalling));
+
+	// Trust policy, stated explicitly - this handler used to just broadcast without one.
+	//
+	// OP_Damage from the client is a REPORT, not an instruction. HP is owned by Mob::Damage, which
+	// resolves the swing and sends its own authoritative OP_Damage. The client applies an HP change
+	// for any OP_Damage where target == local player and source != local player
+	// (FUN_140202DF0 -> FUN_1400F7DE0), so the reported value must not be fed into server HP: the
+	// client already applied it locally before it sent the report, and the server's own packet is
+	// what both sides agree on.
+	//
+	// The report is forwarded to everyone else for the combat log and the hit animation only, and it
+	// must never go back to the sender - the sender already ran its local handler, so echoing it
+	// would make the client count the same swing twice. The old code only skipped the sender for
+	// DamageTypeFalling, which is the same case reached by the client computing its own fall damage.
+	if (damage->source != GetID() && damage->target != GetID()) {
+		LogError("OP_Damage report from [{}] references neither itself ([{}]) as source nor target ([{}])",
+			GetCleanName(), GetID(), damage->source, damage->target);
+		return;
+	}
+
+	entity_list.QueueClients(this, app, true);
 	return;
 }
 
@@ -9900,6 +9922,39 @@ void Client::Handle_OP_KickPlayers(const EQApplicationPacket *app)
 	{
 		GetTaskState()->KickPlayersSharedTask(this);
 	}
+}
+
+// OP_Knockout (0x5de7) - Laurion only. See melee.md section 8.
+//
+// The packet is opcode only: the client writes the opcode into a 4 byte scratch buffer through
+// CPacketScrambler__hton (0x140636660, a pass through - no real htonl happens) and sends it with
+// CConnection__sendPacket(__gWorld, 4, &DAT_140e35fa0). Two of those four bytes are the opcode
+// header, so what reaches us is two zero payload bytes.
+//
+// There is no spawn id in the packet because FUN_1402FC760 only ever sends it for the local
+// player (gated on FUN_140248CF0 == pinstLocalPlayer), so the sender is always the knocked out
+// player.
+void Client::Handle_OP_Knockout(const EQApplicationPacket *app)
+{
+	if (app->size != 0 && app->size != 2) {
+		LogDebug("Size mismatch in OP_Knockout expected [0 or 2] got [{}]", app->size);
+		return;
+	}
+
+	// A dead client is handled by OP_Death, not by the knockout path.
+	if (dead) {
+		return;
+	}
+
+	// FUN_1400E25D0 only reaches the knockout helper once Cur_HP() has fallen below 1, and it
+	// bails out when the condition byte is already >= 3. A client that reports a knockout while
+	// the server still thinks it is on its feet is out of sync - do not let it invent the state.
+	if (GetHP() > 0) {
+		LogDebug("OP_Knockout from [{}] rejected, server HP is [{}]", GetCleanName(), GetHP());
+		return;
+	}
+
+	SetKnockedOut(true);
 }
 
 void Client::Handle_OP_LDoNButton(const EQApplicationPacket *app)

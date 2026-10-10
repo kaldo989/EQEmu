@@ -279,9 +279,20 @@ int64 Client::CalcHPRegen(bool bCombat)
 		base = 0;
 
 	base += GroupLeadershipAAHealthRegeneration();
-	// some IsKnockedOut that sets to -1
+
+	// CharacterZoneClient__GetHPRegen (0x1400EECB0): if the condition byte is 3 (knocked out) and
+	// either HP is below -5 or the base regen is under 1, the base turns into a bleed of -1 per
+	// tic. That is what carries a knocked out player down to the -11 delay death threshold.
+	if (IsKnockedOut() && (GetHP() < -5 || base < 1)) {
+		base = -1;
+	}
+
 	base = base * 100.0f * AreaHPRegen * 0.01f + 0.5f;
-	// another check for IsClient && !(base + item_regen) && Cur_HP <= 0 do --base; do later
+
+	// Same function: a client with no regen at all and HP below 1 loses one more per tic.
+	if (IsClient() && (base + item_regen + spellbonuses.HPRegen == 0) && GetHP() < 1) {
+		--base;
+	}
 
 	if (!bCombat && CanFastRegen() && (IsSitting() || CanMedOnHorse())) {
 		auto max_hp = GetMaxHP();

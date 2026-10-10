@@ -2396,6 +2396,7 @@ void Client::ClearHover()
 	}
 
 	dead = false;
+	knocked_out = false;
 }
 
 void Client::HandleLFGuildResponse(ServerPacket *pack)

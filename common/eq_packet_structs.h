@@ -243,7 +243,8 @@ struct Spawn_Struct {
 /*0083*/ uint8	NPC;				// 0=player,1=npc,2=pc corpse,3=npc corpse,a
 /*0084*/ uint8	invis;				// Invis (0=not, 1=invis)
 /*0085*/ uint8	haircolor;			// Hair color
-/*0086*/ uint8	curHp;				// Current hp %%% wrong
+/*0086*/ int8	curHp;				// Current hp percent, signed (the client clamps a non-local spawn to
+								// [-126, 0] and stores NPC percents verbatim - FUN_1401EE100)
 /*0087*/ uint8	max_hp;				// (name prolly wrong)takes on the value 100 for players, 100 or 110 for NPCs and 120 for PC corpses...
 /*0088*/ uint8	findable;			// 0=can't be found, 1=can be found
 /*0089*/ uint8	unknown0089[5];
@@ -1470,9 +1471,10 @@ struct SpawnPositionUpdate_Struct
 */
 struct SpawnHPUpdate_Struct
 {
-/*00*/ uint32	cur_hp;		// Id of spawn to update
+/*00*/ int32	cur_hp;		// Current hp of spawn (signed: the client reads it as int64 and stores it
+							// verbatim for the local player - see melee.md section 6.4)
 /*04*/ int32	max_hp;		// Maximum hp of spawn
-/*08*/ int16	spawn_id;	// Current hp of spawn
+/*08*/ int16	spawn_id;	// Id of spawn to update
 /*10*/
 };
 
@@ -1495,7 +1497,7 @@ struct EnduranceUpdate_Struct
 struct SpawnHPUpdate_Struct2
 {
 /*00*/ int16	spawn_id;
-/*02*/ uint8		hp;			//HP Percentage
+/*02*/ int8		hp;			// HP Percentage, signed: the client sign-extends it (movsxd dword [payload+2])
 /*03*/
 };
 

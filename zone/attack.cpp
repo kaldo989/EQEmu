@@ -1803,6 +1803,14 @@ void Client::Damage(Mob* other, int64 damage, uint16 spell_id, EQ::skills::Skill
 	//do a majority of the work...
 	CommonDamage(other, damage, spell_id, attack_skill, avoidable, buffslot, iBuffTic, special);
 
+	// Mirror the client's own knockout transition. FUN_1400E25D0 calls the knockout helper as soon
+	// as Cur_HP() falls below 1 while the condition byte is still under 3, and the condition byte
+	// is cleared by FUN_1400FCDC0 once the player is back on its feet. Clients that never send
+	// 0x5de7 (older versions, bots) get the same state from the server.
+	if (!dead) {
+		SetKnockedOut(GetHP() < 1);
+	}
+
 	if (damage > 0) {
 
 		if (!IsValidSpell(spell_id)) {
@@ -1905,6 +1913,9 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 	SetHorseId(0);
 	ShieldAbilityClearVariables();
 	dead = true;
+	// The knocked out state ends at death - the appearance is already eaDead, so clear the flag
+	// directly instead of going through SetKnockedOut(), which would stand the client back up.
+	knocked_out = false;
 
 	if (m_pet && m_pet->IsCharmed()) {
 		m_pet->BuffFadeByEffect(SpellEffect::Charm);

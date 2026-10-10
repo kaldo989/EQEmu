@@ -1277,6 +1277,20 @@ void Mob::CreateSpawnPacket(EQApplicationPacket* app, NewSpawn_Struct* ns) {
 	}
 }
 
+// The client stores a non-local spawn's HP percent verbatim when the spawn is an NPC and max_hp == 100,
+// and clamps it to [-126, 0] otherwise (FUN_1401EE100 at 0x1401EE100). There is no upper clamp, so a
+// percent outside the range the client can represent shows up as garbage. Keep it inside [-126, 100].
+static int8 ClampHPRatioPercent(float ratio)
+{
+	int percent = static_cast<int>(ratio);
+	if (percent > 100) {
+		percent = 100;
+	} else if (percent < -126) {
+		percent = -126;
+	}
+	return static_cast<int8>(percent);
+}
+
 void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 {
 	int i;
@@ -1291,7 +1305,7 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	ns->spawn.y           = FloatToEQ19(m_Position.y); //((int32)y_pos)<<3;
 	ns->spawn.z           = FloatToEQ19(m_Position.z); //((int32)z_pos)<<3;
 	ns->spawn.spawnId     = GetID();
-	ns->spawn.curHp       = static_cast<uint8>(GetHPRatio());
+	ns->spawn.curHp       = ClampHPRatioPercent(GetHPRatio());
 	ns->spawn.max_hp      = 100; // this field needs a better name
 	ns->spawn.race        = (use_model) ? use_model : race;
 	ns->spawn.runspeed    = runspeed;
@@ -1495,7 +1509,11 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 
 	ds->spawn_id = GetID();
 	// they don't need to know the real hp
-	ds->hp = (int)GetHPRatio();
+	// The field is signed now. The client reads it as a signed int32 (movsxd dword [payload+2] at
+	// 0x1401e4cdb) and, for a non-local spawn, stores the percent verbatim when it is an NPC or clamps
+	// it to [-126, 0] otherwise (FUN_1401EE100). A uint8 field wrapped a negative percent into
+	// 250-255, which the client then displayed as-is because there is no upper clamp.
+	ds->hp = ClampHPRatioPercent(GetHPRatio());
 
 	// hp event
 	if (IsNPC() && (GetNextHPEvent() > 0)) {
@@ -1536,9 +1554,22 @@ void Mob::SendHPUpdate(bool force_update_all)
 
 			static EQApplicationPacket p(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
 			auto b = (SpawnHPUpdate_Struct*) p.pBuffer;
-			b->cur_hp   = static_cast<uint32>(CastToClient()->GetHP() - itembonuses.HP);
+			// cur_hp is int32 now. The client reads it as int64 and stores it verbatim for the local
+			// player (FUN_1401EE100), so static_cast<uint32> of negative HP produced a value >= 2^31 that
+			// the Laurion encoder widened back to a positive int64 - the client showed HP as a huge
+			// positive number, and MQ2 (which reads the field as int32) rendered 0x80000001 as
+			// -2,147,483,647. Keep the sign and clamp into int32 instead of wrapping.
+			int64 cur_hp = CastToClient()->GetHP() - itembonuses.HP;
+			if (cur_hp > INT32_MAX) {
+				LogHPUpdate("OP_HPUpdate cur_hp [{}] clamped to int32 max", cur_hp);
+				cur_hp = INT32_MAX;
+			} else if (cur_hp < INT32_MIN) {
+				LogHPUpdate("OP_HPUpdate cur_hp [{}] clamped to int32 min", cur_hp);
+				cur_hp = INT32_MIN;
+			}
+			b->cur_hp   = static_cast<int32>(cur_hp);
 			b->spawn_id = GetID();
-			b->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
+			b->max_hp   = static_cast<int32>(CastToClient()->GetMaxHP() - itembonuses.HP);
 			CastToClient()->QueuePacket(&p);
 
 			ResetHPUpdateTimer();

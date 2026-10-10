@@ -229,6 +229,7 @@
 	void Handle_OP_Jump(const EQApplicationPacket *app);
 	void Handle_OP_KeyRing(const EQApplicationPacket *app);
 	void Handle_OP_KickPlayers(const EQApplicationPacket *app);
+	void Handle_OP_Knockout(const EQApplicationPacket *app);
 	void Handle_OP_LDoNButton(const EQApplicationPacket *app);
 	void Handle_OP_LDoNDisarmTraps(const EQApplicationPacket *app);
 	void Handle_OP_LDoNInspect(const EQApplicationPacket *app);

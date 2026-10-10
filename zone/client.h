@@ -467,6 +467,8 @@ public:
 	inline uint16 GetPort() const { return port; }
 	bool IsDead() const { return(dead); }
 	bool IsUnconscious() const { return ((current_hp <= 0) ? true : false); }
+	bool IsKnockedOut() const override { return knocked_out; }
+	void SetKnockedOut(bool in_knocked_out);
 	inline bool IsLFP() { return LFP; }
 	void UpdateLFP();
 
@@ -2103,6 +2105,7 @@ private:
 	uint32 weight;
 	bool berserk;
 	bool dead;
+	bool knocked_out;
 	uint16 controlling_boat_id;
 	uint16 controlled_mob_id;
 	uint16 TrackingID;

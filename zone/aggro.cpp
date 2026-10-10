@@ -731,6 +731,12 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 		return false;
 	}
 
+	// A knocked out player cannot start a new combat action. The client gates its own attacks on
+	// condition byte 4 (FUN_1400E25D0 returns -7), so the server is the authority for condition 3.
+	if (IsKnockedOut()) {
+		return false;
+	}
+
 	// some special cases
 	if (!target) {
 		return false;

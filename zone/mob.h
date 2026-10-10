@@ -1154,6 +1154,9 @@ public:
 	void Mesmerize();
 	inline bool IsMezzed() const { return mezzed; }
 	inline bool IsStunned() const { return stunned; }
+	// Client only: the condition byte (CharacterBase + 0x1c8) is 3 when the player is knocked
+	// out - lying on the floor with HP below 0 but not yet past the delay death threshold.
+	virtual bool IsKnockedOut() const { return false; }
 	inline bool IsSilenced() const { return silenced; }
 	inline bool IsAmnesiad() const { return amnesiad; }
 

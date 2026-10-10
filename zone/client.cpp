@@ -190,6 +190,7 @@ Client::Client() : Mob(
 	client_data_loaded = false;
 	berserk = false;
 	dead = false;
+	knocked_out = false;
 	client_state = CLIENT_CONNECTING;
 	SetTrader(false);
 	Haste = 0;
@@ -497,6 +498,7 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	client_data_loaded = false;
 	berserk = false;
 	dead = false;
+	knocked_out = false;
 	eqs = ieqs;
 	ip = eqs->GetRemoteIP();
 	port = ntohs(eqs->GetRemotePort());
@@ -4017,6 +4019,30 @@ void Client::SetTint(int16 in_slot, EQ::textures::Tint_Struct& color) {
 		database.SaveCharacterMaterialColor(CharacterID(), in_slot, color.Color);
 	}
 
+}
+
+// Knocked out = condition byte 3 on the client (CharacterBase + 0x1c8): lying on the floor with
+// HP below 0 but not yet past GetDelayDeath(). The client sets this itself in FUN_1402FC760 and
+// reports it with OP_Knockout (0x5de7); the server keeps the mirror so the regen rule, the combat
+// gates and the appearance stay in sync.
+void Client::SetKnockedOut(bool in_knocked_out)
+{
+	if (knocked_out == in_knocked_out) {
+		return;
+	}
+
+	knocked_out = in_knocked_out;
+
+	// The client already put itself on the floor before it sent 0x5de7 (FUN_1402F6C40 with 0x73),
+	// so this only has to mirror the state for the rest of the zone. Note that the Laurion client
+	// renders stand state through AppearanceType 6, which EQEmu does not define yet (melee.md
+	// checklist item 6) - until that lands, other LS clients see the animation value but not the
+	// stand state itself.
+	if (knocked_out) {
+		SetAppearance(eaDead);
+	} else {
+		SetAppearance(IsSitting() ? eaSitting : eaStanding);
+	}
 }
 
 void Client::SetHideMe(bool flag)
