@@ -5104,6 +5104,15 @@ struct GroupInvite_Struct {
 //	uint8	unknown128[65];
 };
 
+// Laurion fellowship invite prompt (opcode 0x7e71). The client handler FUN_1403aa570 reads only a
+// u64 hash key at payload+0x18, resolves the inviter with PlayerManagerClient::GetPlayerFromHashKey
+// and formats "%s has invited you to join a fellowship, do you wish to accept?" from the resolved
+// spawn's name. The name is not carried in this packet - the client gets it from the spawn it finds.
+// EQEmu has no real character GUID, so the hash key is the entity id (see ENCODE(OP_ZoneSpawns)).
+struct GroupInvitePrompt_Struct {
+	uint32 inviter_id;
+};
+
 // Laurion clients send the two names plus a 24 byte tail, so the payload is 152 bytes rather than
 // 128. The tail is padding: every byte the client writes is a constant (0 or 0x100) and 5 of the 24
 // bytes are never written at all. EQEmu only consumes the two names, so accept either size.

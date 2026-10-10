@@ -3257,7 +3257,11 @@ namespace Laurion
 			/*
 			EqGuid HashKey;
 			*/
-			buffer.WriteUInt32(0); // CharacterGuid.Id - not available on server side
+			// The client stores this as PlayerBase::HashKey (MacroQuest src/eqlib/PlayerClient.h:446) and
+			// resolves spawns with PlayerManagerClient::GetPlayerFromHashKey. EQEmu has no real character
+			// GUID, so the entity id is used as the hash key. It must match the value the server puts at
+			// payload+0x18 of the fellowship invite prompt - see ENCODE(OP_GroupInvitePrompt).
+			buffer.WriteUInt32(emu->spawnId); // CharacterGuid.Id - entity id, used as the hash key
 			buffer.WriteUInt16(0); // CharacterGuid.WorldId
 			buffer.WriteUInt16(0);
 
@@ -3648,6 +3652,19 @@ namespace Laurion
 		}
 
 		delete in;
+	}
+
+	ENCODE(OP_GroupInvitePrompt) // 0x7e71 - fellowship invite prompt
+	{
+		// Handler FUN_1403aa570 reads only the u64 at payload+0x18 and looks the inviter up by hash
+		// key. The value has to be the same one ENCODE(OP_ZoneSpawns) wrote for that spawn, which is
+		// the entity id. Nothing before +0x18 is read by the handler.
+		ENCODE_LENGTH_EXACT(GroupInvitePrompt_Struct);
+		SETUP_DIRECT_ENCODE(GroupInvitePrompt_Struct, structs::GroupInvitePrompt_Struct);
+
+		eq->inviter_guid.Id = emu->inviter_id;
+
+		FINISH_ENCODE();
 	}
 
 	// DECODE methods

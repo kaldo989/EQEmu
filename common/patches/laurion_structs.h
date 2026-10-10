@@ -992,6 +992,20 @@ namespace Laurion {
 			/*0152*/
 		};
 
+		// Opcode 0x7e71 (OP_GroupInvitePrompt), server -> client. Handler FUN_1403aa570 reads only the
+		// u64 at payload+0x18 and resolves the inviter through PlayerManagerClient::GetPlayerFromHashKey
+		// (vtable slot 3), then shows the fellowship invite popup. There is no size gate, so 32 bytes is
+		// enough. The field names before +0x18 mirror the FellowshipUpdate struct prefix (LS/opcodes/
+		// batch_06.md) and are not read by this handler - they are placeholders, not confirmed layout.
+		struct GroupInvitePrompt_Struct {
+			/*000*/ uint32	subcommand;	// 5 = invite on the client send path
+			/*004*/ uint32	member_index;
+			/*008*/ EqGuid	fellowship_guid;
+			/*016*/ EqGuid	invitee_guid;
+			/*024*/ EqGuid	inviter_guid;	// read at payload+0x18 by FUN_1403aa570
+			/*032*/
+		};
+
 		struct GroupGeneric_Struct {
 			/*0000*/ char name1[64];
 			/*0064*/ char name2[64];

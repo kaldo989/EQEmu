@@ -7611,6 +7611,19 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 	if (invitee) {
 		if (invitee->IsClient()) {
 			if (invitee->CastToClient()->MercOnlyOrNoGroup() && !invitee->IsRaidGrouped()) {
+				if (invitee->CastToClient()->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+					// Laurion has no receive handler for OP_GroupInvite (0x1d90), so forwarding the packet
+					// produces nothing on the invitee. The client shows the fellowship invite prompt from
+					// opcode 0x7e71 (FUN_1403aa570), which resolves the inviter by hash key - the entity id
+					// EQEmu writes in ENCODE(OP_ZoneSpawns).
+					auto outapp = new EQApplicationPacket(OP_GroupInvitePrompt, sizeof(GroupInvitePrompt_Struct));
+					GroupInvitePrompt_Struct* gips = (GroupInvitePrompt_Struct*)outapp->pBuffer;
+					gips->inviter_id = GetID();
+					invitee->CastToClient()->QueuePacket(outapp);
+					safe_delete(outapp);
+					return;
+				}
+
 				if (app->GetOpcode() == OP_GroupInvite2) {
 					//Make a new packet using all the same information but make sure it's a fixed GroupInvite opcode so we
 					//Don't have to deal with GroupFollow2 crap.
