@@ -5104,6 +5104,12 @@ struct GroupInvite_Struct {
 //	uint8	unknown128[65];
 };
 
+// Laurion clients send the two names plus a 24 byte tail, so the payload is 152 bytes rather than
+// 128. The tail is padding: every byte the client writes is a constant (0 or 0x100) and 5 of the 24
+// bytes are never written at all. EQEmu only consumes the two names, so accept either size.
+// Live capture: docs/op_groupinvite-investigation.md
+static const uint32 LAURION_GROUP_INVITE_PAYLOAD_SIZE = 152;
+
 struct ColoredText_Struct {
 	uint32 color;
 	char msg[1];

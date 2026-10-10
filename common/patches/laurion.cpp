@@ -3935,11 +3935,14 @@ namespace Laurion
 
 	DECODE(OP_GroupInvite)
 	{
-		DECODE_LENGTH_EXACT(structs::GroupGeneric_Struct);
-		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupGeneric_Struct);
+		// Laurion sends 152 payload bytes here (two names + 24 byte tail), not the 128 byte
+		// GroupGeneric_Struct. Accept the Laurion layout and normalise the packet down to the
+		// 128 byte emu struct so Handle_OP_GroupInvite2 sees the size it expects.
+		DECODE_LENGTH_EXACT(structs::GroupInvite_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupInvite_Struct);
 
-		memcpy(emu->name1, eq->name1, sizeof(emu->name1));
-		memcpy(emu->name2, eq->name2, sizeof(emu->name2));
+		memcpy(emu->name1, eq->invitee_name, sizeof(emu->name1));
+		memcpy(emu->name2, eq->inviter_name, sizeof(emu->name2));
 
 		FINISH_DIRECT_DECODE();
 	}

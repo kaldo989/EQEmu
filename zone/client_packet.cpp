@@ -7586,9 +7586,9 @@ void Client::Handle_OP_GroupInvite(const EQApplicationPacket *app)
 
 void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 {
-	if (app->size != sizeof(GroupInvite_Struct)) {
-		LogError("Invalid size for OP_GroupInvite: Expected: [{}], Got: [{}]",
-			sizeof(GroupInvite_Struct), app->size);
+	if (app->size != sizeof(GroupInvite_Struct) && app->size != LAURION_GROUP_INVITE_PAYLOAD_SIZE) {
+		LogError("Invalid size for OP_GroupInvite: Expected: [{}] (or Laurion [{}]), Got: [{}]",
+			sizeof(GroupInvite_Struct), LAURION_GROUP_INVITE_PAYLOAD_SIZE, app->size);
 		return;
 	}
 
@@ -7622,7 +7622,17 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 					return;
 				} else {
 					//The correct opcode, no reason to bother wasting time reconstructing the packet
-					invitee->CastToClient()->QueuePacket(app);
+					if (app->size == sizeof(GroupInvite_Struct)) {
+						invitee->CastToClient()->QueuePacket(app);
+					} else {
+						//Laurion sends a 152 byte payload. Forward the 128 byte struct so clients using
+						//the plain GroupInvite_Struct receive exactly what they expect.
+						auto outapp =
+							new EQApplicationPacket(OP_GroupInvite, sizeof(GroupInvite_Struct));
+						memcpy(outapp->pBuffer, app->pBuffer, sizeof(GroupInvite_Struct));
+						invitee->CastToClient()->QueuePacket(outapp);
+						safe_delete(outapp);
+					}
 				}
 			} else if (invitee->IsRaidGrouped()) {
 				Raid* inviter_raid = GetRaid();

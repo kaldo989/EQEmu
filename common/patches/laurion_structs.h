@@ -976,6 +976,22 @@ namespace Laurion {
 			/*024*/
 		};
 
+		// Live capture (x64dbg, 2026-10-10): the Laurion client sends a 152 byte payload for
+		// OP_GroupInvite / OP_GroupInvite2 - the two names plus a 24 byte tail. Every byte of the tail
+		// that the client writes is a constant, and 5 of the 24 bytes are never written at all.
+		// See docs/op_groupinvite-investigation.md.
+		struct GroupInvite_Struct {
+			/*0000*/ char	invitee_name[64];
+			/*0064*/ char	inviter_name[64];
+			/*0128*/ uint32	unknown0128;
+			/*0132*/ uint32	unknown0132;
+			/*0136*/ uint32	unknown0136;
+			/*0140*/ uint32	unknown0140;
+			/*0144*/ uint32	unknown0144;
+			/*0148*/ uint32	unknown0148;	// observed 0x100 on the /invite path
+			/*0152*/
+		};
+
 		struct GroupGeneric_Struct {
 			/*0000*/ char name1[64];
 			/*0064*/ char name2[64];
