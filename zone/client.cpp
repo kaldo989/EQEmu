@@ -4546,6 +4546,30 @@ void Client::SetHoTT(uint32 mobid) {
 	ct->new_target = mobid;
 	QueuePacket(outapp);
 	safe_delete(outapp);
+
+	// The client's target-of-target health label reads PlayerBase::HPCurrent (+0x218), which for a
+	// non-local spawn is the HP percent. It is only populated by OP_MobHealth, and Mob::SendHPUpdate()
+	// delivers that packet to clients which already have the spawn targeted or x-targeted - so a client
+	// looking at its target-of-target never receives it and the label stays empty. Push the percent to
+	// this client for the ToT spawn directly.
+	if (mobid) {
+		Mob *tot = entity_list.GetMob(mobid);
+		if (tot) {
+			EQApplicationPacket hp;
+			tot->BuildHPDisplayPacket(&hp);
+			QueuePacket(&hp, false);
+		}
+	}
+}
+
+// Single place that pushes the target-of-target state to the client: the TargetOfTarget field
+// (opcode 0x639c), the HP percent for that spawn, and the xtarget slot that mirrors it.
+// Called from Handle_OP_TargetMouse and from EntityList::UpdateHoTT, which is what Mob::SetTarget()
+// runs when a target changes without the client sending a target packet.
+void Client::UpdateTargetOfTarget() {
+	Mob *tot = GetTarget() ? GetTarget()->GetTarget() : nullptr;
+	SetHoTT(tot ? tot->GetID() : 0);
+	UpdateXTargetType(TargetsTarget, tot);
 }
 
 void Client::SendPopupToClient(const char *Title, const char *Text, uint32 PopupID, uint32 Buttons, uint32 Duration)
@@ -5430,6 +5454,47 @@ uint32 Client::GetAggroCount() {
 	return AggroCount;
 }
 
+// Laurion client opcode 0x0a92 handler (FUN_1402c2880):
+//   u8 in_combat -> PcClient::InCombat (+0x2EA8)
+//   if in_combat == 0: u32 rest_timer_seconds -> +0x2EAC, and +0x2EB0 is set to the current time
+//   if in_combat == 1: +0x2EAC and +0x2EB0 are zeroed
+// The u32 is only read when the flag is 0, so the packet is 1 byte in combat and 5 bytes out of it.
+//
+// This is the only source of the client's combat indicator, so it has to be sent on every combat state
+// change. It dedupes on the last value the client was told, so callers can just call it.
+void Client::SendCombatState()
+{
+	if (ClientVersion() < EQ::versions::ClientVersion::SoF) {
+		return;
+	}
+
+	bool in_combat = IsInCombat();
+
+	if (in_combat == combat_state_sent) {
+		return;
+	}
+
+	combat_state_sent = in_combat;
+
+	auto outapp = new EQApplicationPacket(OP_RestState, in_combat ? 1 : 5);
+	char *Buffer = (char *)outapp->pBuffer;
+	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, in_combat ? 1 : 0);
+	if (!in_combat) {
+		VARSTRUCT_ENCODE_TYPE(uint32, Buffer, GetRestTimer());
+	}
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
+// EQEmu's combat model for a client is AggroCount (mobs that have the client on their hate list).
+// Do not use IsEngaged() here: a client's own hate list is never cleaned - hate_list_cleanup_timer is
+// constructed but never checked - so IsEngaged() would stay true from the first attack until the client
+// dies, and the indicator would never turn off.
+bool Client::IsInCombat()
+{
+	return AggroCount > 0;
+}
+
 // we pass in for book keeping if RestRegen is enabled
 void Client::IncrementAggroCount(bool raid_target)
 {
@@ -5437,34 +5502,22 @@ void Client::IncrementAggroCount(bool raid_target)
 	// rest state regen is stopped, and for SoF, it sends the opcode to show the crossed swords in-combat indicator.
 	AggroCount++;
 
-	if(!RuleB(Character, RestRegenEnabled))
-		return;
+	if (RuleB(Character, RestRegenEnabled)) {
+		uint32 newtimer = raid_target ? RuleI(Character, RestRegenRaidTimeToActivate) : RuleI(Character, RestRegenTimeToActivate);
 
-	uint32 newtimer = raid_target ? RuleI(Character, RestRegenRaidTimeToActivate) : RuleI(Character, RestRegenTimeToActivate);
+		// When our aggro count is 1 here, we are exiting rest state. We need to pause our current timer, if we have time remaining
+		// We should not actually have to do anything to the Timer object since the AggroCount counter blocks it from being checked
+		// and will have it's timer changed when we exit combat so let's not do any extra work
+		if (AggroCount == 1 && rest_timer.GetRemainingTime()) // the Client::rest_timer is never disabled, so don't need to check
+			m_pp.RestTimer = std::max(1u, rest_timer.GetRemainingTime() / 1000); // I guess round up?
 
-	// When our aggro count is 1 here, we are exiting rest state. We need to pause our current timer, if we have time remaining
-	// We should not actually have to do anything to the Timer object since the AggroCount counter blocks it from being checked
-	// and will have it's timer changed when we exit combat so let's not do any extra work
-	if (AggroCount == 1 && rest_timer.GetRemainingTime()) // the Client::rest_timer is never disabled, so don't need to check
-		m_pp.RestTimer = std::max(1u, rest_timer.GetRemainingTime() / 1000); // I guess round up?
-
-	// save the new timer if it's higher
-	m_pp.RestTimer = std::max(m_pp.RestTimer, newtimer);
-
-	// If we already had aggro before this method was called, the combat indicator should already be up for SoF clients,
-	// so we don't need to send it again.
-	//
-	if(AggroCount > 1)
-		return;
-
-	if (ClientVersion() >= EQ::versions::ClientVersion::SoF) {
-		auto outapp = new EQApplicationPacket(OP_RestState, 1);
-		char *Buffer = (char *)outapp->pBuffer;
-		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x01);
-		QueuePacket(outapp);
-		safe_delete(outapp);
+		// save the new timer if it's higher
+		m_pp.RestTimer = std::max(m_pp.RestTimer, newtimer);
 	}
 
+	// The combat send used to sit behind the RestRegenEnabled rule, so with rest regen disabled the client's
+	// InCombat flag never changed at all. Send it regardless of the rule.
+	SendCombatState();
 }
 
 void Client::DecrementAggroCount()
@@ -5479,23 +5532,22 @@ void Client::DecrementAggroCount()
 
 	AggroCount--;
 
-	if(!RuleB(Character, RestRegenEnabled))
-		return;
+	if (RuleB(Character, RestRegenEnabled)) {
+		// Something else is still aggro on us, can't rest yet.
+		if (AggroCount) {
+			SendCombatState();
+			return;
+		}
 
-	// Something else is still aggro on us, can't rest yet.
-	if (AggroCount)
-		return;
-
-	rest_timer.Start(m_pp.RestTimer * 1000);
-
-	if (ClientVersion() >= EQ::versions::ClientVersion::SoF) {
-		auto outapp = new EQApplicationPacket(OP_RestState, 5);
-		char *Buffer = (char *)outapp->pBuffer;
-		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x00);
-		VARSTRUCT_ENCODE_TYPE(uint32, Buffer, m_pp.RestTimer);
-		QueuePacket(outapp);
-		safe_delete(outapp);
+		// Do not start rest regen while the client is still considered in combat.
+		if (!IsInCombat()) {
+			rest_timer.Start(m_pp.RestTimer * 1000);
+		}
 	}
+
+	// The combat-off send used to sit behind the RestRegenEnabled rule, so with rest regen disabled the
+	// indicator stayed on forever once it had been set.
+	SendCombatState();
 }
 
 // when we cast a beneficial spell we need to steal our targets current timer
@@ -5509,14 +5561,16 @@ void Client::UpdateRestTimer(uint32 new_timer)
 	if (!RuleB(Character, RestRegenEnabled))
 		return;
 
-	// so if we're currently on aggro, we check our saved timer
-	if (AggroCount) {
+	// so if we're currently in combat, we check our saved timer
+	if (IsInCombat()) {
 		if (m_pp.RestTimer < new_timer) // our timer needs to be updated, don't need to update client here
 			m_pp.RestTimer = new_timer;
-	} else { // if we're not aggro, we need to check if current timer needs updating
+	} else { // if we're not in combat, we need to check if current timer needs updating
 		if (rest_timer.GetRemainingTime() / 1000 < new_timer) {
 			rest_timer.Start(new_timer * 1000);
 			if (ClientVersion() >= EQ::versions::ClientVersion::SoF) {
+				// The timer value changed while the combat flag stayed 0, so this has to go out even though
+				// SendCombatState() would dedupe it - the client only reads the u32 when InCombat is 0.
 				auto outapp = new EQApplicationPacket(OP_RestState, 5);
 				char *Buffer = (char *)outapp->pBuffer;
 				VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x00);

@@ -937,6 +937,7 @@ public:
 	void CheckLanguageSkillIncrease(uint8 language_id, uint8 teacher_skill);
 	void SetLanguageSkill(uint8 language_id, uint8 language_skill);
 	void SetHoTT(uint32 mobid);
+	void UpdateTargetOfTarget();
 	void ShowSkillsWindow();
 
 	uint16 MaxSkill(EQ::skills::SkillType skill_id, uint8 class_id, uint8 level) const;
@@ -1610,6 +1611,11 @@ public:
 	uint32 GetAggroCount();
 	void IncrementAggroCount(bool raid_target = false);
 	void DecrementAggroCount();
+	// Laurion client opcode 0x0a92 (handler FUN_1402c2880) is the only source of the client's combat
+	// indicator: it writes PcClient::InCombat (+0x2EA8) and, when that flag is 0, the rest timer
+	// (+0x2EAC) and the combat-start timestamp (+0x2EB0). The client has no other way to learn it.
+	bool IsInCombat();
+	void SendCombatState();
 	void SendPVPStats();
 	void SendDisciplineTimers();
 	void SendRespawnBinds();
@@ -2056,8 +2062,8 @@ private:
 	void DoManaRegen();
 	void DoStaminaHungerUpdate();
 	void CalcRestState();
-	// if they have aggro (AggroCount != 0) their timer is saved in m_pp.RestTimer, else we need to get current timer
-	inline uint32 GetRestTimer() const { return AggroCount ? m_pp.RestTimer : rest_timer.GetRemainingTime() / 1000; }
+	// if they are in combat their timer is saved in m_pp.RestTimer, else we need to get current timer
+	inline uint32 GetRestTimer() { return IsInCombat() ? m_pp.RestTimer : rest_timer.GetRemainingTime() / 1000; }
 	void UpdateRestTimer(uint32 new_timer);
 
 	uint8 playeraction;
@@ -2273,6 +2279,7 @@ private:
 	int8 last_reported_endurance_percent;
 
 	uint32 AggroCount; // How many mobs are aggro on us.
+	bool combat_state_sent = false; // last InCombat value the client was told, so SendCombatState only fires on a change
 
 	bool ooc_regen;
 	float AreaHPRegen;

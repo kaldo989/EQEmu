@@ -15756,6 +15756,12 @@ void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
 	// Locate and cache new target
 	ClientTarget_Struct* ct = (ClientTarget_Struct*)app->pBuffer;
 
+	// Untarget. The client clears pinstTarget locally before it sends, so nothing needs to be echoed.
+	if (!ct->new_target) {
+		SetTarget(nullptr);
+		return;
+	}
+
 	bool can_target=false;
 	Mob *nt = entity_list.GetMob(ct->new_target);
 
@@ -15772,17 +15778,38 @@ void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
 		}
 	}
 
-	if (can_target) {
-		QueuePacket(app);
-	}
-	else {
+	if (!can_target) {
 		MessageString(Chat::Red, DONT_SEE_TARGET);
+		// Keep the server's view in step with what the client will do with the reject.
+		SetTarget(nullptr);
 		auto outapp = new EQApplicationPacket(OP_TargetReject, sizeof(TargetReject_Struct));
 		outapp->pBuffer[0] = 0x2f;
 		outapp->pBuffer[1] = 0x01;
 		outapp->pBuffer[4] = 0x0d;
 		QueuePacket(outapp);
 		safe_delete(outapp);
+		return;
+	}
+
+	// This handler never recorded the target - only Handle_OP_TargetMouse calls SetTarget(). So /target
+	// left the server's view of the client's target stale while the client had moved on, and
+	// QueueClientsByTarget(), IsTargeted() and the HoTT path all key off the server's view.
+	Mob *prev = GetTarget();
+	SetTarget(nt);
+
+	// Echo only when the client reported a target the server did not already have.
+	//
+	// The client sets pinstTarget locally *before* it sends 0x3b18 when the target changes on its own
+	// (FUN_1400aaf80), so a packet that matches the server's state is a redundant notification. Echoing
+	// it re-runs the client's receive handler (0x1401e024c), which calls its target-change path
+	// (FUN_1401efd90), which sends 0x3b18 again - that is the loop which pins client and server target
+	// state apart. The /target <name> path (FUN_140221f90) resolves a name and sends without touching
+	// pinstTarget, so it still needs the echo, and that is exactly the case where the server's recorded
+	// target differs from the reported one.
+	if (prev != nt) {
+		QueuePacket(app);
+		nt->IsTargeted(1);
+		if (prev) prev->IsTargeted(-1);
 	}
 }
 
@@ -15835,8 +15862,7 @@ void Client::Handle_OP_TargetMouse(const EQApplicationPacket *app)
 		else
 		{
 			SetTarget(nullptr);
-			SetHoTT(0);
-			UpdateXTargetType(TargetsTarget, nullptr);
+			UpdateTargetOfTarget();
 
 			Group *g = GetGroup();
 
@@ -15855,22 +15881,13 @@ void Client::Handle_OP_TargetMouse(const EQApplicationPacket *app)
 	else
 	{
 		SetTarget(nullptr);
-		SetHoTT(0);
-		UpdateXTargetType(TargetsTarget, nullptr);
+		UpdateTargetOfTarget();
 		return;
 	}
 
-	// HoTT
-	if (GetTarget() && GetTarget()->GetTarget())
-	{
-		SetHoTT(GetTarget()->GetTarget()->GetID());
-		UpdateXTargetType(TargetsTarget, GetTarget()->GetTarget());
-	}
-	else
-	{
-		SetHoTT(0);
-		UpdateXTargetType(TargetsTarget, nullptr);
-	}
+	// HoTT. UpdateTargetOfTarget() sends opcode 0x639c (the only path the client reads for
+	// PlayerClient::TargetOfTarget) plus the HP percent for that spawn.
+	UpdateTargetOfTarget();
 
 	Group *g = GetGroup();
 
@@ -16825,9 +16842,33 @@ void Client::Handle_OP_XTargetOpen(const EQApplicationPacket *app)
 
 void Client::Handle_OP_XTargetRequest(const EQApplicationPacket *app)
 {
+	// Laurion sends u32 spawn_id, u32 slot (8 bytes) from FUN_140229f50 (/xtarget set). The classic
+	// layout is u32 flag(1), u32 slot, u32 type, char name[] (12+ bytes). Both are accepted.
+	if (app->size == 8)
+	{
+		uint32 SpawnID = app->ReadUInt32(0);
+		uint32 Slot = app->ReadUInt32(4);
+
+		if (Slot >= XTARGET_HARDCAP)
+			return;
+
+		Mob *m = entity_list.GetMob(SpawnID);
+		if (!m)
+			return;
+
+		// The client derives the slot type from the spawn here: 2 = PC, 3 = NPC, which matches
+		// XTargetType CurrentTargetPC / CurrentTargetNPC (see FUN_140229f50 and branch 0x1401e02cb).
+		XTargets[Slot].Type = m->IsClient() ? CurrentTargetPC : CurrentTargetNPC;
+		XTargets[Slot].ID = m->GetID();
+		strncpy(XTargets[Slot].Name, m->GetName(), 64);
+
+		SendXTargetPacket(Slot, m);
+		return;
+	}
+
 	if (app->size < 12)
 	{
-		LogDebug("Size mismatch in OP_XTargetRequest, expected at least 12, got [{}]", app->size);
+		LogDebug("Size mismatch in OP_XTargetRequest, expected 8 (Laurion) or at least 12, got [{}]", app->size);
 		DumpPacket(app);
 		return;
 	}

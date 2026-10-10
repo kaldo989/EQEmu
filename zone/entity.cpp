@@ -709,6 +709,7 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 			}
 
 			safe_delete(app);
+			npc->SendInitialHPUpdate();
 		} else {
 			auto ns = new NewSpawn_Struct;
 			memset(ns, 0, sizeof(NewSpawn_Struct));
@@ -862,6 +863,7 @@ void EntityList::CheckSpawnQueue()
 				if (!pnpc->IsTargetable()) {
 					pnpc->SendTargetable(false);
 				}
+				pnpc->SendInitialHPUpdate();
 				pnpc->SendPositionToClients();
 			}
 			safe_delete(outapp);
@@ -1345,6 +1347,7 @@ void EntityList::SendZoneSpawns(Client *client)
 		it->second->CastToMob()->CreateSpawnPacket(app); // TODO: Use zonespawns opcode instead
 		client->QueuePacket(app, true, Client::CLIENT_CONNECTED);
 		safe_delete(app);
+		ent->SendInitialHPUpdate(client);
 		++it;
 	}
 }
@@ -1420,6 +1423,16 @@ void EntityList::SendZoneSpawnsBulk(Client *client)
 	}
 
 	safe_delete(bulk_zone_spawn_packet);
+
+	// Second pass: the bulk packet is only flushed when the object is destroyed, so the HP percent has
+	// to go out after it. CanTarget() (FUN_1402fc320) rejects a spawn whose PlayerBase::HPCurrent (+0x218)
+	// is < 1, and that field is only written by OP_MobHealth, so without this a client cannot click a
+	// zone spawn it can see.
+	for (auto & it : mob_list) {
+		if (it.second && it.second->GetID() > 0 && it.second->Spawned() && it.second->ShouldISpawnFor(client)) {
+			it.second->SendInitialHPUpdate(client);
+		}
+	}
 }
 
 //this is a hack to handle a broken spawn struct
@@ -4313,12 +4326,9 @@ void EntityList::UpdateHoTT(Mob *target)
 	while (it != client_list.end()) {
 		Client *c = it->second;
 		if (c->GetTarget() == target) {
-			if (target->GetTarget())
-				c->SetHoTT(target->GetTarget()->GetID());
-			else
-				c->SetHoTT(0);
-
-			c->UpdateXTargetType(TargetsTarget, target->GetTarget());
+			// UpdateTargetOfTarget() also pushes the HP percent for the ToT spawn, which
+			// SendHPUpdate() would not deliver to a client that only has it as a target-of-target.
+			c->UpdateTargetOfTarget();
 		}
 		++it;
 	}

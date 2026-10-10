@@ -1495,6 +1495,63 @@ namespace Laurion {
 			/*004*/
 		};
 
+		/* 0x639c OP_TargetHoTT - payload 4 */
+		// Client handler ZonePacket__dispatchRecv branch 0x1401d9449 writes
+		// [pinstLocalPC + 0x2850 + 0xF88] (MQ2 PlayerClient::TargetOfTarget) from payload dword 0.
+		// This is the only server->client path that populates TargetOfTarget. The old value 0x4ec4 is
+		// the client's own outbound HoTT report (FUN_1404e8580 / FUN_1404e95b0) and has no receive
+		// handler, so EQEmu sending 0x4ec4 is ignored by the client.
+		struct TargetHoTT_Struct {
+			/*000*/	uint32	TargetOfTarget;
+			/*004*/
+		};
+
+		/* 0x5479 OP_AggroMeterTargetInfo - payload 8 */
+		// Client handler FUN_1400ac650: payload[0] -> AggroMeterManagerClient + 0x1E0 (AggroLockID),
+		// payload[4] -> + 0x1E4 (AggroTargetID).
+		struct AggroMeterTargetInfo_Struct {
+			/*000*/	uint32	LockID;
+			/*004*/	uint32	TargetID;
+			/*008*/
+		};
+
+		/* 0x68eb OP_AggroMeterUpdate - variable length */
+		// Client handler FUN_1400ac650 reads the buffer byte by byte, so the field order below is the
+		// wire order, not a packed struct:
+		//   u8 flag; if flag != 0 -> u32 secondary_id (-> AggroMeterManagerClient + 0x1E8)
+		//   u8 count; then count x AggroMeterUpdateEntry_Struct
+		// Each entry writes a u16 at AggroMeterManagerClient + 8 + type * 0x10, and the client rejects
+		// any type > 0x1D, so the aggro type ids must stay inside [0, 29].
+		struct AggroMeterUpdateEntry_Struct {
+			/*000*/	uint8	Type;
+			/*001*/	uint16	Percent;
+			/*003*/
+		};
+
+		/* 0x123c OP_XTargetResponse - variable length */
+		// Client handler FUN_14028ff00. Wire order:
+		//   u32 max_slots (resizes the list)
+		//   u32 count
+		//   count x XTargetResponseEntry_Struct, where the name is a null terminated string
+		// The client slot record is 0x4C bytes: u32 xTargetType, u32 status, u32 spawn_id, char name[64].
+		struct XTargetResponseEntry_Struct {
+			/*000*/	uint32	Slot;
+			/*004*/	uint8	Status;
+			/*005*/	uint32	SpawnID;
+			/*009*/	char	Name[64];
+		};
+
+		/* 0x0ede OP_XTargetRequest - payload 8, used in both directions */
+		// Client send site FUN_140229f50 (/xtarget set) and client receive handler branch 0x1401e02cb
+		// use the same opcode and the same layout. The receive handler resolves spawn_id, derives the
+		// slot type (2 = PC, 3 = pet) and calls FUN_14028fb90(list, slot, type, name), which clears the
+		// slot's spawn id and status before writing the name.
+		struct XTargetRequest_Struct {
+			/*000*/	uint32	SpawnID;
+			/*004*/	uint32	Slot;
+			/*008*/
+		};
+
 		/* 0x7545 OP_InspectBuffs - payload 1 */
 		struct InspectBuffs_Struct {
 			/*000*/	uint8	ShowTargetBuffs;   /* 0 = own buffs, 1 = target buffs */

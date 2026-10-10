@@ -4717,6 +4717,147 @@ namespace Laurion
 		dest->FastQueuePacket(&in, ack_req);
 	}
 
+	// Targeting, aggro meter and extended target encoders.
+	//
+	// The zone code builds these packets straight into the Laurion wire layout with
+	// EQApplicationPacket::WriteUInt32 / WriteUInt8 / WriteString, so these encoders are layout
+	// validators: they enforce the field order the client handlers read and drop a malformed packet
+	// instead of delivering it as garbage. Handler addresses are the branches of
+	// ZonePacket__dispatchRecv (0x1401d5140) in eqgame.exe at image base 0x140000000.
+
+	// 0x639c - target of target. Client branch 0x1401d9449 writes
+	// [pinstLocalPC + 0x2850 + 0xF88] (MQ2 PlayerClient::TargetOfTarget) from payload dword 0.
+	// Client::SetHoTT() is the only producer, and this is the only opcode the client actually reads.
+	ENCODE(OP_TargetHoTT) {
+		ENCODE_LENGTH_EXACT(structs::TargetHoTT_Struct);
+		SETUP_DIRECT_ENCODE(structs::TargetHoTT_Struct, structs::TargetHoTT_Struct);
+
+		OUT(TargetOfTarget);
+
+		FINISH_ENCODE();
+	}
+
+	// 0x5479 - aggro meter lock + target id. Client handler FUN_1400ac650 writes payload[0] to
+	// AggroMeterManagerClient + 0x1E0 (AggroLockID) and payload[4] to + 0x1E4 (AggroTargetID).
+	ENCODE(OP_AggroMeterTargetInfo) {
+		ENCODE_LENGTH_EXACT(structs::AggroMeterTargetInfo_Struct);
+		SETUP_DIRECT_ENCODE(structs::AggroMeterTargetInfo_Struct, structs::AggroMeterTargetInfo_Struct);
+
+		OUT(LockID);
+		OUT(TargetID);
+
+		FINISH_ENCODE();
+	}
+
+	// 0x68eb - aggro meter update. Client handler FUN_1400ac650 (shared with 0x5479) reads:
+	//   u8 flag; when flag != 0 it reads u32 secondary_id -> AggroMeterManagerClient + 0x1E8
+	//   u8 count; then count x (u8 type, u16 percent), each writing a u16 at +8 + type * 0x10
+	// The client aborts on any type > 0x1D, so AggroMeter::AggroTypes must stay inside [0, 29].
+	ENCODE(OP_AggroMeterUpdate) {
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		if (in->size < 2) {
+			LogNetcode("[STRUCTS] AggroMeterUpdate too short: got [{}], expected at least 2", in->size);
+			delete in;
+			return;
+		}
+
+		uint8 flag = in->pBuffer[0];
+		uint32 pos = flag ? 5 : 1;
+		if (pos >= in->size) {
+			LogNetcode("[STRUCTS] AggroMeterUpdate truncated after flag: got [{}], flag [{}]", in->size, flag);
+			delete in;
+			return;
+		}
+
+		uint8 count = in->pBuffer[pos];
+		if (pos + 1 + static_cast<uint32>(count) * 3 > in->size) {
+			LogNetcode("[STRUCTS] AggroMeterUpdate entry count [{}] does not fit in size [{}]", count, in->size);
+			delete in;
+			return;
+		}
+
+		for (uint32 i = 0; i < count; ++i) {
+			uint8 type = in->pBuffer[pos + 1 + i * 3];
+			if (type > 0x1D) {
+				LogNetcode("[STRUCTS] AggroMeterUpdate type [{}] outside client range [0, 29]", type);
+				delete in;
+				return;
+			}
+		}
+
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
+	// 0x123c - extended target list. Client handler FUN_14028ff00 reads:
+	//   u32 max_slots (resizes the list), u32 count,
+	//   count x (u32 slot, u8 status, u32 spawn_id, null terminated name)
+	// The client slot record is 0x4C bytes: u32 xTargetType, u32 status, u32 spawn_id, char name[64].
+	// Client::SendXTargetPacket() and SendXTargetUpdates() already emit this order; the check below
+	// keeps a truncated name from being read past the end of the buffer.
+	ENCODE(OP_XTargetResponse) {
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		if (in->size < 8) {
+			LogNetcode("[STRUCTS] XTargetResponse too short: got [{}], expected at least 8", in->size);
+			delete in;
+			return;
+		}
+
+		uint32 max_slots = 0;
+		uint32 count = 0;
+		memcpy(&max_slots, in->pBuffer, 4);
+		memcpy(&count, in->pBuffer + 4, 4);
+
+		uint32 pos = 8;
+		for (uint32 i = 0; i < count; ++i) {
+			if (pos + 9 > in->size) {
+				LogNetcode("[STRUCTS] XTargetResponse entry [{}] truncated at size [{}]", i, in->size);
+				delete in;
+				return;
+			}
+
+			uint32 slot = 0;
+			memcpy(&slot, in->pBuffer + pos, 4);
+			if (slot >= max_slots) {
+				LogNetcode("[STRUCTS] XTargetResponse slot [{}] >= max_slots [{}]", slot, max_slots);
+				delete in;
+				return;
+			}
+
+			pos += 4;              // slot
+			pos += 1;              // status
+			pos += 4;              // spawn id
+
+			uint32 name_len = 0;
+			while (pos + name_len < in->size && in->pBuffer[pos + name_len] != 0) ++name_len;
+			if (name_len > 63) {
+				LogNetcode("[STRUCTS] XTargetResponse name length [{}] exceeds client slot name [64]", name_len);
+				delete in;
+				return;
+			}
+			pos += name_len + 1;   // name + null
+		}
+
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
+	// 0x0ede - extended target slot. Client send site FUN_140229f50 (/xtarget set) and client receive
+	// branch 0x1401e02cb use the same opcode and the same 8 byte layout: u32 spawn_id, u32 slot.
+	// The receive handler derives the slot type (2 = PC, 3 = pet) from the spawn and calls
+	// FUN_14028fb90(), which clears the slot status and spawn id before writing the name.
+	ENCODE(OP_XTargetRequest) {
+		ENCODE_LENGTH_EXACT(structs::XTargetRequest_Struct);
+		SETUP_DIRECT_ENCODE(structs::XTargetRequest_Struct, structs::XTargetRequest_Struct);
+
+		OUT(SpawnID);
+		OUT(Slot);
+
+		FINISH_ENCODE();
+	}
+
 	int ExtractIDFile(const std::string& input) {
 		std::string number;
 		for (char ch : input) {

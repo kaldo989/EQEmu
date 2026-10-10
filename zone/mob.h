@@ -842,6 +842,8 @@ public:
 	void CreateSpawnPacket(EQApplicationPacket* app, Mob* ForWho = 0);
 	static void CreateSpawnPacket(EQApplicationPacket* app, NewSpawn_Struct* ns);
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
+	void BuildHPDisplayPacket(EQApplicationPacket* app);
+	void SendInitialHPUpdate(Client* c = nullptr);
 	void CreateHPPacket(EQApplicationPacket* app);
 	void SendHPUpdate(bool force_update_all = false);
 	virtual void ResetHPUpdateTimer() {}; // does nothing

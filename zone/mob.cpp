@@ -1498,7 +1498,10 @@ void Mob::CreateDespawnPacket(EQApplicationPacket* app, bool Decay)
 	ds->Decay = Decay ? 1 : 0;
 }
 
-void Mob::CreateHPPacket(EQApplicationPacket* app)
+// Display-only HP packet: same wire layout as CreateHPPacket, without the EVENT_HP side effects.
+// SetHoTT() needs an HP percent for a spawn the client does not have targeted, and running the event
+// block for a pure display send would consume a pending damage event and fire EVENT_HP spuriously.
+void Mob::BuildHPDisplayPacket(EQApplicationPacket* app)
 {
 	app->SetOpcode(OP_MobHealth);
 	app->size = sizeof(SpawnHPUpdate_Struct2);
@@ -1514,6 +1517,36 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 	// it to [-126, 0] otherwise (FUN_1401EE100). A uint8 field wrapped a negative percent into
 	// 250-255, which the client then displayed as-is because there is no upper clamp.
 	ds->hp = ClampHPRatioPercent(GetHPRatio());
+}
+
+// The Laurion client's CanTarget() (FUN_1402fc320) refuses a spawn when PlayerBase::HPCurrent (+0x218)
+// is < 1, and that field is only ever written by OP_MobHealth - the spawn packet carries no HP percent.
+// SendHPUpdate() delivers it only to clients that already have the spawn targeted or x-targeted, so a
+// freshly spawned NPC (or a PC you can see but have not targeted) stays untargetable until something
+// calls SendHPUpdate(). Push the percent once at spawn.
+void Mob::SendInitialHPUpdate(Client* c)
+{
+	// FUN_1401ee100 stores the payload percent verbatim when the spawn is pinstLocalPlayer, but the local
+	// player's HPCurrent is supposed to hold the actual HP value from OP_HPUpdate. Sending OP_MobHealth for
+	// your own spawn id would overwrite it with a percent, so never send it to the client that owns the mob.
+	if (c && this == c) {
+		return;
+	}
+
+	EQApplicationPacket hp;
+	BuildHPDisplayPacket(&hp);
+
+	if (c) {
+		c->QueuePacket(&hp, false);
+	} else {
+		entity_list.QueueClients(this, &hp, false);
+	}
+}
+
+void Mob::CreateHPPacket(EQApplicationPacket* app)
+{
+	BuildHPDisplayPacket(app);
+	SpawnHPUpdate_Struct2* ds = (SpawnHPUpdate_Struct2*)app->pBuffer;
 
 	// hp event
 	if (IsNPC() && (GetNextHPEvent() > 0)) {
