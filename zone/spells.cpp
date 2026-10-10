@@ -5804,8 +5804,22 @@ void Mob::UnStun() {
 // Stuns "this"
 void Client::Stun(int duration)
 {
+	// The Laurion handler (FUN_1400FC9F0 at 0x1400FC9F0) clamps any duration below 1000 ms up to 1000 ms,
+	// but only for a PC (Type == 0), and it can only ever extend its own StunTimer - the guard is
+	// `if (StunTimer < now + duration)`. A server-side duration under 1000 therefore leaves the client
+	// stunned longer than the server thinks it is, and nothing can shorten it afterwards. Clamp before the
+	// timer starts so both sides expire at the same moment.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion && duration > 0 && duration < 1000) {
+		duration = 1000;
+	}
+
 	Mob::Stun(duration);
 
+	// The emu Stun_Struct is the 4 byte Titanium layout (duration only). The Laurion encoder
+	// (common/patches/laurion.cpp:3130) expands it to the 8 byte wire form, so the byte the client reads at
+	// payload+4 is already present - it is hardcoded to 0 there. That byte is the flag which makes the
+	// client set SpeedHeading (PlayerBase + 0x9c) to 32.0f; the emu struct has no field for it, so EQEmu
+	// can never set it. See melee.md section 10.
 	auto outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
 	Stun_Struct* stunon = (Stun_Struct*) outapp->pBuffer;
 	stunon->duration = duration;
@@ -5816,6 +5830,15 @@ void Client::Stun(int duration)
 
 void Client::UnStun() {
 	Mob::UnStun();
+
+	// Do not send a zero duration OP_Stun to a Laurion client. The handler has no clear path: any duration
+	// under 1000 is clamped to 1000 and then applied, so this packet would re-stun the client for a second
+	// after we released it. The client clears the stun only when its own StunTimer expires - FUN_1400FDCD0
+	// zeroes StunTimer and the condition byte and prints string 12480. Keeping the sent duration clamped in
+	// Client::Stun is what keeps the two sides in step.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
 
 	auto outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
 	Stun_Struct* stunon = (Stun_Struct*) outapp->pBuffer;
