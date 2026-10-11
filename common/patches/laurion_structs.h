@@ -992,6 +992,23 @@ namespace Laurion {
 			/*0152*/
 		};
 
+		// Opcode 0x78ef (OP_GroupDisband) - the client's disband/leave request, sent by FUN_140257290 from the
+		// group window, the hot button and /ungroup. Same 64 + 64 + 24 shape as GroupInvite_Struct: +0 is the
+		// local player name, +64 is the other member name. EQEmu's Handle_OP_GroupDisband requires exactly
+		// sizeof(GroupGeneric_Struct) = 128, so the 152 byte Laurion packet was rejected and the disband
+		// never ran at all.
+		struct GroupDisband_Struct {
+			/*0000*/ char	 name1[64];
+			/*0064*/ char	 name2[64];
+			/*0128*/ uint32	 unknown0128;
+			/*0132*/ uint32	 unknown0132;
+			/*0136*/ uint32	 unknown0136;
+			/*0140*/ uint32	 unknown0140;
+			/*0144*/ uint32	 unknown0144;
+			/*0148*/ uint32	 unknown0148;
+			/*0152*/
+		};
+
 		// Opcodes 0x8de (OP_GroupFollow) and 0x70b7 (OP_GroupFollow2) - the group invite accept, sent by
 		// FUN_140260420 when the invitee clicks FOLLOW in the group window (also reachable from /follow and
 		// the hot button). Payload 156 bytes. The u32 at +152 is the value the client stored from the invite

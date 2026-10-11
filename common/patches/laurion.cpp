@@ -4194,8 +4194,12 @@ namespace Laurion
 
 	DECODE(OP_GroupDisband)
 	{
-		DECODE_LENGTH_EXACT(structs::GroupGeneric_Struct);
-		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupGeneric_Struct);
+		// Laurion sends 152 payload bytes for 0x78ef (two names + 24 byte tail), not the 128 byte
+		// GroupGeneric_Struct. Accept the Laurion layout and normalise down to the emu struct so
+		// Handle_OP_GroupDisband sees the size it expects. Without this the disband request is rejected and
+		// Group::DisbandGroup() never runs, so the client never receives the clear.
+		DECODE_LENGTH_EXACT(structs::GroupDisband_Struct);
+		SETUP_DIRECT_DECODE(GroupGeneric_Struct, structs::GroupDisband_Struct);
 
 		memcpy(emu->name1, eq->name1, sizeof(emu->name1));
 		memcpy(emu->name2, eq->name2, sizeof(emu->name2));
