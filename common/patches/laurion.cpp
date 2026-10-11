@@ -3707,44 +3707,29 @@ namespace Laurion
 
 		GroupUpdate_Struct* gu = (GroupUpdate_Struct*)in->pBuffer;
 
-		// EQEmu expresses a member leaving as action == groupActLeave with the departing member in
-		// membername[0]. The Laurion deserializer has no action field - it clears all six member slots and
-		// rebuilds the window from the entries it is given, so emitting the departing member as an entry
-		// would re-add them instead of removing them. The client removes a single member through
-		// FUN_140294e80, reached from the group handler FUN_1402c2930 for opcode 0x14cc, which looks the
-		// member up by the name at payload+64 and clears its slot via FUN_140637260. Only +64 is read by
-		// the handler, so the first 64 bytes are left zero.
-		if (gu->action == groupActLeave) {
-			if (gu->membername[0][0] == '\0') {
-				LogNetcode("[STRUCTS] GroupUpdate groupActLeave has no departing member name");
-				delete in;
-				return;
-			}
+		// EQEmu's established group model (common/patches/sod.cpp, uf.cpp, rof.cpp, rof2.cpp): a leave or a
+		// disband is sent as OP_GroupDisbandYou when the recipient is the departing member, and as
+		// OP_GroupDisbandOther when the recipient is a remaining member. EQEmu sets yourname to the
+		// recipient, so yourname == membername[0] identifies the departing member.
+		//
+		// Laurion's group handler FUN_1402c2930 matches that split exactly:
+		//   0x7be0 -> prints eqstr 12001 "You have been removed from the group." then FUN_1402bff30 clears
+		//            the group object. Nothing else in the payload is read.
+		//   0x14cc -> FUN_140294e80(group, payload + 64) looks a member up by name and clears its slot
+		//            through FUN_140637260. This is the only single member removal path, because the roster
+		//            deserializer FUN_140637630 clears all six slots and rebuilds from its entries, so it
+		//            can only add.
+		// Both branches read the payload at +64, which is GroupGeneric_Struct::name2, so the packet is
+		// EQEmu's GroupGeneric_Struct passed through unchanged.
+		if (gu->action == groupActLeave || gu->action == groupActDisband) {
+			bool recipient_is_departing = gu->action == groupActDisband ||
+				std::string(gu->yourname) == std::string(gu->membername[0]);
 
-			std::string leaver = gu->membername[0];
-
-			in->SetOpcode(OP_GroupRemoveMember);
+			in->SetOpcode(recipient_is_departing ? OP_GroupDisbandYou : OP_GroupDisbandOther);
 
 			SerializeBuffer buffer;
-			for (uint32 i = 0; i < 64; ++i) buffer.WriteUInt8(0);   // not read by the handler
-			buffer.WriteString(leaver);                             // lookup key at payload+64
-
-			in->size = buffer.size();
-			in->pBuffer = new unsigned char[buffer.size()];
-			memcpy(in->pBuffer, buffer.buffer(), buffer.size());
-
-			dest->FastQueuePacket(&in, ack_req);
-			return;
-		}
-
-		// A disband is expressed as an empty roster: the deserializer clears all six slots before it adds
-		// entries, so count 0 empties the window. EQEmu's Group::DisbandGroup fills membername[5] with the
-		// members it is removing, which the deserializer would otherwise re-add.
-		if (gu->action == groupActDisband) {
-			SerializeBuffer buffer;
-			buffer.WriteUInt32(0);            // group id
-			buffer.WriteUInt32(0);            // count
-			buffer.WriteString("");           // leader name
+			for (uint32 i = 0; i < 64; ++i) buffer.WriteUInt8((uint8)gu->yourname[i]);       // name1, the recipient
+			for (uint32 i = 0; i < 64; ++i) buffer.WriteUInt8((uint8)gu->membername[0][i]);   // name2, read at +64
 
 			in->size = buffer.size();
 			in->pBuffer = new unsigned char[buffer.size()];
