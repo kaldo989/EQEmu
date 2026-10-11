@@ -862,6 +862,17 @@ public:
 	inline bool GetGuildListDirty() { return guild_dirty; }
 	inline void SetGuildListDirty(bool state) { guild_dirty = state; }
 	inline uint32 GuildID() const { return guild_id; }
+	// The value sent to the client for a spawn's guild. Laurion has no 0xFFFFFFFF "no guild"
+	// sentinel: PlayerClient__SetNameSpriteState (0x1402e7640) treats any nonzero guild GUID as a
+	// real guild and looks it up in CGuild's GuildNamesTable, so handing it GUILD_NONE makes the
+	// client request that name forever (OP_GuildNameByKey, 0x202d). Its no-guild value is 0.
+	inline uint32 GuildIDForWire() const {
+		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			return IsInAGuild() ? guild_id : 0;
+		}
+
+		return guild_id;
+	}
 	inline uint8 GuildRank() const { return guildrank; }
 	inline bool GuildTributeOptIn() const { return guild_tribute_opt_in; }
 	void SetGuildTributeOptIn(bool state);
@@ -876,6 +887,15 @@ public:
 	void SendGuildRanks();
 	void SendGuildMembers();
 	void SendGuildList();
+	void SendGuildNameRecord(uint64 guid, const char *name);
+	void SendGuildMemberListPayload(const char *prefix_name);
+	void SendGuildRosterRecord();
+	// OP_GuildUpdate record builders. Legacy clients read the record payload at +80
+	// (action + 76 byte gap); Laurion reads it at +88, so the packet has to be built
+	// per receiving client. Caller owns the returned packet.
+	EQApplicationPacket* MakeGuildUpdateRecord(uint32 action, uint32 rank, uint32 function_id, uint32 value);
+	EQApplicationPacket* MakeGuildUpdateString(uint32 action, const char *text);
+	EQApplicationPacket* MakeGuildUpdateRankName(uint32 rank, const char *rank_name);
 	void SendGuildJoin(GuildJoin_Struct* gj);
 	void RefreshGuildInfo();
 	void SendGuildRankNames();

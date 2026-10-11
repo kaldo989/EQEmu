@@ -1484,6 +1484,86 @@ namespace Laurion {
 			/*024*/
 		};
 
+		/* 0x79d OP_GuildUpdate - S->C record, handled by FUN_1400c1250 case 0x79d.
+		/* EQEmu's legacy structs (GuildUpdateUCPStruct / GuildPermission_Struct /
+		/* GuildUpdateURLAndChannel_Struct) put the payload at +80: action + 76 byte gap.
+		/* This client reads the payload at +88, so the gap is 84 bytes. Sending the
+		/* legacy layout makes the client read the payload 8 bytes early.
+		/* Client action values (switch at FUN_1400c1250+0x25f, live 0x1400c14ff):
+		/*   0 = URL        -> strncpy(CGuild + 0x968, record + 88, 512)
+		/*   1 = Channel    -> strncpy(CGuild + 0x968, record + 88, 512)
+		/*   2 = permission bitmask for a rank (value at +88)
+		/*   3 = rank name  -> rank at +88, name at +92
+		/*   4 = permission -> rank +88, function_id +92, value +96
+		/* EQEmu's GuildUpdateRanks(4) / GuildUpdatePermissions(5) map to client 3 / 4.
+		/* The case 0x79d handler does not validate the payload size. */
+		struct GuildUpdate_Struct {
+			/*000*/	uint32	Action;
+			/*004*/	uint8	Gap[84];
+			/*088*/	union {
+				/* action 0 / 1 */
+				char	Text[512];
+				/* action 4 */
+				struct {
+					/*088*/	uint32	Rank;
+					/*092*/	uint32	FunctionID;
+					/*096*/	uint32	Value;
+				} Permission;
+				/* action 3 */
+				struct {
+					/*088*/	uint32	Rank;
+					/*092*/	char	RankName[420];
+				} RankName;
+			} Payload;
+		};
+
+		/* Laurion action values for OP_GuildUpdate (0x79d) */
+		static const uint32 GuildUpdateActionURL        = 0;
+		static const uint32 GuildUpdateActionChannel    = 1;
+		static const uint32 GuildUpdateActionRankName   = 3;
+		static const uint32 GuildUpdateActionPermission = 4;
+
+		/* 0x7021 OP_GuildMemberAdd - FUN_1400c1250 case 0x7021 (live 0x1400c21ef).
+		Allocates a GuildMember (0x3B0 bytes) and fills it from this record:
+		  record + 0x08 -> member + 0x58 (level)
+		  record + 0x0C -> member + 0x60 (class)
+		  record + 0x10 -> member + 0x64 (rank)
+		  record + 0x14 -> member + 0x198 (bGuildShowSprite)
+		  record + 0x18 -> member + 0x0C (zone/instance, nonzero sets bOnline)
+		  record + 0x1C -> member + 0x188 (last login)
+		  record + 0x20 -> member + 0x10 (name, min(40, strlen + 1))
+		The +000 guid is not read by this case but is what the other guild cases key on. */
+		struct GuildMemberAdd_Struct {
+			/*000*/	uint64	Guid;             /* EqGuid: u32 char_id + u32 0 */
+			/*008*/	uint32	Level;
+			/*00C*/	uint32	Class;
+			/*010*/	uint32	Rank;
+			/*014*/	uint32	GuildShow;
+			/*018*/	uint32	ZoneID;
+			/*01C*/	uint32	LastOn;
+			/*020*/	char	Name[40];
+			/*028*/
+		};
+
+		/* 0x43f7 OP_GuildMemberList - FUN_1400c1250 case 0x43f7 (live 0x1400c1d64), which runs
+		FUN_1400c2b00. This is the record that actually builds the guild window: it sets
+		CGuild::GuildGuid (__Guilds + 0x18), CGuild + 0x2D1 and allocates count GuildMember
+		objects. Fields are read in this order, so the payload must be written exactly like this:
+		  u32 field_length + bytes      <- guild name (read into a string, not stored)
+		  u64 GuildGuid                 <- raw, no length prefix
+		  u8  flag                      <- raw
+		  u32 count                     <- raw
+		  per member: u32 field_length + bytes (name, min(40, len + 1) into member + 0x10)
+		EQEmu's legacy Internal_GuildMembers_Struct (char player_name[64] at +0) does not match. */
+		struct GuildMemberList_Struct {
+			/*000*/	uint32	NameLength;
+			/*004*/	char	Name[64];           /* variable, NameLength bytes */
+			/*044*/	uint64	GuildGuid;          /* EqGuid: u32 guild_id + u32 0 */
+			/*04C*/	uint8	Flag;
+			/*04D*/	uint32	Count;
+			/*051*/
+		};
+
 		/* 0x4a13 OP_TributeItem - payload 40 */
 		struct TributeItem_Struct {
 			/*000*/	uint64	ItemField0;

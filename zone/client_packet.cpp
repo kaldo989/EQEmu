@@ -6678,8 +6678,10 @@ void Client::Handle_OP_GetGuildsList(const EQApplicationPacket *app)
 void Client::Handle_OP_GuildNameByKey(const EQApplicationPacket *app)
 {
 	// CGuild__GetGuildName (0x1400c0d70) only sends this when the guild GUID is not
-	// already in the client's GuildNamesTable cache, throttled to one request per 2
-	// seconds (LastGuildNameRequest, CGuild + 0xc08). Payload is the 8 byte GUID.
+	// already in the client's GuildNamesTable cache. Payload is the 8 byte GUID.
+	// The 2 second throttle (LastGuildNameRequest, CGuild + 0xc08) only gates the null key
+	// path - for a nonzero key the send is unconditional, so a GUID the server cannot answer
+	// is re-requested at the UI refresh rate.
 	if (app->size != sizeof(uint64)) {
 		LogGuilds("Received OP_GuildNameByKey of unexpected length [{}]", app->size);
 		return;
@@ -6689,6 +6691,14 @@ void Client::Handle_OP_GuildNameByKey(const EQApplicationPacket *app)
 	memcpy(&guid, app->pBuffer, sizeof(guid));
 
 	// EQEmu guild ids are 32 bit, the client carries them as 8 byte GUIDs.
+	// This client has no 0xFFFFFFFF sentinel, its no-guild value is 0, and case 0x2d0e ignores
+	// a zero key - so a request for GUILD_NONE means the client was handed the no-guild value as
+	// a guild GUID. Nothing to answer; the wire value is fixed by GuildIDForWire().
+	if (guid == 0 || static_cast<uint32>(guid) == GUILD_NONE) {
+		LogGuilds("Received OP_GuildNameByKey for no guild [{}]", guid);
+		return;
+	}
+
 	uint32 guild_id = static_cast<uint32>(guid);
 	if (!guild_mgr.GuildExists(guild_id)) {
 		LogGuilds("Received OP_GuildNameByKey for unknown guild [{}]", guid);
@@ -6700,24 +6710,19 @@ void Client::Handle_OP_GuildNameByKey(const EQApplicationPacket *app)
 		return;
 	}
 
-	// Answer on OP_GuildsList. The Laurion client (FUN_1400c1250, case 0x2d0e) reads this
-	// record as u64 guid at +0 then a NUL terminated name at +8, copying at most 0x3f
-	// bytes. Build it raw - MakeGuildList() emits the cereal GuildsListMessaging_Struct
-	// shape, which is not what that case parses.
-	uint32 name_length = static_cast<uint32>(strlen(name));
-	if (name_length > 63) {
-		name_length = 63;
-	}
+	// Diagnostic: the client caches the reply under the full 8 byte key it asked for. If the key
+	// is wider than the 32 bit emu guild id (high half nonzero) the reply is stored under a
+	// different key than the lookup uses, so the request repeats forever.
+	// LogInfo (not LogGuilds) so this lands in the zone log file - the Guilds category is
+	// disabled by default in EQEmuLogSys::LoadLogSettingsDefaults().
+	LogInfo(
+		"Sending OP_GuildsList reply [{}] for OP_GuildNameByKey guid [{}] (high half [{}])",
+		name,
+		guid,
+		guid >> 32
+	);
 
-	uint32 size = static_cast<uint32>(sizeof(guid) + name_length + 1);
-	auto outapp = new EQApplicationPacket(OP_GuildsList, size);
-	memcpy(outapp->pBuffer, &guid, sizeof(guid));
-	memcpy(outapp->pBuffer + sizeof(guid), name, name_length);
-	outapp->pBuffer[sizeof(guid) + name_length] = 0;
-
-	LogGuilds("Sending OP_GuildsList reply [{}] for OP_GuildNameByKey", name);
-
-	FastQueuePacket(&outapp);
+	SendGuildNameRecord(guid, name);
 }
 
 void Client::Handle_OP_GMBecomeNPC(const EQApplicationPacket *app)
@@ -9049,6 +9054,77 @@ void Client::Handle_OP_GuildUpdate(const EQApplicationPacket *app)
 {
 	if (!IsInAGuild()) {
 		return;
+	}
+
+	// Laurion reads the record payload at +88 (action + 84 byte gap) and uses action 3
+	// for rank names and 4 for permissions, where EQEmu uses 4 and 5.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto gu = (Laurion::structs::GuildUpdate_Struct*) app->pBuffer;
+
+		switch (gu->Action) {
+			case Laurion::structs::GuildUpdateActionURL:
+			case Laurion::structs::GuildUpdateActionChannel: {
+				if (app->size < sizeof(Laurion::structs::GuildUpdate_Struct)) {
+					LogDebug("Size mismatch in Laurion OP_GuildUpdate string record expected [{}] got [{}]",
+							 sizeof(Laurion::structs::GuildUpdate_Struct),
+							 app->size);
+					DumpPacket(app);
+					return;
+				}
+
+				if (gu->Action == Laurion::structs::GuildUpdateActionURL) {
+					guild_mgr.SetGuildURL(guild_id, gu->Payload.Text);
+					guild_mgr.SendToWorldGuildURL(guild_id, gu->Payload.Text);
+				} else {
+					guild_mgr.SetGuildChannel(guild_id, gu->Payload.Text);
+					guild_mgr.SendToWorldGuildChannel(guild_id, gu->Payload.Text);
+				}
+				return;
+			}
+			case Laurion::structs::GuildUpdateActionRankName: {
+				if (!guild_mgr.CheckPermission(guild_id, guildrank, GUILD_ACTION_RANKS_CHANGE_RANK_NAMES)) {
+					MessageString(Chat::Yellow, GUILD_PERMISSION_FAILED);
+					return;
+				}
+
+				uint32 rank = gu->Payload.RankName.Rank;
+				std::string rank_name(gu->Payload.RankName.RankName);
+
+				if (rank > GUILD_MAX_RANK || rank == 0 || rank_name.empty()) {
+					LogGuilds("Received packet to update rank though rank {} or rank name {} was incorrect.",
+							  rank,
+							  rank_name.c_str());
+					return;
+				}
+
+				guild_mgr.UpdateRankName(guild_id, rank, rank_name);
+				guild_mgr.SendRankName(guild_id, rank, rank_name);
+				return;
+			}
+			case Laurion::structs::GuildUpdateActionPermission: {
+				if (!guild_mgr.CheckPermission(guild_id, guildrank, GUILD_ACTION_RANKS_CHANGE_PERMISSIONS)) {
+					MessageString(Chat::Yellow, GUILD_PERMISSION_FAILED);
+					return;
+				}
+
+				guild_mgr.UpdateRankPermission(
+					guild_id,
+					character_id,
+					gu->Payload.Permission.FunctionID,
+					gu->Payload.Permission.Rank,
+					gu->Payload.Permission.Value
+				);
+				guild_mgr.SendPermissionUpdate(
+					guild_id,
+					gu->Payload.Permission.Rank,
+					gu->Payload.Permission.FunctionID,
+					gu->Payload.Permission.Value
+				);
+				return;
+			}
+			default:
+				return;
+		}
 	}
 
 	GuildUpdateUCPStruct *gup = (GuildUpdateUCPStruct *) app->pBuffer;

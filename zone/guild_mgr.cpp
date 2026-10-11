@@ -529,21 +529,25 @@ void ZoneGuildManager::ProcessWorldPacket(ServerPacket *pack)
                     guild->functions[sgpus->function_id].perm_value &= ~(1UL << (8 - sgpus->rank));
                 }
 
-				auto outapp  = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildPermission_Struct));
-				auto *guuacs = (GuildPermission_Struct *) outapp->pBuffer;
-				guuacs->Action      = GuildUpdatePermissions;
-				guuacs->rank        = sgpus->rank;
-				guuacs->function_id = sgpus->function_id;
-				guuacs->value       = sgpus->function_value;
+				// Build the record per receiving client: Laurion reads the payload at +88
+				// and switches on action 4 where EQEmu uses 5.
+				for (auto &entry : entity_list.GetClientList()) {
+					Client *c = entry.second;
+					if (!c->IsInGuild(sgpus->guild_id)) {
+						continue;
+					}
 
-				entity_list.QueueClientsGuild(outapp, sgpus->guild_id);
+					auto outapp = c->MakeGuildUpdateRecord(GuildUpdatePermissions, sgpus->rank, sgpus->function_id, sgpus->function_value);
+					c->QueuePacket(outapp);
+					safe_delete(outapp);
+				}
+
 				LogDebug(
 					"Zone Received guild permission update from world for rank {} function id [{}] and value [{}]",
-					guuacs->rank        = sgpus->rank,
-					guuacs->function_id = sgpus->function_id,
-					guuacs->value       = sgpus->function_value
+					sgpus->rank,
+					sgpus->function_id,
+					sgpus->function_value
 				);
-				safe_delete(outapp);
 
 				if (sgpus->function_id == GUILD_ACTION_DISPLAY_GUILD_NAME) {
 					entity_list.SendGuildSpawnAppearance(sgpus->guild_id);
@@ -574,14 +578,17 @@ void ZoneGuildManager::ProcessWorldPacket(ServerPacket *pack)
 				auto guild = guild_mgr.GetGuildByGuildID(s->guild_id);
 				if (guild) {
 					guild->rank_names[s->rank] = s->rank_name;
-					auto outapp = new EQApplicationPacket(OP_GuildUpdate,sizeof(GuildUpdateUCPStruct));
-					auto *gucp  = (GuildUpdateUCPStruct *) outapp->pBuffer;
-					gucp->payload.rank_name.rank = s->rank;
-					strn0cpy(gucp->payload.rank_name.rank_name, s->rank_name, sizeof(gucp->payload.rank_name.rank_name));
-					gucp->action = GuildUpdateRanks;
+					// Build the record per receiving client (Laurion: action 3, rank +88, name +92).
+					for (auto &entry : entity_list.GetClientList()) {
+						Client *c = entry.second;
+						if (!c->IsInGuild(s->guild_id)) {
+							continue;
+						}
 
-					entity_list.QueueClientsGuild(outapp, s->guild_id);
-					safe_delete(outapp);
+						auto outapp = c->MakeGuildUpdateRankName(s->rank, s->rank_name);
+						c->QueuePacket(outapp);
+						safe_delete(outapp);
+					}
 				}
 			}
 			break;
@@ -1412,16 +1419,11 @@ void ZoneGuildManager::SendAllRankNames(uint32 guild_id, uint32 char_id)
     auto guild = GetGuildByGuildID(guild_id);
     auto c     = entity_list.GetClientByCharID(char_id);
     if (guild && c) {
-        auto                  outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildUpdateUCPStruct));
-        GuildUpdateUCPStruct *gucp   = (GuildUpdateUCPStruct *)outapp->pBuffer;
         for (int i = GUILD_LEADER; i <= GUILD_RECRUIT; i++) {
-            gucp->payload.rank_name.rank = i;
-            strn0cpy(gucp->payload.rank_name.rank_name, guild->rank_names[i].c_str(),
-                     sizeof(gucp->payload.rank_name.rank_name));
-            gucp->action = GuildUpdateRanks;
+            auto outapp = c->MakeGuildUpdateRankName(i, guild->rank_names[i].c_str());
             c->QueuePacket(outapp);
+            safe_delete(outapp);
         }
-        safe_delete(outapp);
     }
 }
 

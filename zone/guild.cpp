@@ -19,6 +19,7 @@
 
 #include "common/database.h"
 #include "common/guilds.h"
+#include "common/patches/laurion_structs.h"
 #include "common/strings.h"
 #include "zone/guild_mgr.h"
 #include "zone/worldserver.h"
@@ -75,8 +76,18 @@ void Client::SendGuildURL()
 
 		if(guild_mgr.GetGuildURL(GuildID(), guuacs->Text))
 		{
-			guuacs->Action = GuildUpdateURL;
-			FastQueuePacket(&outapp);
+			if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+				// Laurion reads the record payload at +88, not +80
+				auto laurion_app = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+				auto gu = (Laurion::structs::GuildUpdate_Struct*) laurion_app->pBuffer;
+				gu->Action = Laurion::structs::GuildUpdateActionURL;
+				strn0cpy(gu->Payload.Text, guuacs->Text, sizeof(gu->Payload.Text));
+				FastQueuePacket(&laurion_app);
+			}
+			else {
+				guuacs->Action = GuildUpdateURL;
+				FastQueuePacket(&outapp);
+			}
 		}
 		else
 			safe_delete(outapp);
@@ -97,9 +108,19 @@ void Client::SendGuildChannel()
 
 		if(guild_mgr.GetGuildChannel(GuildID(), guuacs->Text))
 		{
-			guuacs->Action = GuildUpdateChannel;
+			if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+				// Laurion reads the record payload at +88, not +80
+				auto laurion_app = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+				auto gu = (Laurion::structs::GuildUpdate_Struct*) laurion_app->pBuffer;
+				gu->Action = Laurion::structs::GuildUpdateActionChannel;
+				strn0cpy(gu->Payload.Text, guuacs->Text, sizeof(gu->Payload.Text));
+				FastQueuePacket(&laurion_app);
+			}
+			else {
+				guuacs->Action = GuildUpdateChannel;
 
-			FastQueuePacket(&outapp);
+				FastQueuePacket(&outapp);
+			}
 		}
 		else
 			safe_delete(outapp);
@@ -121,6 +142,20 @@ void Client::SendGuildRanks()
 		{
 			while(i < permissions)
 			{
+					if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+						// Laurion permission record: rank +88, function_id +92, value +96
+						auto laurion_app = new EQApplicationPacket(OP_GuildUpdate,
+							sizeof(Laurion::structs::GuildUpdate_Struct));
+						auto gu = (Laurion::structs::GuildUpdate_Struct*) laurion_app->pBuffer;
+						gu->Action = Laurion::structs::GuildUpdateActionPermission;
+						gu->Payload.Permission.Rank = j;
+						gu->Payload.Permission.FunctionID = i;
+						gu->Payload.Permission.Value = guild_mgr.CheckPermission(GuildID(), j, (GuildAction)i);
+						FastQueuePacket(&laurion_app);
+						i++;
+						continue;
+					}
+
 					auto outapp = new EQApplicationPacket(OP_GuildUpdate,
 						sizeof(GuildUpdateRanks_Struct));
 					GuildUpdateRanks_Struct* guuacs = (GuildUpdateRanks_Struct*)outapp->pBuffer;
@@ -155,6 +190,24 @@ void Client::SendGuildRankNames()
 			auto                 outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildUpdateUCPStruct));
 			GuildUpdateUCPStruct* gucp = (GuildUpdateUCPStruct*)outapp->pBuffer;
 
+			if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+				// Laurion rank name record: rank +88, name +92, action 3
+				if (guild->rank_names[i].empty()) {
+					safe_delete(outapp);
+					continue;
+				}
+
+				auto laurion_app = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+				auto gu = (Laurion::structs::GuildUpdate_Struct*) laurion_app->pBuffer;
+				gu->Action = Laurion::structs::GuildUpdateActionRankName;
+				gu->Payload.RankName.Rank = i;
+				strn0cpy(gu->Payload.RankName.RankName, guild->rank_names[i].c_str(), sizeof(gu->Payload.RankName.RankName));
+				QueuePacket(laurion_app);
+				safe_delete(laurion_app);
+				safe_delete(outapp);
+				continue;
+			}
+
 			gucp->payload.rank_name.rank = i;
 			if (guild->rank_names[i].empty()) {
 				continue;
@@ -176,7 +229,7 @@ void Client::SendGuildRankNames()
 void Client::SendGuildSpawnAppearance() {
 	if (!IsInAGuild()) {
 		// clear guildtag
-		SendAppearancePacket(AppearanceType::GuildID, GUILD_NONE);
+		SendAppearancePacket(AppearanceType::GuildID, GuildIDForWire());
 		LogGuilds("Sending spawn appearance for no guild tag");
 	} else {
 		uint8  rank    = guild_mgr.GetDisplayedRank(GuildID(), GuildRank(), CharacterID());
@@ -189,9 +242,111 @@ void Client::SendGuildSpawnAppearance() {
 	UpdateWho();
 }
 
+// One OP_GuildsList record in the shape the Laurion client parses: u64 guid at +0, NUL
+// terminated name at +8. FUN_1400c1250 case 0x2d0e copies at most 0x3f name bytes and needs a
+// payload larger than 7, so the name is capped at 63 here.
+// EQEmu's guild update actions (0 URL, 1 channel, 4 ranks, 5 permissions) do not match
+// the values this client switches on (0 URL, 1 channel, 3 rank name, 4 permission).
+static uint32 LaurionGuildUpdateAction(uint32 eq_action)
+{
+	switch (eq_action) {
+		case GuildUpdateURL:          return Laurion::structs::GuildUpdateActionURL;
+		case GuildUpdateChannel:      return Laurion::structs::GuildUpdateActionChannel;
+		case GuildUpdateRanks:        return Laurion::structs::GuildUpdateActionRankName;
+		case GuildUpdatePermissions:  return Laurion::structs::GuildUpdateActionPermission;
+		default:                      return eq_action;
+	}
+}
+
+EQApplicationPacket* Client::MakeGuildUpdateRecord(uint32 action, uint32 rank, uint32 function_id, uint32 value)
+{
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+		auto gu = (Laurion::structs::GuildUpdate_Struct*) outapp->pBuffer;
+		gu->Action = LaurionGuildUpdateAction(action);
+		gu->Payload.Permission.Rank = rank;
+		gu->Payload.Permission.FunctionID = function_id;
+		gu->Payload.Permission.Value = value;
+		return outapp;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildPermission_Struct));
+	auto gu = (GuildPermission_Struct*) outapp->pBuffer;
+	gu->Action = action;
+	gu->rank = rank;
+	gu->function_id = function_id;
+	gu->value = value;
+	return outapp;
+}
+
+EQApplicationPacket* Client::MakeGuildUpdateString(uint32 action, const char *text)
+{
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+		auto gu = (Laurion::structs::GuildUpdate_Struct*) outapp->pBuffer;
+		gu->Action = LaurionGuildUpdateAction(action);
+		strn0cpy(gu->Payload.Text, text, sizeof(gu->Payload.Text));
+		return outapp;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildUpdateURLAndChannel_Struct));
+	auto gu = (GuildUpdateURLAndChannel_Struct*) outapp->pBuffer;
+	gu->Action = action;
+	strn0cpy(gu->Text, text, sizeof(gu->Text));
+	return outapp;
+}
+
+EQApplicationPacket* Client::MakeGuildUpdateRankName(uint32 rank, const char *rank_name)
+{
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(Laurion::structs::GuildUpdate_Struct));
+		auto gu = (Laurion::structs::GuildUpdate_Struct*) outapp->pBuffer;
+		gu->Action = Laurion::structs::GuildUpdateActionRankName;
+		gu->Payload.RankName.Rank = rank;
+		strn0cpy(gu->Payload.RankName.RankName, rank_name, sizeof(gu->Payload.RankName.RankName));
+		return outapp;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildUpdate, sizeof(GuildUpdateUCPStruct));
+	auto gu = (GuildUpdateUCPStruct*) outapp->pBuffer;
+	gu->action = GuildUpdateRanks;
+	gu->payload.rank_name.rank = rank;
+	strn0cpy(gu->payload.rank_name.rank_name, rank_name, sizeof(gu->payload.rank_name.rank_name));
+	return outapp;
+}
+
+void Client::SendGuildNameRecord(uint64 guid, const char *name)
+{
+	if (!name || !*name) {
+		return;
+	}
+
+	uint32 name_length = static_cast<uint32>(strlen(name));
+	if (name_length > 63) {
+		name_length = 63;
+	}
+
+	uint32 size = static_cast<uint32>(sizeof(guid) + name_length + 1);
+	auto outapp = new EQApplicationPacket(OP_GuildsList, size);
+	memcpy(outapp->pBuffer, &guid, sizeof(guid));
+	memcpy(outapp->pBuffer + sizeof(guid), name, name_length);
+	outapp->pBuffer[sizeof(guid) + name_length] = 0;
+
+	FastQueuePacket(&outapp);
+}
+
 void Client::SendGuildList()
 {
 	auto guilds_list = guild_mgr.MakeGuildList();
+
+	// Laurion reads one guid + name record per packet, not the cereal archive below.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		for (const auto &entry : guilds_list.guild_detail) {
+			SendGuildNameRecord(entry.guild_id, entry.guild_name.c_str());
+		}
+
+		return;
+	}
 
 	std::stringstream           ss;
 	cereal::BinaryOutputArchive ar(ss);
@@ -206,9 +361,64 @@ void Client::SendGuildList()
 }
 
 
-void Client::SendGuildMembers() {
+// FUN_1400c1250 case 0x5f77 does not read the legacy Internal_GuildMembers_Struct. It parses
+// the payload as a serialized archive (FUN_1405646E0 reads a u32 length then that many bytes):
+//   u32 field_length
+//   bytes[field_length]        <- the guild name
+//   u32 count
+//   per member: u64 GUID, then a NUL terminated name
+// Sending the legacy struct makes the client take the first 4 bytes of the guild name as the
+// field length - for "Slackers" that is 0x63616C53 ("Slac") - and memcpy about 1.6 GB, which is
+// the EXCEPTION_ACCESS_VIOLATION seen at login.
+void Client::SendGuildMemberListPayload(const char *prefix_name) {
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		std::vector<CharGuildInfo*> members;
+		if (!guild_mgr.GetEntireGuild(GuildID(), members)) {
+			return;
+		}
+
+		uint32 prefix_length = static_cast<uint32>(strlen(prefix_name));
+		uint32 size = 4 + prefix_length + 4;
+		for (auto* member : members) {
+			size += 8 + static_cast<uint32>(member->char_name.length()) + 1;
+		}
+
+		auto outapp = new EQApplicationPacket(OP_GuildMemberDetails, size);
+		uint8* p = outapp->pBuffer;
+
+		// length prefixed field: the guild name
+		*reinterpret_cast<uint32*>(p) = prefix_length;
+		p += 4;
+		memcpy(p, prefix_name, prefix_length);
+		p += prefix_length;
+
+		*reinterpret_cast<uint32*>(p) = static_cast<uint32>(members.size());
+		p += 4;
+
+		for (auto* member : members) {
+			// EqGuid is u32 id + u32 padding (see the spawn appearance encode in laurion.cpp)
+			*reinterpret_cast<uint32*>(p) = member->char_id;
+			p += 4;
+			*reinterpret_cast<uint32*>(p) = 0;
+			p += 4;
+
+			uint32 name_length = static_cast<uint32>(member->char_name.length());
+			memcpy(p, member->char_name.c_str(), name_length);
+			p[name_length] = 0;
+			p += name_length + 1;
+		}
+
+		for (auto* member : members) {
+			safe_delete(member);
+		}
+
+		LogGuilds("Sending Laurion OP_GuildMemberDetails name entry of length [{}]", outapp->size);
+		FastQueuePacket(&outapp);
+		return;
+	}
+
 	uint32 len;
-	uint8 *data = guild_mgr.MakeGuildMembers(GuildID(), GetName(), len);
+	uint8 *data = guild_mgr.MakeGuildMembers(GuildID(), prefix_name, len);
 	if(data == nullptr)
 		return;	//invalid guild, shouldent happen.
 
@@ -220,6 +430,64 @@ void Client::SendGuildMembers() {
 	LogGuilds("Sending OP_GuildMemberList of length [{}]", outapp->size);
 
 	FastQueuePacket(&outapp);
+}
+
+// FUN_1400c1250 case 0x43f7 (which runs FUN_1400c2b00) is the record that actually builds the
+// guild window: it sets CGuild::GuildGuid (__Guilds + 0x18), CGuild + 0x2D1 and allocates
+// `count` GuildMember objects. The fields are consumed in this order, so the payload has to be
+// written exactly like this - EQEmu's legacy cereal archive for OP_GuildMemberList does not match:
+//   u32 field_length + bytes   <- guild name (parsed into a string, not stored)
+//   u64 GuildGuid              <- raw, no length prefix
+//   u8  flag                   <- raw
+//   u32 count                  <- raw
+//   per member: u32 field_length + bytes (name)
+void Client::SendGuildRosterRecord() {
+	std::vector<CharGuildInfo*> members;
+	if (!guild_mgr.GetEntireGuild(GuildID(), members)) {
+		return;
+	}
+
+	const char *guild_name = guild_mgr.GetGuildName(GuildID());
+	uint32 name_length = static_cast<uint32>(strlen(guild_name));
+
+	uint32 size = 4 + name_length + 8 + 1 + 4;
+	for (auto* member : members) {
+		size += 4 + static_cast<uint32>(member->char_name.length());
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildMemberList, size);
+	uint8* p = outapp->pBuffer;
+
+	*reinterpret_cast<uint32*>(p) = name_length;
+	p += 4;
+	memcpy(p, guild_name, name_length);
+	p += name_length;
+
+	*reinterpret_cast<uint64*>(p) = GuildID();
+	p += 8;
+	*p = 0;
+	p += 1;
+	*reinterpret_cast<uint32*>(p) = static_cast<uint32>(members.size());
+	p += 4;
+
+	for (auto* member : members) {
+		uint32 member_name_length = static_cast<uint32>(member->char_name.length());
+		*reinterpret_cast<uint32*>(p) = member_name_length;
+		p += 4;
+		memcpy(p, member->char_name.c_str(), member_name_length);
+		p += member_name_length;
+	}
+
+	for (auto* member : members) {
+		safe_delete(member);
+	}
+
+	LogGuilds("Sending Laurion OP_GuildMemberList roster of length [{}]", outapp->size);
+	FastQueuePacket(&outapp);
+}
+
+void Client::SendGuildMembers() {
+	SendGuildMemberListPayload(GetName());
 
 	auto pack =
 	    new ServerPacket(ServerOP_RequestOnlineGuildMembers, sizeof(ServerRequestOnlineGuildMembers_Struct));
@@ -521,21 +789,15 @@ void Client::GuildChangeRank(const char* name, uint32 guild_id, uint32 oldrank, 
 
 void Client::SendGuildMembersList()
 {
-	auto   guild_name = guild_mgr.GetGuildName(GuildID());
-	uint32 len;
-	uint8 *data = guild_mgr.MakeGuildMembers(GuildID(), guild_name, len);
-	if (data == nullptr) {
-		return;
+	auto guild_name = guild_mgr.GetGuildName(GuildID());
+
+	// Laurion needs both: case 0x43f7 builds the CGuild object and its member list (what the
+	// guild window reads), case 0x5f77 fills the guild name table used for member tags.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendGuildRosterRecord();
 	}
 
-	auto outapp = new EQApplicationPacket(OP_GuildMemberList);
-	outapp->size    = len;
-	outapp->pBuffer = data;
-	data = nullptr;
-
-	LogGuilds("Sending OP_GuildMemberList of length [{}]", outapp->size);
-
-	FastQueuePacket(&outapp);
+	SendGuildMemberListPayload(guild_name);
 
 	SendGuildMOTD();
 	SendGuildChannel();
@@ -559,6 +821,24 @@ void Client::SendGuildMemberAdd(
 		return;
 	}
 
+
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto laurion_app = new EQApplicationPacket(OP_GuildMemberAdd, sizeof(Laurion::structs::GuildMemberAdd_Struct));
+		auto lou = (Laurion::structs::GuildMemberAdd_Struct*) laurion_app->pBuffer;
+
+		lou->Guid      = guild_id;
+		lou->Level     = level;
+		lou->Class     = class_;
+		lou->Rank      = rank_;
+		lou->GuildShow = guild_show;
+		lou->ZoneID    = zone_id;
+		lou->LastOn    = time(nullptr);
+		strn0cpy(lou->Name, player_name.c_str(), sizeof(lou->Name));
+
+		QueuePacket(laurion_app);
+		safe_delete(laurion_app);
+		return;
+	}
 	auto outapp = new EQApplicationPacket(OP_GuildMemberAdd, sizeof(GuildMemberAdd_Struct));
 	auto out    = (GuildMemberAdd_Struct *) outapp->pBuffer;
 
