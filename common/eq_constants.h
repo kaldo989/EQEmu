@@ -1090,12 +1090,67 @@ enum ResurrectionActions
 	Accept
 };
 
+// Server-side semantic actions for OP_MemorizeSpell. These are EQEmu's internal vocabulary, not
+// wire values: every client version maps them to its own wire numbers in its struct strategy (the
+// ENCODE/DECODE(OP_MemorizeSpell) blocks in common/patches/<client>.cpp). For HT/LoH/Ti/RoF the
+// wire numbers happen to be identical to these; Laurion re-numbered them - see LaurionSpellAction.
 enum ScribeSpellActions
 {
-	Scribe,
-	Memorize,
-	Unmemorize
+	FullRefresh   = -1,  // full spellbook + spell bar resync
+	Scribe        = 0,   // write a spell into a spellbook slot
+	Memorize      = 1,   // write a spell into a memorized (spell bar) slot
+	Unmemorize    = 2,   // clear a memorized (spell bar) slot
+	Spellbar      = 3,   // per-gem recast / cooldown timer update
+	BookRefresh   = 4    // spellbook window repaint only
 };
+
+// Laurion (client released 2024-04-01) wire values for OP_MemorizeSpell, taken from the client
+// handler FUN_1401fbb40 in eqgame.exe. That handler is a six-case switch:
+//   0  scribe into spellbook slot        - acks the pending action counter
+//   1  spellbook window repaint only     - does NOT ack the pending action counter
+//   2  memorize into spell bar slot      - acks
+//   3  unmemorize spell bar slot         - acks
+//   4  per-gem recast timer              - does not ack
+//   -1 full spellbook + spell bar resync - acks
+// The pending action counter (DAT_140eb0c04) gates every further spell/inventory action, so a
+// server that answers with an action the client does not ack permanently locks the spell bar.
+namespace LaurionSpellAction
+{
+	constexpr uint32 Scribe       = 0;
+	constexpr uint32 BookRefresh  = 1;
+	constexpr uint32 Memorize     = 2;
+	constexpr uint32 Unmemorize   = 3;
+	constexpr uint32 RecastTimer  = 4;
+	constexpr uint32 FullRefresh  = 0xFFFFFFFF;
+
+	// semantic -> wire
+	constexpr uint32 ToWire(uint32 semantic)
+	{
+		switch (static_cast<int32>(semantic)) {
+		case ScribeSpellActions::Scribe:      return Scribe;
+		case ScribeSpellActions::Memorize:    return Memorize;
+		case ScribeSpellActions::Unmemorize:  return Unmemorize;
+		case ScribeSpellActions::Spellbar:    return RecastTimer;
+		case ScribeSpellActions::BookRefresh: return BookRefresh;
+		case ScribeSpellActions::FullRefresh: return FullRefresh;
+		default:                              return semantic;
+		}
+	}
+
+	// wire -> semantic
+	constexpr uint32 FromWire(uint32 wire)
+	{
+		switch (wire) {
+		case Scribe:      return static_cast<uint32>(ScribeSpellActions::Scribe);
+		case BookRefresh: return static_cast<uint32>(ScribeSpellActions::BookRefresh);
+		case Memorize:    return static_cast<uint32>(ScribeSpellActions::Memorize);
+		case Unmemorize:  return static_cast<uint32>(ScribeSpellActions::Unmemorize);
+		case RecastTimer: return static_cast<uint32>(ScribeSpellActions::Spellbar);
+		case FullRefresh: return static_cast<uint32>(ScribeSpellActions::FullRefresh);
+		default:          return wire;
+		}
+	}
+}
 
 enum SpellTimeRestrictions
 {

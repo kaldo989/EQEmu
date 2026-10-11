@@ -2714,7 +2714,7 @@ struct Who_All_Struct { // 156 length total
 
 struct Stun_Struct { // 8 bytes total
 /*000*/	uint32	duration; // Duration of stun
-/*004*/	uint8	unknown004; // seen 0
+/*004*/	uint8	flag;         // SpeedHeading flag: non-zero makes the client set PlayerBase + 0x9c to 32.0f (seen 0 on live captures)
 /*005*/	uint8	unknown005; // seen 163
 /*006*/	uint8	unknown006; // seen 67
 /*007*/	uint8	unknown007; // seen 0

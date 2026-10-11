@@ -265,7 +265,7 @@ public:
 	inline uint8 GetGreedPercent() { return NPCTypedata->greed; }
 	inline bool GetParcelMerchant() { return NPCTypedata->is_parcel_merchant; }
 	void	Depop(bool start_spawn_timer = false);
-	void	Stun(int duration);
+	void	Stun(int duration, uint8 flag = 0);
 	void	UnStun();
 	uint32	GetSwarmOwner();
 	uint32	GetSwarmTarget();

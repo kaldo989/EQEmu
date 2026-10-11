@@ -192,6 +192,18 @@ namespace Titanium
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_Stun)
+	{
+		ENCODE_LENGTH_EXACT(Stun_Struct);
+		SETUP_DIRECT_ENCODE(Stun_Struct, structs::Stun_Struct);
+
+		// Titanium's wire form is 4 bytes (duration only). This encoder is what keeps Ti's packet size at
+		// 4 now that the emu Stun_Struct is 8 - the flag byte has no Titanium field and is dropped.
+		OUT(duration);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_BazaarSearch)
 	{
 		EQApplicationPacket *in = *p;

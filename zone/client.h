@@ -55,6 +55,7 @@ namespace EQ
 #include "common/data_verification.h"
 #include "common/emu_constants.h"
 #include "common/emu_opcodes.h"
+#include "common/eq_constants.h"
 #include "common/eq_packet_structs.h"
 #include "common/eq_packet.h"
 #include "common/eq_stream_intf.h"
@@ -102,12 +103,21 @@ public:
 };
 
 #define SPELLBAR_UNLOCK 0x2bc
-enum { //scribing argument to MemorizeSpell
-	memSpellUnknown = -1, // this modifies some state data
-	memSpellScribing = 0,
-	memSpellMemorize = 1,
-	memSpellForget = 2,
-	memSpellSpellbar = 3
+
+// scribing argument to Client::MemorizeSpell(). These are EQEmu's semantic values, not wire
+// values - the per-client struct strategy maps them to that client's wire numbers. They are also
+// the wire values for HT/LoH/Ti/RoF, but Laurion re-numbered them:
+//   Laurion wire 0 = scribe, 1 = spellbook repaint, 2 = memorize, 3 = unmemorize,
+//   4 = per-gem recast timer, -1 = full book + bar resync.
+// See EQ::ScribeSpellActions and LaurionSpellAction in common/eq_constants.h, and the
+// ENCODE/DECODE(OP_MemorizeSpell) blocks in common/patches/laurion.cpp.
+enum ScribeSpellAction : int32_t {
+	memSpellUnknown     = ScribeSpellActions::FullRefresh,   // -1
+	memSpellScribing    = ScribeSpellActions::Scribe,        //  0
+	memSpellMemorize    = ScribeSpellActions::Memorize,      //  1
+	memSpellForget      = ScribeSpellActions::Unmemorize,    //  2
+	memSpellSpellbar    = ScribeSpellActions::Spellbar,      //  3
+	memSpellBookRefresh = ScribeSpellActions::BookRefresh    //  4
 };
 
 //Modes for the zoning state of the client.
@@ -897,7 +907,7 @@ public:
 	void WhoAll(Who_All_Struct* whom);
 	void FriendsWho(char *FriendsString);
 
-	void Stun(int duration);
+	void Stun(int duration, uint8 flag = 0);
 	void UnStun();
 	void ReadBook(BookRequest_Struct *book);
 	void ReadBookByName(std::string book_name, uint8 book_type);

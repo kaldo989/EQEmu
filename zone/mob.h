@@ -945,7 +945,7 @@ public:
 	void CloneAppearance(Mob* other, bool clone_name = false);
 	void SetFaceAppearance(const FaceChange_Struct& face, bool skip_sender = false);
 	bool RandomizeFeatures(bool send_illusion = true, bool set_variables = true);
-	virtual void Stun(int duration);
+	virtual void Stun(int duration, uint8 flag = 0);
 	virtual void UnStun();
 	inline void Silence(bool newval) { silenced = newval; }
 	inline void Amnesia(bool newval) { amnesiad = newval; }

@@ -5770,8 +5770,12 @@ void Mob::SendSpellBarEnable(uint16 spell_id)
 	safe_delete(outapp);
 }
 
-void Mob::Stun(int duration)
+void Mob::Stun(int duration, uint8 flag)
 {
+	// flag is only meaningful for clients - it is the byte the client reads at Stun_Struct +4. NPCs have no
+	// packet for it, so it is carried through the virtual chain for Client::Stun.
+	(void)flag;
+
 	//make sure a shorter stun does not overwrite a longer one.
 	if(stunned && stunned_timer.GetRemainingTime() > uint32(duration))
 		return;
@@ -5802,7 +5806,7 @@ void Mob::UnStun() {
 }
 
 // Stuns "this"
-void Client::Stun(int duration)
+void Client::Stun(int duration, uint8 flag)
 {
 	// The Laurion handler (FUN_1400FC9F0 at 0x1400FC9F0) clamps any duration below 1000 ms up to 1000 ms,
 	// but only for a PC (Type == 0), and it can only ever extend its own StunTimer - the guard is
@@ -5813,16 +5817,17 @@ void Client::Stun(int duration)
 		duration = 1000;
 	}
 
-	Mob::Stun(duration);
+	Mob::Stun(duration, flag);
 
-	// The emu Stun_Struct is the 4 byte Titanium layout (duration only). The Laurion encoder
-	// (common/patches/laurion.cpp:3130) expands it to the 8 byte wire form, so the byte the client reads at
-	// payload+4 is already present - it is hardcoded to 0 there. That byte is the flag which makes the
-	// client set SpeedHeading (PlayerBase + 0x9c) to 32.0f; the emu struct has no field for it, so EQEmu
-	// can never set it. See melee.md section 10.
+	// Stun_Struct is now 8 bytes: duration at +0 and the flag byte at +4. Every client except Titanium
+	// has that byte on the wire and reads it - the handler sets SpeedHeading (PlayerBase + 0x9c) to 32.0f
+	// when it is non-zero. The encoders pass it through (common/patches/<client>.cpp ENCODE(OP_Stun));
+	// Titanium's wire form is 4 bytes, so its encoder drops the flag. Live captures show 0, so the default
+	// keeps the old behaviour.
 	auto outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
 	Stun_Struct* stunon = (Stun_Struct*) outapp->pBuffer;
 	stunon->duration = duration;
+	stunon->flag = flag;
 	outapp->priority = 5;
 	QueuePacket(outapp);
 	safe_delete(outapp);
@@ -5848,8 +5853,8 @@ void Client::UnStun() {
 	safe_delete(outapp);
 }
 
-void NPC::Stun(int duration) {
-	Mob::Stun(duration);
+void NPC::Stun(int duration, uint8 flag) {
+	Mob::Stun(duration, flag);
 	StopNavigation();
 }
 

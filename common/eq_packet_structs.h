@@ -2715,8 +2715,12 @@ struct Who_All_Struct { // 76 length total
 /*156*/
 };
 
-struct Stun_Struct { // 4 bytes total
+struct Stun_Struct { // 8 bytes total
 	uint32 duration; // Duration of stun
+	uint8  flag;     // +4. Non-zero makes the client set SpeedHeading (PlayerBase + 0x9c) to 32.0f.
+	                 // Observed as 0 on live captures. Titanium's wire form has no field for it, so the
+	                 // Titanium encoder drops it.
+	uint8  padding[3];
 };
 
 struct AugmentItem_Struct {

@@ -1249,8 +1249,15 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 		return;
 	}
 
+	// Only the actions that change stored data are gated on class/level. The spellbook repaint and the
+	// recast-timer echo are UI state the client drives, and the full resync carries no single spell.
+	const bool changes_data =
+		m->scribing == static_cast<uint32>(memSpellScribing) ||
+		m->scribing == static_cast<uint32>(memSpellMemorize) ||
+		m->scribing == static_cast<uint32>(memSpellForget);
+
 	if (
-		m->scribing != memSpellForget &&
+		changes_data &&
 		(
 			!IsPlayerClass(GetClass()) ||
 			GetLevel() < spells[m->spell_id].classes[GetClass() - 1]
@@ -1265,7 +1272,11 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 		return;
 	}
 
-	switch (m->scribing) {
+	// The semantic action vocabulary is signed (memSpellUnknown is -1). Switch on the signed form: a
+	// negative case label against the unsigned m->scribing is a narrowing conversion, which GCC rejects
+	// outright (MSVC accepts it). FromWire stores the semantic value into the uint32 field, so 0xFFFFFFFF
+	// comes back as -1 here.
+	switch (static_cast<int32_t>(m->scribing)) {
 		case memSpellScribing: {
 			const auto* inst = m_inv[EQ::invslot::slotCursor];
 
@@ -1303,6 +1314,25 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 		}
 		case memSpellForget: {
 			UnmemSpell(m->slot);
+			break;
+		}
+		case memSpellBookRefresh: {
+			// Laurion wire action 1: the client is repainting the spellbook window. Nothing to validate,
+			// but we still have to answer - the client will not accept another action until it sees a
+			// reply, and action 1 is the one action the client's handler does not ack. Answer with the
+			// full resync (wire -1) so the pending action counter is released.
+			MemorizeSpell(m->slot, m->spell_id, memSpellUnknown);
+			break;
+		}
+		case memSpellSpellbar: {
+			// Laurion wire action 4: per-gem recast timer. The server timers are authoritative, so echo
+			// the reduction back and let the client rebuild SpellGemETA from it.
+			MemorizeSpell(m->slot, m->spell_id, memSpellSpellbar, m->reduction);
+			break;
+		}
+		case memSpellUnknown: {
+			// Laurion wire -1: full spellbook + spell bar resync.
+			MemorizeSpell(m->slot, m->spell_id, memSpellUnknown, m->reduction);
 			break;
 		}
 	}

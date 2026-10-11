@@ -1797,6 +1797,7 @@ namespace SoF
 		SETUP_DIRECT_ENCODE(Stun_Struct, structs::Stun_Struct);
 
 		OUT(duration);
+		OUT(flag);
 		eq->unknown005 = 163;
 		eq->unknown006 = 67;
 

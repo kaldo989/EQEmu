@@ -818,6 +818,18 @@ namespace Laurion {
 			int32 slot;
 		};
 
+		// OP_MemorizeSpell (0x1d31), 16 byte payload. Field order matches the client handler
+		// FUN_1401fbb40 in eqgame.exe: slot, spell_id, action, reduction.
+		// `action` is a LaurionSpellAction value (0 scribe / 1 book repaint / 2 memorize /
+		// 3 unmemorize / 4 recast timer / -1 full resync), not EQEmu's semantic ScribeSpellActions.
+		struct MemorizeSpell_Struct
+		{
+			/*00*/ uint32 slot;      // spellbook slot or spell bar slot, depending on action
+			/*04*/ uint32 spell_id;
+			/*08*/ uint32 action;    // LaurionSpellAction
+			/*12*/ uint32 reduction; // recast reduction in ms (action 4 only)
+		};
+
 		//This is what we call OP_Action
 		//To the client though this is basically a missile hit though
 		//OP_Action is basically "instant missile hit" to the client
@@ -1246,7 +1258,7 @@ namespace Laurion {
 
 		struct Stun_Struct { // 8 bytes total
 			/*000*/	uint32	duration; // Duration of stun
-			/*004*/	uint8	unknown004; // seen 0
+			/*004*/	uint8	flag;         // SpeedHeading flag: non-zero makes the client set PlayerBase + 0x9c to 32.0f (seen 0 on live captures)
 			/*005*/	uint8	unknown005; // seen 163
 			/*006*/	uint8	unknown006; // seen 67
 			/*007*/	uint8	unknown007; // seen 0

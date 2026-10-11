@@ -26,6 +26,7 @@
 #include "../eq_stream_ident.h"
 #include "../crc32.h"
 
+#include "../eq_constants.h"
 #include "../eq_packet_structs.h"
 #include "../misc_functions.h"
 #include "../strings.h"
@@ -1079,6 +1080,29 @@ namespace Laurion
 		OUT(spell_id);
 		OUT(keepcasting);
 		OUT(slot);
+
+		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_MemorizeSpell) {
+		ENCODE_LENGTH_EXACT(MemorizeSpell_Struct);
+		SETUP_DIRECT_ENCODE(MemorizeSpell_Struct, structs::MemorizeSpell_Struct);
+
+		// EQEmu stores the semantic action (EQ::ScribeSpellActions). Laurion re-numbered them, so the
+		// wire value is not the same number: Scribe 0, BookRefresh 1, Memorize 2, Unmemorize 3,
+		// RecastTimer 4, FullRefresh -1. Getting this wrong makes the client apply a memorize as an
+		// unmemorize, and it never acks the pending action counter that gates every later action.
+		eq->action = LaurionSpellAction::ToWire(emu->scribing);
+
+		// Only the recast-timer action carries a casting slot; the book actions carry a spellbook slot
+		// and the bar actions carry a gem index, both of which are used as-is.
+		if (emu->scribing == ScribeSpellActions::Spellbar)
+			eq->slot = static_cast<uint32>(ServerToLaurionCastingSlot(static_cast<EQ::spells::CastingSlot>(emu->slot)));
+		else
+			OUT(slot);
+
+		OUT(spell_id);
+		OUT(reduction);
 
 		FINISH_ENCODE();
 	}
@@ -3133,6 +3157,7 @@ namespace Laurion
 		SETUP_DIRECT_ENCODE(Stun_Struct, structs::Stun_Struct);
 
 		OUT(duration);
+		OUT(flag);
 		eq->unknown005 = 163;
 		eq->unknown006 = 67;
 
@@ -4224,6 +4249,24 @@ namespace Laurion
 	DECODE(OP_GroupInvite2)
 	{
 		DECODE_FORWARD(OP_GroupInvite);
+	}
+
+	DECODE(OP_MemorizeSpell)
+	{
+		DECODE_LENGTH_EXACT(structs::MemorizeSpell_Struct);
+		SETUP_DIRECT_DECODE(MemorizeSpell_Struct, structs::MemorizeSpell_Struct);
+
+		// Translate the Laurion wire action back into EQEmu's semantic vocabulary so
+		// Client::OPMemorizeSpell() sees the intent instead of the wire number. Without this the
+		// client's memorize (wire 2) is read as memSpellForget and every memorize request unmemorizes
+		// the slot it was meant to fill.
+		emu->scribing = LaurionSpellAction::FromWire(eq->action);
+
+		IN(slot);
+		IN(spell_id);
+		IN(reduction);
+
+		FINISH_DIRECT_DECODE();
 	}
 
 	DECODE(OP_MoveItem)
