@@ -1139,6 +1139,11 @@ void Lua_Mob::Stun(int duration) {
 	self->Stun(duration);
 }
 
+void Lua_Mob::Stun(int duration, int flag) {
+	Lua_Safe_Call_Void();
+	self->Stun(duration, static_cast<uint8>(flag));
+}
+
 void Lua_Mob::UnStun() {
 	Lua_Safe_Call_Void();
 	self->UnStun();
@@ -4116,6 +4121,7 @@ luabind::scope lua_register_mob() {
 	.def("Spin", (void(Lua_Mob::*)(void))&Lua_Mob::Spin)
 	.def("StopNavigation", (void(Lua_Mob::*)(void))&Lua_Mob::StopNavigation)
 	.def("Stun", (void(Lua_Mob::*)(int))&Lua_Mob::Stun)
+	.def("Stun", (void(Lua_Mob::*)(int,int))&Lua_Mob::Stun)
 	.def("TarGlobal", (void(Lua_Mob::*)(const char*,const char*,const char*,int,int,int))&Lua_Mob::TarGlobal)
 	.def("TempName", (void(Lua_Mob::*)(const char*))&Lua_Mob::TempName)
 	.def("TempName", (void(Lua_Mob::*)(void))&Lua_Mob::TempName)

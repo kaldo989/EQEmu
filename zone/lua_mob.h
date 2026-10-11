@@ -276,6 +276,7 @@ public:
 	void WipeHateList();
 	bool CheckAggro(Lua_Mob other);
 	void Stun(int duration);
+	void Stun(int duration, int flag);
 	void UnStun();
 	bool IsStunned();
 	void Spin();

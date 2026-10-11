@@ -1150,6 +1150,11 @@ void Perl_Mob_Stun(Mob* self, int duration)
 	self->Stun(duration);
 }
 
+void Perl_Mob_Stun(Mob* self, int duration, int flag) // @categories Script Utility
+{
+	self->Stun(duration, static_cast<uint8>(flag));
+}
+
 void Perl_Mob_Spin(Mob* self) // @categories Script Utility
 {
 	self->Spin();
@@ -4255,7 +4260,8 @@ void perl_register_mob()
 	package.add("Spin", &Perl_Mob_Spin);
 	package.add("StartEnrage", &Perl_Mob_StartEnrage);
 	package.add("StopNavigation", &Perl_Mob_StopNavigation);
-	package.add("Stun", &Perl_Mob_Stun);
+	package.add("Stun", (void(*)(Mob*, int))&Perl_Mob_Stun);
+	package.add("Stun", (void(*)(Mob*, int, int))&Perl_Mob_Stun);
 	package.add("TarGlobal", &Perl_Mob_TarGlobal);
 	package.add("TempName", (void(*)(Mob*))&Perl_Mob_TempName);
 	package.add("TempName", (void(*)(Mob*, const char*))&Perl_Mob_TempName);
