@@ -17,6 +17,7 @@
 */
 #pragma once
 
+#include "common/emu_versions.h"
 #include "common/guild_base.h"
 #include "common/repositories/guild_bank_repository.h"
 #include "common/types.h"
@@ -61,8 +62,45 @@ enum {
 	GuildBankWithdraw    = 7,
 	GuildBankSplitStacks = 8,
 	GuildBankMergeStacks = 9,
-	GuildBankAcknowledge = 10
+	GuildBankAcknowledge = 10,
+	GuildBankRefreshRequest = 11   // Laurion action 10 - refresh request, no key in the record
 };
+
+// Laurion's action numbers are EQEmu's enum values minus one. Verified from the widget-name
+// mapping in the CGuildBankWnd constructor (FUN_1403bdea0, 0x1403be3e6-0x1403be610):
+//   PromoteButton    -> obj+0x328 -> action 2  (EQEmu GuildBankPromote     = 3)
+//   ViewItemButton   -> obj+0x2e8 -> action 3  (EQEmu GuildBankViewItem    = 4)
+//   DepositButton    -> obj+0x320 -> action 4  (EQEmu GuildBankDeposit     = 5)
+//   PermissionCombo  -> obj+0x2f0 -> action 5  (EQEmu GuildBankPermissions = 6)
+//   WithdrawButton   -> obj+0x2e0 -> action 6  (EQEmu GuildBankWithdraw    = 7)
+//   SplitButton      -> obj+0x308 -> action 7  (EQEmu GuildBankSplitStacks = 8)
+//   MergeButton      -> obj+0x300 -> action 8  (EQEmu GuildBankMergeStacks = 9)
+// and the client's receive switch handles 0, 2, 4, 9, which are EQEmu's 1 (record), 3 (promote),
+// 5 (deposit) and 10 (ack) - exactly the actions the server sends back.
+//
+// EQEmu's BulkItems (0) has no Laurion equivalent: the client's case 0 expects a full 220 byte
+// record, so a short clear + counts record would be overread. It is sent as the plain ack instead.
+inline uint32 guild_bank_wire_action(EQ::versions::ClientVersion version, uint32 action)
+{
+	if (version != EQ::versions::ClientVersion::Laurion) {
+		return action;
+	}
+
+	if (action == GuildBankBulkItems) {
+		return 9;
+	}
+
+	return action - 1;
+}
+
+inline uint32 guild_bank_action_from_wire(EQ::versions::ClientVersion version, uint32 action)
+{
+	if (version != EQ::versions::ClientVersion::Laurion) {
+		return action;
+	}
+
+	return action + 1;
+}
 
 enum {
 	GuildBankDepositArea = 0,

@@ -739,7 +739,11 @@ void GuildBankManager::SendGuildBank(Client *c)
 	}
 
 	// RoF+ uses a bulk list packet -- This is also how the Action 0 of older clients basically works
-	if (c->ClientVersionBit() & EQ::versions::maskRoFAndLater) {
+	// Laurion is excluded: OP_GuildBankItemList is unmapped in patch_Laurion.conf, so the bulk
+	// list never reaches that client. Laurion's 0x3de1 case 0 parses one full record per packet,
+	// so it falls through to the per-slot path below.
+	if ((c->ClientVersionBit() & EQ::versions::maskRoFAndLater) &&
+	    c->ClientVersion() != EQ::versions::ClientVersion::Laurion) {
 
 		auto outapp = new EQApplicationPacket(OP_GuildBankItemList, sizeof(GuildBankItemListEntry_Struct) * 240);
 		for (int i = 0; i < c->GetInv().GetLookup()->InventoryTypeSize.GuildBankDeposit; i++) {
@@ -855,6 +859,8 @@ void GuildBankManager::SendGuildBank(Client *c)
 				}
 			}
 
+			gbius->action = guild_bank_wire_action(c->ClientVersion(), gbius->action);
+
 			strn0cpy(gbius->item_name, item->Name, sizeof(gbius->item_name));
 			strn0cpy(gbius->donator, guild_bank->items.deposit_area[i].donator.c_str(), sizeof(gbius->donator));
 			strn0cpy(gbius->who_for, guild_bank->items.deposit_area[i].who_for.c_str(), sizeof(gbius->who_for));
@@ -922,6 +928,8 @@ void GuildBankManager::SendGuildBank(Client *c)
 					);
 				}
 			}
+
+			gbius->action = guild_bank_wire_action(c->ClientVersion(), gbius->action);
 
 			strn0cpy(gbius->item_name, item->Name, sizeof(gbius->item_name));
 			strn0cpy(gbius->donator, guild_bank->items.main_area[i].donator.c_str(), sizeof(gbius->donator));
@@ -1708,7 +1716,7 @@ void GuildBankManager::SendGuildBankItemUpdate(uint32 guild_id, int32 slot_id, u
 	}
 
 	GuildBankItemUpdate_Struct gbius{};
-	gbius.action      = GuildBankItemUpdate;
+	gbius.action      = guild_bank_wire_action(c->ClientVersion(), GuildBankItemUpdate);
 	gbius.slot_id     = item.slot;
 	gbius.area        = item.area;
 	gbius.item_id     = item.item_id;

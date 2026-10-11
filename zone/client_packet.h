@@ -152,6 +152,7 @@
 	void Handle_OP_FriendsWho(const EQApplicationPacket *app);
 	void Handle_OP_GetGuildMOTD(const EQApplicationPacket *app);
 	void Handle_OP_GetGuildsList(const EQApplicationPacket *app);
+	void Handle_OP_GuildNameByKey(const EQApplicationPacket *app);
 	void Handle_OP_GMBecomeNPC(const EQApplicationPacket *app);
 	void Handle_OP_GMDelCorpse(const EQApplicationPacket *app);
 	void Handle_OP_GMEmoteZone(const EQApplicationPacket *app);

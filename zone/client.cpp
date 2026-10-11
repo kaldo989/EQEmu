@@ -6729,7 +6729,7 @@ void Client::GuildBankAck()
 
 	GuildBankAck_Struct *gbas = (GuildBankAck_Struct*) outapp->pBuffer;
 
-	gbas->Action = GuildBankAcknowledge;
+	gbas->Action = guild_bank_wire_action(ClientVersion(), GuildBankAcknowledge);
 
 	FastQueuePacket(&outapp);
 }
@@ -6754,7 +6754,7 @@ void Client::ClearGuildBank()
 
 	GuildBankClear_Struct *gbcs = (GuildBankClear_Struct*) outapp->pBuffer;
 
-	gbcs->Action = GuildBankBulkItems;
+	gbcs->Action = guild_bank_wire_action(ClientVersion(), GuildBankBulkItems);
 	gbcs->DepositAreaCount = 0;
 	gbcs->MainAreaCount = 0;
 

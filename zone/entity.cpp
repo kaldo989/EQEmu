@@ -2346,6 +2346,7 @@ void EntityList::QueueClientsGuildBankItemUpdate(GuildBankItemUpdate_Struct *gbi
 
 	for (auto const &[key, client]: client_list) {
 		if (client->IsInGuild(guild_id)) {
+			data->action = guild_bank_wire_action(client->ClientVersion(), gbius->action);
 			client->QueuePacket(outapp.get());
 		}
 	}

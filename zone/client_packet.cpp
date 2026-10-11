@@ -23,6 +23,7 @@
 #include "common/events/player_event_logs.h"
 #include "common/opcodemgr.h"
 #include "common/packet_dump.h"
+#include "common/patches/laurion_structs.h"
 #include "common/raid.h"
 #include "common/rdtsc.h"
 #include "common/repositories/account_repository.h"
@@ -221,6 +222,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_FriendsWho] = &Client::Handle_OP_FriendsWho;
 	ConnectedOpcodes[OP_GetGuildMOTD] = &Client::Handle_OP_GetGuildMOTD;
 	ConnectedOpcodes[OP_GetGuildsList] = &Client::Handle_OP_GetGuildsList;
+	ConnectedOpcodes[OP_GuildNameByKey] = &Client::Handle_OP_GuildNameByKey;
 	ConnectedOpcodes[OP_GMBecomeNPC] = &Client::Handle_OP_GMBecomeNPC;
 	ConnectedOpcodes[OP_GMDelCorpse] = &Client::Handle_OP_GMDelCorpse;
 	ConnectedOpcodes[OP_GMEmoteZone] = &Client::Handle_OP_GMEmoteZone;
@@ -6673,6 +6675,51 @@ void Client::Handle_OP_GetGuildsList(const EQApplicationPacket *app)
 	SendGuildList();
 }
 
+void Client::Handle_OP_GuildNameByKey(const EQApplicationPacket *app)
+{
+	// CGuild__GetGuildName (0x1400c0d70) only sends this when the guild GUID is not
+	// already in the client's GuildNamesTable cache, throttled to one request per 2
+	// seconds (LastGuildNameRequest, CGuild + 0xc08). Payload is the 8 byte GUID.
+	if (app->size != sizeof(uint64)) {
+		LogGuilds("Received OP_GuildNameByKey of unexpected length [{}]", app->size);
+		return;
+	}
+
+	uint64 guid;
+	memcpy(&guid, app->pBuffer, sizeof(guid));
+
+	// EQEmu guild ids are 32 bit, the client carries them as 8 byte GUIDs.
+	uint32 guild_id = static_cast<uint32>(guid);
+	if (!guild_mgr.GuildExists(guild_id)) {
+		LogGuilds("Received OP_GuildNameByKey for unknown guild [{}]", guid);
+		return;
+	}
+
+	const char *name = guild_mgr.GetGuildName(guild_id);
+	if (!name || !*name) {
+		return;
+	}
+
+	// Answer on OP_GuildsList. The Laurion client (FUN_1400c1250, case 0x2d0e) reads this
+	// record as u64 guid at +0 then a NUL terminated name at +8, copying at most 0x3f
+	// bytes. Build it raw - MakeGuildList() emits the cereal GuildsListMessaging_Struct
+	// shape, which is not what that case parses.
+	uint32 name_length = static_cast<uint32>(strlen(name));
+	if (name_length > 63) {
+		name_length = 63;
+	}
+
+	uint32 size = static_cast<uint32>(sizeof(guid) + name_length + 1);
+	auto outapp = new EQApplicationPacket(OP_GuildsList, size);
+	memcpy(outapp->pBuffer, &guid, sizeof(guid));
+	memcpy(outapp->pBuffer + sizeof(guid), name, name_length);
+	outapp->pBuffer[sizeof(guid) + name_length] = 0;
+
+	LogGuilds("Sending OP_GuildsList reply [{}] for OP_GuildNameByKey", name);
+
+	FastQueuePacket(&outapp);
+}
+
 void Client::Handle_OP_GMBecomeNPC(const EQApplicationPacket *app)
 {
 	if (!GetGM()) {
@@ -7860,8 +7907,34 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 	}
 
 	char  *Buffer     = (char *) app->pBuffer;
-	uint32 Action     = VARSTRUCT_DECODE_TYPE(uint32, Buffer);
-	uint32 sentAction = Action;
+	uint32 sentAction = VARSTRUCT_DECODE_TYPE(uint32, Buffer);
+
+	// Laurion's action numbers are EQEmu's enum values minus one. sentAction stays the raw wire
+	// value because GuildBankDepositAck echoes it back to the client.
+	uint32 Action = guild_bank_action_from_wire(ClientVersion(), sentAction);
+
+	// Laurion's send sites all write the slot key at record+12 and the value at record+20,
+	// and never write record+8. EQEmu's base structs read SlotID+Area at +8 and the value at
+	// +16, so they misparse this client by one dword. The rof2 GuildBankPromote_Struct and
+	// GuildBankItemUpdate_Struct already agree with the client at +12/+16/+20. Resolve the
+	// offsets once - for every other patch level these read the same bytes the structs do.
+	const bool laurion_layout = ClientVersion() == EQ::versions::ClientVersion::Laurion;
+	const uint32 key_offset   = laurion_layout ? 12 : 8;
+	const uint32 value_offset = laurion_layout ? 20 : 16;
+
+	uint32 bank_key   = 0;
+	uint32 bank_value = 0;
+
+	if (app->size >= key_offset + 4) {
+		bank_key = *(uint32 *)(app->pBuffer + key_offset);
+	}
+
+	if (app->size >= value_offset + 4) {
+		bank_value = *(uint32 *)(app->pBuffer + value_offset);
+	}
+
+	uint16 bank_slot = static_cast<uint16>(bank_key & 0xffff);
+	uint16 bank_area = static_cast<uint16>(bank_key >> 16);
 
 	if (!IsInAGuild()) {
 		Message(Chat::Red, "You must be in a Guild to use the Guild Bank.");
@@ -7877,7 +7950,8 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 
 	if (!IsGuildBanker())
 	{
-		if (Action != GuildBankDeposit && Action != GuildBankViewItem && Action != GuildBankWithdraw)
+		if (Action != GuildBankDeposit && Action != GuildBankViewItem && Action != GuildBankWithdraw &&
+		    Action != GuildBankRefreshRequest)
 		{
 			LogError("Suspected hacking attempt on guild bank from [{}]", GetName());
 			GuildBankAck();
@@ -7893,8 +7967,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 				return;
 			}
 
-			auto gbps    = (GuildBankPromote_Struct *) app->pBuffer;
-			int  slot_id = GuildBanks->Promote(GuildID(), gbps->Slot, this);
+			int  slot_id = GuildBanks->Promote(GuildID(), bank_slot, this);
 
 			if (slot_id >= 0) {
 				auto inst = GuildBanks->GetItem(GuildID(), GuildBankMainArea, slot_id, 1);
@@ -7934,8 +8007,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 		}
 
 		case GuildBankViewItem: {
-			auto gbvis = (GuildBankViewItem_Struct *) app->pBuffer;
-			auto inst  = GuildBanks->GetItem(GuildID(), gbvis->Area, gbvis->SlotID, 1);
+			auto inst  = GuildBanks->GetItem(GuildID(), bank_area, bank_slot, 1);
 
 			if (!inst) {
 				break;
@@ -8036,11 +8108,15 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 		case GuildBankPermissions: {
 			auto gbps = (GuildBankPermissions_Struct *) app->pBuffer;
 
-			if (gbps->Permissions == 1) {
-				GuildBanks->SetPermissions(GuildID(), gbps->SlotID, gbps->Permissions, gbps->MemberName, this);
+			// Laurion's action 6 record is 24 bytes and carries no member name - the name only
+			// arrives on action 5 (CGuild__sendNameEntryUpdate, string at +24).
+			const char *member_name = laurion_layout ? "" : gbps->MemberName;
+
+			if (bank_value == 1) {
+				GuildBanks->SetPermissions(GuildID(), bank_slot, bank_value, member_name, this);
 			}
 			else {
-				GuildBanks->SetPermissions(GuildID(), gbps->SlotID, gbps->Permissions, "", this);
+				GuildBanks->SetPermissions(GuildID(), bank_slot, bank_value, "", this);
 			}
 
 			GuildBankAck();
@@ -8054,8 +8130,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 				break;
 			}
 
-			auto gbwis = (GuildBankWithdrawItem_Struct *) app->pBuffer;
-			auto inst  = GuildBanks->GetItem(GuildID(), gbwis->Area, gbwis->SlotID, gbwis->Quantity);
+			auto inst  = GuildBanks->GetItem(GuildID(), bank_area, bank_slot, bank_value);
 
 			if (!inst) {
 				GuildBankAck();
@@ -8080,21 +8155,21 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 				break;
 			}
 
-			gbwis->Quantity = 1;
+			uint32 withdraw_quantity = 1;
 			if (inst->GetCharges() > 0 || inst->IsStackable() || inst->GetItem()->MaxCharges > 0) {
-				gbwis->Quantity = inst->GetCharges();
+				withdraw_quantity = inst->GetCharges();
 			}
 
 			PushItemOnCursor(*inst.get());
 			SendItemPacket(EQ::invslot::slotCursor, inst.get(), ItemPacketLimbo);
-			GuildBanks->DeleteItem(GuildID(), gbwis->Area, gbwis->SlotID, gbwis->Quantity, this);
+			GuildBanks->DeleteItem(GuildID(), bank_area, bank_slot, withdraw_quantity, this);
 
 			if (PlayerEventLogs::Instance()->IsEventEnabled(PlayerEvent::GUILD_BANK_WITHDRAWAL)) {
 				PlayerEvent::GuildBankTransaction log{};
 				log.char_id  = CharacterID();
 				log.guild_id = GuildID();
 				log.item_id  = inst->GetID();
-				log.quantity = gbwis->Quantity;
+				log.quantity = withdraw_quantity;
 				if (inst->IsAugmented()) {
 					auto augs          = inst->GetAugmentIDs();
 					log.aug_slot_one   = augs.at(0);
@@ -8121,22 +8196,29 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 			}
 			else {
 				auto gbwis = (GuildBankWithdrawItem_Struct *) app->pBuffer;
-				GuildBanks->SplitStack(GuildID(), gbwis->SlotID, gbwis->Quantity, this);
+				GuildBanks->SplitStack(GuildID(), bank_slot, bank_value, this);
 			}
 
 			GuildBankAck();
 			break;
 		}
 		case GuildBankMergeStacks: {
-			auto gbwis = (GuildBankWithdrawItem_Struct *) app->pBuffer;
-			GuildBanks->MergeStacks(GuildID(), gbwis->SlotID, this);
+			GuildBanks->MergeStacks(GuildID(), bank_slot, this);
 			GuildBankAck();
+			break;
+		}
+
+		case GuildBankRefreshRequest: {
+			// Laurion action 10 (CDisplay__refreshUIAndSendStatus 0x140190773, 12 byte payload)
+			// is a refresh request with no key. The client has no receive case for 10, so the
+			// answer is the per-slot records - its case 0 copies one record per packet.
+			GuildBanks->SendGuildBank(this);
 			break;
 		}
 
 		default: {
 			Message(Chat::Red, "Unexpected GuildBank action.");
-			LogError("Received unexpected guild bank action code [{}] from [{}]", Action, GetName());
+			LogError("Received unexpected guild bank action code [{}] from [{}]", sentAction, GetName());
 		}
 	}
 }

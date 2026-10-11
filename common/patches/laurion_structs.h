@@ -1458,6 +1458,20 @@ namespace Laurion {
 			/*144*/
 		};
 
+		/* 0x3de1 OP_GuildBank - payload 24, C->S record as written by the client */
+		/* Verified across every send site (CGuild__sendNameEntryUpdate 0x1403c37e0,
+		/* FUN_1403c5910, FUN_1403c5a30, GuildWindow__WndNotification 0x1403c5b90):
+		/* the slot key is always at +12 and +8 is never written. */
+		struct GuildBankRecord_Struct {
+			/*000*/	uint32	Action;          /* 2, 3, 4, 5, 6, 7, 8, 10 */
+			/*004*/	uint32	Serial;          /* client-side CGuild + 0xd228 */
+			/*008*/	uint32	Stale008;        /* never written by the sender */
+			/*012*/	uint32	Key;             /* area << 16 | slot_id */
+			/*016*/	uint32	ItemID;
+			/*020*/	uint32	Value;           /* quantity / permission bit / max stack size */
+			/*024*/
+		};
+
 		/* 0x4a13 OP_TributeItem - payload 40 */
 		struct TributeItem_Struct {
 			/*000*/	uint64	ItemField0;
