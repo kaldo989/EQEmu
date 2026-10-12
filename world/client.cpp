@@ -1021,7 +1021,13 @@ bool Client::HandleCharacterCreatePacket(const EQApplicationPacket *app) {
 	}
 	else
 	{
-		if (m_ClientVersionBit & EQ::versions::maskTitaniumAndEarlier)
+		// Laurion carries the tutorial request in the create packet body at +160 (mapped by the
+		// Laurion DECODE(OP_CharacterCreate)), so it has to reach this branch too - otherwise a
+		// newly created character always starts in its chosen city instead of the tutorial.
+		if (
+			(m_ClientVersionBit & EQ::versions::maskTitaniumAndEarlier) ||
+			(m_ClientVersionBit & EQ::versions::bitLaurion)
+		)
 			StartInTutorial = true;
 		SendCharInfo();
 	}

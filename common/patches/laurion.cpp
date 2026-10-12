@@ -4147,6 +4147,12 @@ namespace Laurion
 		IN(INT);
 		IN(CHA);
 
+		// The tutorial request is not at CharCreate_Struct::tutorial (offset 88) on this client.
+		// Live capture 2026-10-13 (opcode 0x6a3c, 168-byte body, send site FUN_140380ed0):
+		// body +160 = CCharacterCreation + 0x3874, the Tutorial checkbox. Verified against a male
+		// dwarf berserker: +72 gender 0, +76 race 8, +80 class 16, +84 deity 396, +160 = 01.
+		emu->tutorial = eq->unknown160;
+
 		// char_name is not carried on the 0x6a3c path and the emu CharCreate_Struct has no name
 		// field; the world handler takes the name from OP_ApproveName.
 
@@ -4204,8 +4210,17 @@ namespace Laurion
 		SETUP_DIRECT_DECODE(EnterWorld_Struct, structs::EnterWorld_Struct);
 
 		memcpy(emu->name, eq->name, sizeof(emu->name));
-		emu->return_home = 0;
-		emu->tutorial = 0;
+
+		// Live capture 2026-10-13 (opcode 0x6691, 72-byte payload, send site FUN_140257f10):
+		// the flags are single bytes, not dwords.
+		//   +64 = CCharacterListWnd + 0x3bc -> tutorial request
+		//   +65 = CCharacterListWnd + 0x3bd -> return-home request
+		//   +66 = "either flag was set" byte
+		//   +68..71 = DAT_140e3bf14, always 0xFFFFFFFF - a sentinel, not a flag
+		// Reading unknown2 as a dword would make return_home = 0xFFFFFFFF and trip the GoHome
+		// branch in HandleEnterWorldPacket before the tutorial check, disconnecting the client.
+		emu->tutorial = eq->unknown1 & 0xFF;
+		emu->return_home = (eq->unknown1 >> 8) & 0xFF;
 
 		FINISH_DIRECT_DECODE();
 	}
