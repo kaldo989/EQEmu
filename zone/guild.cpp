@@ -230,6 +230,7 @@ void Client::SendGuildSpawnAppearance() {
 	if (!IsInAGuild()) {
 		// clear guildtag
 		SendAppearancePacket(AppearanceType::GuildID, GuildIDForWire());
+		SendGuildSpawnGuildID(GetID(), GuildIDForWire());
 		LogGuilds("Sending spawn appearance for no guild tag");
 	} else {
 		uint8  rank    = guild_mgr.GetDisplayedRank(GuildID(), GuildRank(), CharacterID());
@@ -238,6 +239,7 @@ void Client::SendGuildSpawnAppearance() {
 		SendAppearancePacket(AppearanceType::GuildID, GuildID(), true);
 		SendAppearancePacket(AppearanceType::GuildRank, rank, true);
 		SendAppearancePacket(AppearanceType::GuildShow, display, true);
+		SendGuildSpawnGuildID(GetID(), GuildIDForWire());
 	}
 	UpdateWho();
 }
@@ -331,6 +333,42 @@ void Client::SendGuildNameRecord(uint64 guid, const char *name)
 	memcpy(outapp->pBuffer, &guid, sizeof(guid));
 	memcpy(outapp->pBuffer + sizeof(guid), name, name_length);
 	outapp->pBuffer[sizeof(guid) + name_length] = 0;
+
+	FastQueuePacket(&outapp);
+}
+
+void Client::SendGuildInviteRecord(const char *invitee_name, const char *inviter_name, uint32 guild_id, uint32 rank)
+{
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_GuildInvite, sizeof(GuildCommand_Struct));
+		GuildCommand_Struct *gc = (GuildCommand_Struct *) outapp->pBuffer;
+		strn0cpy(gc->othername, invitee_name, sizeof(gc->othername));
+		strn0cpy(gc->myname, inviter_name, sizeof(gc->myname));
+		gc->guildeqid = static_cast<uint16>(guild_id);
+		gc->officer = rank;
+		FastQueuePacket(&outapp);
+		return;
+	}
+
+	// Laurion's receive handler FUN_1401fa510 (dispatched for 0x2d05 from
+	// ZonePacket__dispatchRecv at 0x1401d99f4) reads the record as:
+	//   +0x00 invitee name   - compared against the local player name, so it must be us
+	//   +0x40 inviter name
+	//   +0x80 guild as a full u64 EqGuid
+	//   +0x88 rank           - must be 1..8 or the popup is not created
+	// and it only shows the invite popup when the guild field matches ours or we are guildless.
+	// Sending the narrow 136 byte struct makes the client read the rank from outside the record and
+	// the guild as rank << 32 | guild_id, so FUN_1401fa510 skips the popup and sends response 9
+	// (decline) straight away.
+	auto outapp = new EQApplicationPacket(OP_GuildInvite, sizeof(Laurion::structs::GuildCommand_Struct));
+	Laurion::structs::GuildCommand_Struct *gc = (Laurion::structs::GuildCommand_Struct *) outapp->pBuffer;
+	strn0cpy(gc->OtherName, invitee_name, sizeof(gc->OtherName));
+	strn0cpy(gc->MyName, inviter_name, sizeof(gc->MyName));
+	gc->GuildEqID = guild_id;
+	gc->Officer = rank;
+
+	LogGuilds("Sending Laurion OP_GuildInvite record of length [{}] to [{}] (guild [{}], rank [{}])",
+				outapp->size, invitee_name, guild_id, rank);
 
 	FastQueuePacket(&outapp);
 }
@@ -452,7 +490,11 @@ void Client::SendGuildRosterRecord() {
 
 	uint32 size = 4 + name_length + 8 + 1 + 4;
 	for (auto* member : members) {
-		size += 4 + static_cast<uint32>(member->char_name.length());
+		// 4 byte length prefix + name + 5 u32 + 2 u8 + 2 u32 + 1 u8
+		// 4 byte length prefix + name + 5 u32 + 2 u8 + 2 u32 + 1 u8
+		// + 4 byte length prefix + public note + u32 + 2 u8
+		size += 4 + static_cast<uint32>(member->char_name.length()) + 31;
+		size += 4 + static_cast<uint32>(member->public_note.length()) + 6;
 	}
 
 	auto outapp = new EQApplicationPacket(OP_GuildMemberList, size);
@@ -476,13 +518,76 @@ void Client::SendGuildRosterRecord() {
 		p += 4;
 		memcpy(p, member->char_name.c_str(), member_name_length);
 		p += member_name_length;
+
+		// Raw fields follow the length prefixed name. The client bounds-checks every read and
+		// leaves the destination field at its default when the packet runs out, so the order
+		// here is what the guild window actually sees.
+		*reinterpret_cast<uint32*>(p) = member->level;        p += 4;  // GuildMember + 0x58
+		*reinterpret_cast<uint32*>(p) = (member->banker ? 1 : 0) + (member->alt ? 2 : 0); p += 4; // + 0x5C
+		*reinterpret_cast<uint32*>(p) = member->class_;       p += 4;  // + 0x60
+		*reinterpret_cast<uint32*>(p) = member->rank;         p += 4;  // + 0x64
+		*reinterpret_cast<uint32*>(p) = member->time_last_on; p += 4;  // + 0x188
+		*p = 0; p += 1;                                                  // + 0x3A8
+		*p = 0; p += 1;                                                  // + 0x3A9
+		*reinterpret_cast<uint32*>(p) = member->total_tribute; p += 4;  // + 0x19C
+		*reinterpret_cast<uint32*>(p) = member->last_tribute;  p += 4;  // + 0x1A0
+		*p = 1; p += 1;                                                  // + 0x14 bMainProfile
+
+		// The public note is a length prefixed field as well. If it is missing the client reads the
+		// next member's name as this member's note, and the following member runs off the end of the
+		// packet - that is the blank roster row with level 0, no rank and unknown zone.
+		uint32 note_length = static_cast<uint32>(member->public_note.length());
+		*reinterpret_cast<uint32*>(p) = note_length;
+		p += 4;
+		memcpy(p, member->public_note.c_str(), note_length);
+		p += note_length;
+
+		// GuildMember + 0x0C. A nonzero value also sets + 0x08 bOnline, which decides whether the
+		// window draws the row. FUN_1403cf550 renders the zone column by passing this value to
+		// FUN_140649710(pinstWorldData, id, out, 1), which indexes the client zone table at
+		// WorldData + 0x30 + (id & 0x7fff) * 8 - so this must be the client zone id (zoneidnumber),
+		// not a hardcoded instance number. Sending 1 made every online member show as South Qeynos.
+		*reinterpret_cast<uint32*>(p) = member->online ? member->zone_id : 0; p += 4;  // + 0x0C
+		*p = member->tribute_enable ? 1 : 0; p += 1;                     // + 0x198
+		*p = 0; p += 1;                                                  // + 0x15 bOfflineMode
 	}
+
+	LogGuilds("Sending Laurion OP_GuildMemberList roster of length [{}]", outapp->size);
+	FastQueuePacket(&outapp);
 
 	for (auto* member : members) {
 		safe_delete(member);
 	}
+}
 
-	LogGuilds("Sending Laurion OP_GuildMemberList roster of length [{}]", outapp->size);
+// The client only refreshes PcClient::GuildID (pinstLocalPC + 0x1730) from the profile packet -
+// FUN_1402c01a0 copies the u64 guild field into it, and nothing else writes it. The guild window
+// and every /guild command check that field, so after a guild join or leave the profile has to be
+// resent or the client still thinks the player is guildless and shows the create guild prompt.
+void Client::SendPlayerProfile() {
+	auto outapp = new EQApplicationPacket(OP_PlayerProfile, sizeof(PlayerProfile_Struct));
+
+	m_pp.entityid = GetID();
+	memcpy(outapp->pBuffer, &m_pp, outapp->size);
+	outapp->priority = 6;
+	FastQueuePacket(&outapp);
+}
+
+// 0x408f is the only record that writes PlayerClient::GuildID (pinstLocalPlayer + 0x208) for a
+// client that is already in zone. GuildWindow (FUN_1403c9730) returns early when that field is 0,
+// so a player who joins mid-session keeps showing the create guild panel even though
+// pinstLocalPC + 0x1730 is correct. Passing spawn_id 0 means "the local player".
+void Client::SendGuildSpawnGuildID(uint32 spawn_id, uint64 guild_guid) {
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildSpawnGuildID, sizeof(Laurion::structs::GuildSpawnGuildID_Struct));
+	auto out = (Laurion::structs::GuildSpawnGuildID_Struct*) outapp->pBuffer;
+
+	out->SpawnID   = spawn_id;
+	out->GuildGuid = guild_guid;
+
 	FastQueuePacket(&outapp);
 }
 
@@ -971,9 +1076,15 @@ void EntityList::SendGuildMemberAdd(
 	std::string player_name
 )
 {
+	uint32 joiner_spawn_id = 0;
+	if (auto joiner = GetClientByName(player_name.c_str())) {
+		joiner_spawn_id = joiner->GetID();
+	}
+
 	for (auto &c: client_list) {
 		if (c.second->GuildID() == guild_id) {
 			c.second->SendGuildMemberAdd(guild_id, level, class_, rank_, 0, zone_id, player_name);
+			c.second->SendGuildSpawnGuildID(joiner_spawn_id, guild_id);
 		}
 
 		if (player_name.compare(c.second->GetCleanName()) == 0) {
@@ -992,6 +1103,7 @@ void EntityList::SendGuildMemberAdd(
 			}
 
 			c.second->SendGuildActiveTributes(guild_id);
+			c.second->SendGuildSpawnGuildID(c.second->GetID(), guild_id);
 			c.second->SendAppearancePacket(AppearanceType::GuildID, guild_id, true, false, c.second);
 			c.second->SendAppearancePacket(AppearanceType::GuildRank, rank_, true, false, c.second);
 			c.second->SendAppearancePacket(AppearanceType::GuildShow, guild_mgr.CheckPermission(guild_id, rank_, GUILD_ACTION_DISPLAY_GUILD_NAME) ? 1 : 0);
@@ -1017,18 +1129,37 @@ void EntityList::SendGuildMemberRename(uint32 guild_id, std::string player_name,
 	}
 }
 
+void Client::SendGuildMemberDeleteRecord(uint32 guild_id, const char *name) {
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto laurion_app = new EQApplicationPacket(OP_GuildMemberDelete, sizeof(Laurion::structs::GuildMemberDelete_Struct));
+		auto out = (Laurion::structs::GuildMemberDelete_Struct*) laurion_app->pBuffer;
+
+		out->GuildGuid = guild_id;
+		strn0cpy(out->MemberName, name, sizeof(out->MemberName));
+
+		FastQueuePacket(&laurion_app);
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildMemberDelete, sizeof(GuildMemberDelete_Struct));
+	auto out = (GuildMemberDelete_Struct*) outapp->pBuffer;
+
+	out->guild_id = guild_id;
+	strn0cpy(out->player_name, name, sizeof(out->player_name));
+
+	FastQueuePacket(&outapp);
+}
+
 void EntityList::SendGuildMemberRemove(uint32 guild_id, std::string player_name)
 {
+	uint32 removed_spawn_id = 0;
+	if (auto removed = GetClientByName(player_name.c_str())) {
+		removed_spawn_id = removed->GetID();
+	}
+
 	for (auto &c: client_list) {
 		if (c.second->GuildID() == guild_id) {
-			auto outapp = new EQApplicationPacket(OP_GuildMemberDelete, sizeof(GuildMemberDelete_Struct));
-			auto out    = (GuildMemberDelete_Struct *) outapp->pBuffer;
-
-			out->guild_id = guild_id;
-			strn0cpy(out->player_name, player_name.c_str(), sizeof(out->player_name));
-
-			c.second->QueuePacket(outapp);
-			safe_delete(outapp);
+			c.second->SendGuildMemberDeleteRecord(guild_id, player_name.c_str());
 
 			c.second->SetGuildListDirty(true);
 
@@ -1039,8 +1170,20 @@ void EntityList::SendGuildMemberRemove(uint32 guild_id, std::string player_name)
 				c.second->SendGuildActiveTributes(0);
 				c.second->SetGuildListDirty(false);
 				c.second->SendGuildList();
+				// pinstLocalPC + 0x1730 is only written by the profile copy, so the removed player
+				// still shows as guilded until the profile is resent. SendPlayerProfile() copies m_pp,
+				// so clear the profile fields too, not just the Client members.
+				c.second->GetPP().guild_id = GUILD_NONE;
+				c.second->GetPP().guildrank = GUILD_RANK_NONE;
+				c.second->SendPlayerProfile();
+				c.second->SendGuildSpawnGuildID(c.second->GetID(), 0);
 				c.second->SendAppearancePacket(AppearanceType::GuildID, GUILD_NONE, true);
 				c.second->SendAppearancePacket(AppearanceType::GuildRank, GUILD_RANK_NONE, true);
+			} else if (removed_spawn_id != 0) {
+				// Other members resolve the removed player through pinstSpawnManager, so the record
+				// must carry that player's spawn id. Sending 0 here would clear the receiver's own
+				// guild instead.
+				c.second->SendGuildSpawnGuildID(removed_spawn_id, 0);
 			}
 		}
 	}
@@ -1063,10 +1206,42 @@ void EntityList::SendGuildMemberLevel(uint32 guild_id, uint32 level, std::string
 	}
 }
 
+void Client::SendGuildManageStatusRecord(uint32 guild_id, uint32 rank, const char *name, uint32 flags) {
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto laurion_app = new EQApplicationPacket(OP_GuildManageStatus, sizeof(Laurion::structs::GuildManageStatus_Struct));
+		auto out = (Laurion::structs::GuildManageStatus_Struct*) laurion_app->pBuffer;
+
+		out->GuildGuid     = guild_id;
+		out->Rank          = rank;
+		strn0cpy(out->Name, name, sizeof(out->Name));
+		out->Flags         = flags;
+		out->TributeStatus = 0;
+		out->Field51       = 0;
+
+		FastQueuePacket(&laurion_app);
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GuildManageStatus, sizeof(GuildManageStatus_Struct));
+	auto out = (GuildManageStatus_Struct*) outapp->pBuffer;
+
+	out->guild_id = guild_id;
+	out->oldrank  = 0;
+	out->newrank  = rank;
+	strn0cpy(out->name, name, sizeof(out->name));
+
+	FastQueuePacket(&outapp);
+}
+
 void EntityList::SendGuildMemberRankAltBanker(uint32 guild_id, uint32 rank_, std::string player_name, bool alt, bool banker)
 {
 	for (auto const &c: client_list) {
 		if (c.second->GuildID() == guild_id) {
+			// Case 0x1212 is the record the client actually parses for a rank change: it updates
+			// member Rank, Flags and the window. OP_GuildMemberRankAltBanker (0x0afa) has no case in
+			// FUN_1400c1250, so it is kept only for the older clients.
+			c.second->SendGuildManageStatusRecord(guild_id, rank_, player_name.c_str(), (alt ? 2 : 0) | (banker ? 1 : 0));
+
 			auto outapp = new EQApplicationPacket(OP_GuildMemberRankAltBanker, sizeof(GuildMemberRank_Struct));
 			auto out = (GuildMemberRank_Struct *) outapp->pBuffer;
 

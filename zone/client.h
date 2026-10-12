@@ -890,6 +890,15 @@ public:
 	void SendGuildNameRecord(uint64 guid, const char *name);
 	void SendGuildMemberListPayload(const char *prefix_name);
 	void SendGuildRosterRecord();
+	void SendPlayerProfile();
+	void SendGuildSpawnGuildID(uint32 spawn_id, uint64 guild_guid);
+	// OP_GuildInvite record. Legacy clients receive the 136 byte GuildCommand_Struct, but a Laurion
+	// client's receive handler FUN_1401fa510 reads the guild as a full u64 EqGuid at +128 and the
+	// rank as a u32 at +136 of a 144 byte record, so the packet has to be built per receiving
+	// client or the invite popup never opens and the client auto-declines.
+	void SendGuildInviteRecord(const char *invitee_name, const char *inviter_name, uint32 guild_id, uint32 rank);
+	void SendGuildMemberDeleteRecord(uint32 guild_id, const char *name);
+	void SendGuildManageStatusRecord(uint32 guild_id, uint32 rank, const char *name, uint32 flags);
 	// OP_GuildUpdate record builders. Legacy clients read the record payload at +80
 	// (action + 76 byte gap); Laurion reads it at +88, so the packet has to be built
 	// per receiving client. Caller owns the returned packet.

@@ -2063,9 +2063,15 @@ namespace Laurion
 		u64 guild_id;
 		u8 guild_show_sprite;
 		u8 status;
+
+		The client stores this u64 as PcClient::GuildID (pinstLocalPC + 0x1730). Its empty EqGuid is
+		0, not 0xFFFFFFFF, and FUN_1401fa510 (the OP_GuildInvite handler) only shows the invite popup
+		when that field is 0 or equal to the guild in the invite record. Sending EQEmu's GUILD_NONE
+		here leaves the client holding 0xFFFFFFFF, so an unguilded player can never see an invite and
+		auto-declines with response 9. Write 0 for the no-guild case.
 		*/
 
-		out.WriteInt32(emu->guild_id);
+		out.WriteInt32(emu->guild_id == 0xFFFFFFFF ? 0 : emu->guild_id);
 		out.WriteUInt32(0);
 		out.WriteUInt8(0);
 		out.WriteUInt8(5);
@@ -4885,6 +4891,21 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_GuildManageStatus)
+	{
+		// Rank change record. The client's layout is 82 bytes (u64 key, rank, name, flags) while
+		// EQEmu's GuildManageStatus_Struct is 76 bytes with no flags field, so normalise down.
+		DECODE_LENGTH_EXACT(structs::GuildManageStatus_Struct);
+		SETUP_DIRECT_DECODE(GuildManageStatus_Struct, structs::GuildManageStatus_Struct);
+
+		emu->guild_id = (uint32) eq->GuildGuid;
+		emu->oldrank  = 0;
+		emu->newrank  = eq->Rank;
+		strn0cpy(emu->name, eq->Name, sizeof(emu->name));
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_GroupFollow)
 	{
 		// The group invite accept, sent by FUN_140260420 when the invitee clicks FOLLOW in the group
@@ -6213,8 +6234,10 @@ namespace Laurion
 			return structs::LaurionAppearance::GM;
 		case AppearanceType::Anonymous:
 			return structs::LaurionAppearance::Anonymous;
-		case AppearanceType::GuildID:
-			return structs::LaurionAppearance::GuildID;
+		// AppearanceType::GuildID has no Laurion appearance field - the client learns a spawn's
+		// guild from the guild packets. Field 14 is the rank, so GuildRank is what maps here.
+		case AppearanceType::GuildRank:
+			return structs::LaurionAppearance::GuildRank;
 		case AppearanceType::AFK:
 			return structs::LaurionAppearance::AFK;
 		case AppearanceType::Pet:
@@ -6279,8 +6302,8 @@ namespace Laurion
 			return AppearanceType::GM;
 		case structs::LaurionAppearance::Anonymous:
 			return AppearanceType::Anonymous;
-		case structs::LaurionAppearance::GuildID:
-			return AppearanceType::GuildID;
+		case structs::LaurionAppearance::GuildRank:
+			return AppearanceType::GuildRank;
 		case structs::LaurionAppearance::AFK:
 			return AppearanceType::AFK;
 		case structs::LaurionAppearance::Pet:

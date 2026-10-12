@@ -267,7 +267,12 @@ namespace Laurion {
 			FlyMode,
 			GM,
 			Anonymous,
-			GuildID,
+			// Field 14 is the guild RANK, not the guild id. FUN_140201ce0 case 0xe compares the
+			// incoming value with the member's stored rank and prints "You are now the rank of %s"
+			// (string 0x1de7 for the local player, 0x1de8 for another member). The spawn's guild
+			// GUID at PlayerClient + 0x208 is written by the guild packets, never by an appearance
+			// packet, so EQEmu's AppearanceType::GuildID has no Laurion field.
+			GuildRank,
 			AFK,
 			Pet,
 			Summoned,
@@ -1443,7 +1448,16 @@ namespace Laurion {
 			/*195*/
 		};
 
-		/* 0x2d05 OP_GuildInvite and 0x6313 OP_GuildRemove - payload 144 */
+		/* 0x2d05 OP_GuildInvite and 0x6313 OP_GuildRemove - payload 144.
+		Client send site FUN_1400c3020 (0x1400c3367: MOV R9D, 0x92) and receive handler
+		FUN_1401fa510 (dispatched for 0x2d05 from ZonePacket__dispatchRecv at 0x1401d99f4) both use
+		the full 144 byte record. FUN_1401fa510 compares +0 against the local player name, reads the
+		inviter from +64, the guild as a full 64 bit EqGuid at +128 and the rank at +136, and only
+		shows the invite popup when that rank is 1..8. EQEmu's GuildCommand_Struct is 136 bytes with
+		a u16 guildeqid at +128 and officer at +132, so the client sees
+		guild_guid = officer << 32 | guild_id (the zone log's guid [34359738369] = 0x800000001) and
+		reads the rank from outside the struct, so the popup never appears and the client falls
+		through to response 9 (decline). */
 		struct GuildCommand_Struct {
 			/*000*/	char	OtherName[64];
 			/*064*/	char	MyName[64];
@@ -1553,7 +1567,17 @@ namespace Laurion {
 		  u64 GuildGuid                 <- raw, no length prefix
 		  u8  flag                      <- raw
 		  u32 count                     <- raw
-		  per member: u32 field_length + bytes (name, min(40, len + 1) into member + 0x10)
+		  per member: u32 field_length + bytes (name, min(40, len + 1) into member + 0x16), then raw:
+		    u32 -> member + 0x58 Level
+		    u32 -> member + 0x5C Flags (1 = banker, 2 = alt)
+		    u32 -> member + 0x60 Class
+		    u32 -> member + 0x64 Rank
+		    u32 -> member + 0x188 LastLoginTime
+		    u8  -> member + 0x3A8
+		    u8  -> member + 0x3A9
+		    u32 -> member + 0x19C TributeDonations
+		    u32 -> member + 0x1A0 LastDonation
+		    u8  -> member + 0x14 bMainProfile
 		EQEmu's legacy Internal_GuildMembers_Struct (char player_name[64] at +0) does not match. */
 		struct GuildMemberList_Struct {
 			/*000*/	uint32	NameLength;
@@ -1562,6 +1586,70 @@ namespace Laurion {
 			/*04C*/	uint8	Flag;
 			/*04D*/	uint32	Count;
 			/*051*/
+		};
+
+
+		/* 0x20aa OP_GuildMemberUpdate - FUN_1400c1250 case 0x20AA (live 0x1400c12f6).
+		Looks the member up by name (record + 8) and then applies:
+		  record + 0x48 -> member + 0x0C (instance); nonzero also sets member + 0x08 bOnline
+		  record + 0x4C -> member + 0x188 (last login)
+		  record + 0x50 -> member + 0x15 (bOfflineMode)
+		EQEmu's GuildMemberUpdate_Struct has a u32 GuildID at +0 and the name at +4, so the
+		client reads the name from the wrong place. The guild window hides members with
+		bOnline = 0 unless "show offline members" is checked, which is why the roster looked
+		empty even though the member object was fully populated. */
+		struct GuildMemberUpdate_Struct {
+			/*000*/	uint64	GuildGuid;        /* EqGuid: u32 guild_id + u32 0 */
+			/*008*/	char	MemberName[64];
+			/*048*/	uint32	InstanceID;       /* nonzero sets bOnline */
+			/*04C*/	uint32	LastSeen;
+			/*050*/	uint32	Flag;
+			/*054*/
+		};
+
+		/* 0x2abf OP_GuildMemberDelete - payload 72 (FUN_1400c1250 case 0x2ABF -> FUN_1400c27f0).
+		   FUN_1400c27f0 looks the member up by the name at record + 8. When the name is not the local
+		   player it unlinks the member from CGuild's list and decrements the count. When the name is
+		   the local player it clears the whole local guild state (tribute fields, window flags) - but
+		   it does not clear PcClient::GuildID at pinstLocalPC + 0x1730, which only the profile packet
+		   writes, so the profile has to be resent for the removed player. */
+		struct GuildMemberDelete_Struct {
+			/*000*/	uint64	GuildGuid;        /* EqGuid: u32 guild_id + u32 0 */
+			/*008*/	char	MemberName[64];
+			/*048*/
+		};
+
+		/* 0x1212 OP_GuildManageStatus - payload 82 (FUN_1400c1250 case 0x1212).
+		   The handler looks the member up by the name at record + 0xC, then writes:
+		     record + 0x08 -> member + 0x64 (Rank)
+		     record + 0x4C -> member + 0x5C (Flags: bit 0 banker, bit 1 alt)
+		     record + 0x50 -> member + 0x198 (bTributeStatus)
+		   and refreshes the guild window. When the name is the local player it also marks the
+		   rank selector dirty. EQEmu's GuildManageStatus_Struct is 76 bytes and has no flags
+		   field, so the client reads the flags past the end of the packet, and its u64 key at +0
+		   becomes guild_id | (oldrank << 32). */
+		struct GuildManageStatus_Struct {
+			/*000*/	uint64	GuildGuid;        /* EqGuid: u32 guild_id + u32 0 */
+			/*008*/	uint32	Rank;
+			/*00C*/	char	Name[64];
+			/*04C*/	uint32	Flags;            /* bit 0 banker, bit 1 alt */
+			/*050*/	uint8	TributeStatus;
+			/*051*/	uint8	Field51;
+			/*052*/
+		};
+
+		/* 0x408f OP_GuildSpawnGuildID - payload 12 (FUN_1400c1250 case 0x408f).
+		   This is the only record that writes PlayerClient::GuildID (pinstLocalPlayer + 0x208) for a
+		   client that is already in zone. The handler reads a u32 spawn id at +0, resolves it through
+		   pinstSpawnManager (0 when the id is 0, which means the local player), then stores the u64
+		   guild guid at spawn + 0x208 and refreshes the name sprite. GuildWindow (FUN_1403c9730)
+		   returns early when +0x208 is 0, so a player who joins mid-session keeps showing the create
+		   guild panel until this record is sent. EQEmu has no encoder for it, so the packet is passed
+		   through at this exact size. */
+		struct GuildSpawnGuildID_Struct {
+			/*000*/	uint32	SpawnID;          /* 0 = pinstLocalPlayer */
+			/*004*/	uint64	GuildGuid;        /* EqGuid: u32 guild_id + u32 0 */
+			/*00C*/
 		};
 
 		/* 0x4a13 OP_TributeItem - payload 40 */
@@ -1757,7 +1845,12 @@ namespace Laurion {
 			/*001*/
 		};
 
-		/* 0x77e6 OP_GuildInviteAccept - payload 144 */
+		/* 0x77e6 OP_GuildInviteAccept - payload 144.
+		Client send sites FUN_1401fa510 and FUN_1402541f0 case 100 (the invite popup notification
+		handler) both send 0x92. FUN_1402541f0 sends 9 when the popup is dismissed and the rank
+		stored at record + 0x88 when the player clicks accept, so an accept only reaches the server
+		as a rank 1..8. EQEmu's GuildInviteAccept_Struct reads guild_id as a u32 at +132, which the
+		client leaves zero. */
 		struct GuildInviteAccept_Struct {
 			/*000*/	char	Inviter[64];
 			/*064*/	char	NewMember[64];

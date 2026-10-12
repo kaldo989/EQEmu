@@ -8424,6 +8424,10 @@ void Client::Handle_OP_GuildInvite(const EQApplicationPacket *app)
 {
 	LogGuilds("Received OP_GuildInvite");
 
+	// The Laurion struct strategy already decodes the client's 144 byte GuildCommand_Struct into
+	// this 136 byte struct (common/patches/laurion.cpp DECODE(OP_GuildInvite)), so the incoming
+	// packet is normalized here. What has to change is what we send back: see
+	// Client::SendGuildInviteRecord.
 	if (app->size != sizeof(GuildCommand_Struct)) {
 		std::cout << "Wrong size: OP_GuildInvite, size=" << app->size << ", expected " << sizeof(GuildCommand_Struct) << std::endl;
 		return;
@@ -8545,6 +8549,10 @@ void Client::Handle_OP_GuildInvite(const EQApplicationPacket *app)
 						return;
 					}
 				}
+				if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+					client->SendGuildInviteRecord(gc->othername, gc->myname, GuildID(), rank);
+					return;
+				}
 				client->QueuePacket(app);
 			}
 			else {
@@ -8589,6 +8597,16 @@ void Client::Handle_OP_GuildInvite(const EQApplicationPacket *app)
 
 			LogGuilds("Sending OP_GuildInvite for invite to [{}], length [{}]", client->GetName(), app->size);
 			client->SetPendingGuildInvitation(true);
+			if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+				// Send the 144 byte Laurion record, not the 136 byte decoded struct. FUN_1401fa510
+				// reads the guild as a full u64 EqGuid at +128 and the rank as a u32 at +136, and it
+				// only opens the invite popup when that rank is 1..8. Echoing the narrow struct makes
+				// the client see guild = officer << 32 | guild_id and read the rank from outside the
+				// record, so no popup is created and the handler falls straight through to response 9
+				// (decline) - which is the auto-decline the zone log showed.
+				client->SendGuildInviteRecord(gc->othername, gc->myname, GuildID(), gc->officer);
+				return;
+			}
 			client->QueuePacket(app);
 
 		}
@@ -8606,6 +8624,9 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 
 	SetPendingGuildInvitation(false);
 
+	// The client sends a 144 byte record (response u32 at +128, u32 gap, guild as a u64 at +136);
+	// the Laurion struct strategy decodes it into this 136 byte struct before the handler runs,
+	// so the values are already normalized here.
 	if (app->size != sizeof(GuildInviteAccept_Struct)) {
 		LogGuilds("Wrong size: OP_GuildInviteAccept, size={}, expected {}.", app->size, sizeof(GuildJoin_Struct));
 		return;
@@ -8616,6 +8637,11 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 	auto invitee  = gj->new_member;
 	auto guild_id = gj->guild_id;
 	auto response = gj->response;
+
+	// FUN_1401fa510 can only send 9 (already in a guild), 10 (a type 100 popup already exists for
+	// this owner) or 11 (Options/GuildInvites off), and FUN_1402541f0 case 100 sends 9 on dismiss
+	// or the stored rank on accept. Logging the value tells us which branch the client took.
+	LogGuilds("OP_GuildInviteAccept response=[{}] guild=[{}] inviter=[{}] invitee=[{}]", response, guild_id, invitor, invitee);
 
 	if (ClientVersion() < EQ::versions::ClientVersion::RoF) {
 		switch (response) {
@@ -8644,7 +8670,7 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 	}
 
 	if (!c_invitee || !c_invitor) {
-		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, gj->response);
+		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, response);
 		Message(Chat::Yellow, "Both players must be in the same zone.");
 		if (c_invitor) {
 			c_invitor->Message(Chat::Yellow, "Both players must be in the same zone.");
@@ -8653,7 +8679,7 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 	}
 
 	if (response >= GUILD_INVITE_DECLINE) {
-		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, gj->response);
+		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, response);
 		Message(Chat::Yellow, "You declined the guild invite.");
 		if (c_invitor) {
 			c_invitor->Message(Chat::Yellow, "The player declined the guild invite.");
@@ -8662,16 +8688,40 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 	}
 
 	if (c_invitor && IsInAGuild() && GuildID() != c_invitor->GuildID()) {
-		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, gj->response);
+		guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, response);
 		Message(Chat::Yellow, "You are already in a guild.  Please leave that guild first.");
 		c_invitor->Message(Chat::Yellow, "Player is already in a guild.");
 		return;
 		}
 
-	guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, gj->response);
+	guild_mgr.VerifyAndClearInvite(CharacterID(), guild_id, response);
 	c_invitee->SetGuildID(guild_id);
+	c_invitee->SetGuildRank(response);
+	// SendPlayerProfile() copies m_pp, not the Client members, so the profile must carry the new
+	// guild id as well or the client keeps the old no-guild value and shows the create prompt.
+	c_invitee->GetPP().guild_id = guild_id;
+	c_invitee->GetPP().guildrank = static_cast<uint8_t>(response);
 	c_invitee->SetGuildListDirty(false);
 	guild_mgr.MemberAdd(guild_id, c_invitee->CharacterID(), c_invitee->GetLevel(), c_invitee->GetClass(), response, c_invitee->GetZoneID(), std::string(c_invitee->GetCleanName()));
+
+	// The client only refreshes PcClient::GuildID (pinstLocalPC + 0x1730) from the profile packet,
+	// and its own rank from the member record. Without both of these the guild window still thinks
+	// the player is guildless (create guild prompt) and the local rank reads as 0, which the client
+	// renders as the rank name at index 0 - "Leader" - instead of the rank actually granted.
+	c_invitee->SendPlayerProfile();
+	c_invitee->SendGuildList();
+	c_invitee->SendGuildRanks();
+	c_invitee->SendGuildRankNames();
+	c_invitee->SendGuildMemberAdd(
+		guild_id,
+		c_invitee->GetLevel(),
+		c_invitee->GetClass(),
+		response,
+		0,
+		c_invitee->GetZoneID(),
+		std::string(c_invitee->GetCleanName())
+	);
+
 	SendGuildSpawnAppearance();
 
 	LogGuilds("Adding [{}] ([{}]) to guild [{}] ([{}]) at rank [{}]",

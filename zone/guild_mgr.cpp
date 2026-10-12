@@ -23,6 +23,7 @@
 #include "common/servertalk.h"
 #include "common/strings.h"
 #include "zone/client.h"
+#include "common/patches/laurion_structs.h"
 #include "zone/string_ids.h"
 #include "zone/worldserver.h"
 #include "zone/zonedb.h"
@@ -450,26 +451,51 @@ void ZoneGuildManager::ProcessWorldPacket(ServerPacket *pack)
 					break;
 				}
 				LogGuilds("Processing ServerOP_OnlineGuildMembersResponse");
-				auto                     outapp = new EQApplicationPacket(
-					OP_GuildMemberUpdate,
-					sizeof(GuildMemberUpdate_Struct));
-				GuildMemberUpdate_Struct *gmus  = (GuildMemberUpdate_Struct *) outapp->pBuffer;
-				char                     Name[64];
-				gmus->LastSeen   = time(nullptr);
-				gmus->InstanceID = 1;
-				gmus->GuildID    = c->GuildID();
-				for (int i = 0; i < Count; i++) {
-					// Just make the packet once and swap out name/zone and send
-					VARSTRUCT_DECODE_STRING(Name, Buffer);
-					strn0cpy(gmus->MemberName, Name, sizeof(gmus->MemberName));
-					gmus->ZoneID = VARSTRUCT_DECODE_TYPE(uint32, Buffer);
-					LogGuilds("Sending OP_GuildMemberUpdate to [{}]. Name=[{}] ZoneID=[{}]",
-							  FromID,
-							  Name,
-							  gmus->ZoneID);
-					c->QueuePacket(outapp);
+				char Name[64];
+
+				if (c->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+					auto laurion_app = new EQApplicationPacket(
+						OP_GuildMemberUpdate,
+						sizeof(Laurion::structs::GuildMemberUpdate_Struct));
+					auto lou = (Laurion::structs::GuildMemberUpdate_Struct*) laurion_app->pBuffer;
+
+					lou->GuildGuid  = c->GuildID();
+					lou->InstanceID = 1;   // nonzero is what sets bOnline in case 0x20AA
+					lou->LastSeen   = time(nullptr);
+					lou->Flag       = 0;
+
+					for (int i = 0; i < Count; i++) {
+						VARSTRUCT_DECODE_STRING(Name, Buffer);
+						strn0cpy(lou->MemberName, Name, sizeof(lou->MemberName));
+						VARSTRUCT_DECODE_TYPE(uint32, Buffer);   // zone id
+						LogGuilds("Sending Laurion OP_GuildMemberUpdate to [{}]. Name=[{}]", FromID, Name);
+						c->QueuePacket(laurion_app);
+					}
+
+					safe_delete(laurion_app);
+				} else {
+					auto outapp = new EQApplicationPacket(
+						OP_GuildMemberUpdate,
+						sizeof(GuildMemberUpdate_Struct));
+					GuildMemberUpdate_Struct *gmus = (GuildMemberUpdate_Struct*) outapp->pBuffer;
+
+					gmus->LastSeen   = time(nullptr);
+					gmus->InstanceID = 1;
+					gmus->GuildID    = c->GuildID();
+
+					for (int i = 0; i < Count; i++) {
+						VARSTRUCT_DECODE_STRING(Name, Buffer);
+						strn0cpy(gmus->MemberName, Name, sizeof(gmus->MemberName));
+						gmus->ZoneID = VARSTRUCT_DECODE_TYPE(uint32, Buffer);
+						LogGuilds("Sending OP_GuildMemberUpdate to [{}]. Name=[{}] ZoneID=[{}]",
+								  FromID,
+								  Name,
+								  gmus->ZoneID);
+						c->QueuePacket(outapp);
+					}
+
+					safe_delete(outapp);
 				}
-				safe_delete(outapp);
 
 			}
 			break;
