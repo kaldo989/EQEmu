@@ -30,103 +30,6 @@ std::vector<SaylinkRepository::Saylink> g_cached_saylinks = {};
 
 EQ::versions::ClientVersion EQ::SayLinkEngine::s_DefaultClientVersion = EQ::versions::ClientVersion::RoF2;
 
-bool EQ::saylink::DegenerateLinkBody(SayLinkBody_Struct &say_link_body_struct, const std::string &say_link_body, versions::ClientVersion client_version)
-{
-	memset(&say_link_body_struct, 0, sizeof(say_link_body_struct));
-	if (say_link_body.length() != EQ::constants::GetSayLinkBodySize(client_version)) {
-		return false;
-	}
-
-	const bool is_laurion = (client_version == EQ::versions::ClientVersion::Laurion);
-
-	uint32 *augment_fields[6] = {
-		&say_link_body_struct.augment_1,
-		&say_link_body_struct.augment_2,
-		&say_link_body_struct.augment_3,
-		&say_link_body_struct.augment_4,
-		&say_link_body_struct.augment_5,
-		&say_link_body_struct.augment_6
-	};
-
-	size_t pos = 0;
-	auto read_hex = [&](size_t width) -> uint32 {
-		uint32 value = (uint32) strtol(say_link_body.substr(pos, width).c_str(), nullptr, 16);
-		pos += width;
-		return value;
-	};
-
-	say_link_body_struct.action_id = (uint8) read_hex(1);
-	say_link_body_struct.item_id   = read_hex(5);
-
-	for (int i = 0; i < 6; ++i) {
-		*augment_fields[i] = read_hex(5);
-		if (is_laurion) {
-			say_link_body_struct.socket_luck[i] = read_hex(5);
-		}
-	}
-
-	say_link_body_struct.is_evolving   = (uint8) read_hex(1);
-	say_link_body_struct.evolve_group  = read_hex(4);
-	say_link_body_struct.evolve_level  = (uint8) read_hex(2);
-	say_link_body_struct.ornament_icon = read_hex(5);
-	if (is_laurion) {
-		say_link_body_struct.luck = read_hex(5);
-	}
-	say_link_body_struct.hash = read_hex(8);
-
-	return true;
-}
-
-bool EQ::saylink::GenerateLinkBody(std::string &say_link_body, const SayLinkBody_Struct &say_link_body_struct, versions::ClientVersion client_version)
-{
-	if (client_version == EQ::versions::ClientVersion::Laurion) {
-		// Laurion client layout (client ItemBase__CreateItemTagString): every augment socket is
-		// written as a pair of %05X fields (socket item id + socket luck), plus a trailing item luck.
-		say_link_body = StringFormat(
-			"%1X" "%05X"
-			"%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X" "%05X%05X"
-			"%1X" "%04X" "%02X" "%05X" "%05X" "%08X",
-			(0x0F & say_link_body_struct.action_id),
-			(0x000FFFFF & say_link_body_struct.item_id),
-			(0x000FFFFF & say_link_body_struct.augment_1), (0x000FFFFF & say_link_body_struct.socket_luck[0]),
-			(0x000FFFFF & say_link_body_struct.augment_2), (0x000FFFFF & say_link_body_struct.socket_luck[1]),
-			(0x000FFFFF & say_link_body_struct.augment_3), (0x000FFFFF & say_link_body_struct.socket_luck[2]),
-			(0x000FFFFF & say_link_body_struct.augment_4), (0x000FFFFF & say_link_body_struct.socket_luck[3]),
-			(0x000FFFFF & say_link_body_struct.augment_5), (0x000FFFFF & say_link_body_struct.socket_luck[4]),
-			(0x000FFFFF & say_link_body_struct.augment_6), (0x000FFFFF & say_link_body_struct.socket_luck[5]),
-			(0x0F & say_link_body_struct.is_evolving),
-			(0x0000FFFF & say_link_body_struct.evolve_group),
-			(0xFF & say_link_body_struct.evolve_level),
-			(0x000FFFFF & say_link_body_struct.ornament_icon),
-			(0x000FFFFF & say_link_body_struct.luck),
-			(0xFFFFFFFF & say_link_body_struct.hash)
-		);
-	} else {
-		say_link_body = StringFormat(
-			"%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X",
-			(0x0F & say_link_body_struct.action_id),
-			(0x000FFFFF & say_link_body_struct.item_id),
-			(0x000FFFFF & say_link_body_struct.augment_1),
-			(0x000FFFFF & say_link_body_struct.augment_2),
-			(0x000FFFFF & say_link_body_struct.augment_3),
-			(0x000FFFFF & say_link_body_struct.augment_4),
-			(0x000FFFFF & say_link_body_struct.augment_5),
-			(0x000FFFFF & say_link_body_struct.augment_6),
-			(0x0F & say_link_body_struct.is_evolving),
-			(0x0000FFFF & say_link_body_struct.evolve_group),
-			(0xFF & say_link_body_struct.evolve_level),
-			(0x000FFFFF & say_link_body_struct.ornament_icon),
-			(0xFFFFFFFF & say_link_body_struct.hash)
-		);
-	}
-
-	if (say_link_body.length() != EQ::constants::GetSayLinkBodySize(client_version)) {
-		return false;
-	}
-
-	return true;
-}
-
 EQ::SayLinkEngine::SayLinkEngine()
 {
 	Reset();
@@ -144,7 +47,11 @@ const std::string &EQ::SayLinkEngine::GenerateLink()
 	const size_t body_size = EQ::constants::GetSayLinkBodySize(m_ClientVersion);
 	const size_t maximum_size = EQ::constants::SAY_LINK_OPENER_SIZE + body_size + EQ::constants::SAY_LINK_TEXT_SIZE + EQ::constants::SAY_LINK_CLOSER_SIZE;
 
-	if ((m_LinkBody.length() == body_size) && (m_LinkText.length() > 0)) {
+	// The first body character is the etag the client uses to index its link size table, and that table
+	// only covers '0' - '9'. A non digit etag makes the client read a table entry that is not a length and
+	// copy out of bounds, so build the link only when the etag is a digit and let the error path below
+	// handle anything else.
+	if ((m_LinkBody.length() == body_size) && (m_LinkText.length() > 0) && saylink::IsLinkEtag(m_LinkBody[0])) {
 		m_Link.push_back(0x12);
 		m_Link.append(m_LinkBody);
 		m_Link.append(m_LinkText);
@@ -331,7 +238,8 @@ void EQ::SayLinkEngine::generate_text()
 	m_LinkText = "null";
 }
 
-std::string EQ::SayLinkEngine::GenerateQuestSaylink(const std::string& saylink_text, bool silent, const std::string& link_name)
+std::string EQ::SayLinkEngine::GenerateQuestSaylink(const std::string& saylink_text, bool silent, const std::string& link_name,
+	EQ::versions::ClientVersion client_version)
 {
 	uint32 saylink_id = 0;
 
@@ -344,6 +252,7 @@ std::string EQ::SayLinkEngine::GenerateQuestSaylink(const std::string& saylink_t
 	 * Generate the actual link
 	 */
 	EQ::SayLinkEngine linker;
+	linker.SetClientVersion(client_version);
 	linker.SetProxyItemID(SAYLINK_ITEM_ID);
 	if (silent) {
 		linker.SetProxyAugment2ID(saylink_id);
@@ -357,7 +266,7 @@ std::string EQ::SayLinkEngine::GenerateQuestSaylink(const std::string& saylink_t
 	return linker.GenerateLink();
 }
 
-std::string EQ::SayLinkEngine::InjectSaylinksIfNotExist(const char *message)
+std::string EQ::SayLinkEngine::InjectSaylinksIfNotExist(const char *message, EQ::versions::ClientVersion client_version)
 {
 	LogSaylinkDetail("message [{}]", message);
 
@@ -385,7 +294,7 @@ std::string EQ::SayLinkEngine::InjectSaylinksIfNotExist(const char *message)
 			if (ch != startpos)
 			{
 				std::string str(startpos, ch - startpos);
-				new_message += Saylink::Create(str);
+				new_message += Saylink::Create(str, false, "", client_version);
 			}
 			in_bracket_state = false;
 		}
@@ -454,12 +363,12 @@ SaylinkRepository::Saylink EQ::SayLinkEngine::GetOrSaveSaylink(std::string sayli
 	return {};
 }
 
-std::string Saylink::Create(const std::string& saylink_text, bool silent, const std::string& link_name)
+std::string Saylink::Create(const std::string& saylink_text, bool silent, const std::string& link_name, EQ::versions::ClientVersion client_version)
 {
-	return EQ::SayLinkEngine::GenerateQuestSaylink(saylink_text, silent, (link_name.empty() ? saylink_text : link_name));
+	return EQ::SayLinkEngine::GenerateQuestSaylink(saylink_text, silent, (link_name.empty() ? saylink_text : link_name), client_version);
 }
 
-std::string Saylink::Silent(const std::string& saylink_text, const std::string& link_name)
+std::string Saylink::Silent(const std::string& saylink_text, const std::string& link_name, EQ::versions::ClientVersion client_version)
 {
-	return EQ::SayLinkEngine::GenerateQuestSaylink(saylink_text, true, (link_name.empty() ? saylink_text : link_name));
+	return EQ::SayLinkEngine::GenerateQuestSaylink(saylink_text, true, (link_name.empty() ? saylink_text : link_name), client_version);
 }

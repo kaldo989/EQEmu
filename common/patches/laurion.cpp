@@ -27,9 +27,11 @@
 #include "../crc32.h"
 
 #include "../eq_constants.h"
+#include "../eq_limits.h"
 #include "../eq_packet_structs.h"
 #include "../misc_functions.h"
 #include "../strings.h"
+#include "../say_link.h"
 #include "../inventory_profile.h"
 #include "laurion_structs.h"
 #include "../rulesys.h"
@@ -4064,7 +4066,7 @@ namespace Laurion
 		ChannelMessage_Struct* emu = (ChannelMessage_Struct*)__packet->pBuffer;
 
 		strn0cpy(emu->targetname, Target, sizeof(emu->targetname));
-		strn0cpy(emu->sender, Target, sizeof(emu->sender));
+		strn0cpy(emu->sender, Sender, sizeof(emu->sender));
 		emu->language = Language;
 		emu->chan_num = Channel;
 		emu->skill_in_language = Skill;
@@ -6109,6 +6111,98 @@ namespace Laurion
 		buffer.WriteInt32(0); //unsupported atm
 	}
 
+	// A link in a message string is '\x12' <etag digit> <data> <display text> '\x12'.
+	//
+	// The Laurion client only renders an item tag as a link when the data block is exactly the length
+	// its own table says it is. __ConvertItemTags (0x140230AE0) takes TagSizes[etag] - 3 characters as
+	// the data and everything after that as the display text, and the parser FUN_1402357e0 returns
+	// failure unless the data is exactly 90 characters:
+	//
+	//   %05X item_id
+	//   6 x (%05X socket + %05X socket_luck)                    = 60
+	//   %1d is_evolving, %04X evolve_group, %02X evolve_level   = 7
+	//   %05X ornament_icon, %05X luck, %08X hash
+	//
+	// 90 data chars + the etag digit = the 91 char body EQEmu calls SAY_LINK_BODY_SIZE for Laurion.
+	// Every other tag (player, spell, achievement, faction, dialog, command) is variable length and is
+	// passed through untouched.
+	//
+	// EQEmu's canonical body is the RoF2 layout (56 chars). SayLinkEngine writes the canonical form,
+	// the encoder expands it to Laurion and the decoder shrinks Laurion back to canonical, so the rest
+	// of the server only ever sees one layout. The length is checked rather than assumed: when the
+	// engine is configured to emit Laurion directly, expanding a segment a second time swallows the
+	// display text and the client prints the raw hex - that is the mangling this fixes.
+
+	// Converts one link segment (etag digit + data + display text, without the surrounding '\x12') to
+	// `target`. The source layout is read from which fixed data block width the segment fills, so a link
+	// that is already in the target form is passed through instead of converted a second time, and a link
+	// whose display text starts with a hex character is still attributed to the right layout.
+	static inline void ConvertLinkSegment(std::string& message_out, const std::string& segment, EQ::versions::ClientVersion target)
+	{
+		// A '\x12' whose next character is not a digit is not a link. The client indexes its per-etag size
+		// table with that character and the table only covers '0' - '9', so a stray or empty segment makes
+		// it read a pointer as a length and copy out of bounds. Drop the delimiter instead of passing it
+		// through, so the text is still delivered but never reaches the client as a malformed link.
+		if (segment.empty() || !EQ::saylink::IsLinkEtag(segment[0])) {
+			LogSaylinkDetail("Laurion segment [{}] is not a link (etag [{}]) - delimiter dropped", segment, segment.empty() ? '\0' : segment[0]);
+			message_out.append(segment);
+			return;
+		}
+
+		message_out.push_back('\x12');
+
+		const char etag = segment[0];
+		const size_t laurion_data = EQ::constants::GetSayLinkBodySize(EQ::versions::ClientVersion::Laurion) - 1;   // 90
+		const size_t canonical_data = EQ::constants::GetSayLinkBodySize(EQ::versions::ClientVersion::RoF2) - 1;     // 55
+
+		// Only the item tag is length based (client TagSizes: '0' = 93, '1' and '2' = 3, the rest 0).
+		if (etag != '0') {
+			message_out.append(segment);
+			message_out.push_back('\x12');
+			return;
+		}
+
+		size_t data_length = EQ::saylink::DetectLinkDataWidth(segment);
+		EQ::versions::ClientVersion source;
+
+		if (data_length == laurion_data) {
+			source = EQ::versions::ClientVersion::Laurion;
+		} else if (data_length == canonical_data) {
+			source = EQ::versions::ClientVersion::RoF2;
+		} else {
+			LogSaylinkDetail("Laurion link segment [{}] data length [{}] is not a known layout - passed through unchanged", segment, data_length);
+			message_out.append(segment);
+			message_out.push_back('\x12');
+			return;
+		}
+
+		const size_t target_data = EQ::constants::GetSayLinkBodySize(target) - 1;
+		if (data_length == target_data) {
+			message_out.append(segment);
+			message_out.push_back('\x12');
+			return;
+		}
+
+		EQ::SayLinkBody_Struct body;
+		if (!EQ::saylink::DegenerateLinkBody(body, segment.substr(0, data_length + 1), source)) {
+			LogSaylinkDetail("Laurion link segment [{}] data length [{}] could not be parsed", segment, data_length);
+			message_out.append(segment);
+			message_out.push_back('\x12');
+			return;
+		}
+
+		std::string converted;
+		if (!EQ::saylink::GenerateLinkBody(converted, body, target)) {
+			message_out.append(segment);
+			message_out.push_back('\x12');
+			return;
+		}
+
+		message_out.append(converted);
+		message_out.append(segment.substr(data_length + 1));
+		message_out.push_back('\x12');
+	}
+
 	static inline void ServerToLaurionConvertLinks(std::string& message_out, const std::string& message_in)
 	{
 		if (message_in.find('\x12') == std::string::npos) {
@@ -6119,81 +6213,7 @@ namespace Laurion
 		auto segments = Strings::Split(message_in, '\x12');
 		for (size_t segment_iter = 0; segment_iter < segments.size(); ++segment_iter) {
 			if (segment_iter & 1) {
-				auto etag = std::stoi(segments[segment_iter].substr(0, 1));
-
-				switch (etag) {
-				case 0:
-				{
-					size_t index = 1;
-					auto item_id = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug1 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug2 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug3 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug4 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug5 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto aug6 = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto is_evolving = segments[segment_iter].substr(index, 1);
-					index += 1;
-					
-					auto evolutionGroup = segments[segment_iter].substr(index, 4);
-					index += 4;
-					
-					auto evolutionLevel = segments[segment_iter].substr(index, 2);
-					index += 2;
-					
-					auto ornamentationIconID = segments[segment_iter].substr(index, 5);
-					index += 5;
-					
-					auto itemHash = segments[segment_iter].substr(index, 8);
-					index += 8;
-					
-					auto text = segments[segment_iter].substr(index);
-					
-					message_out.push_back('\x12');
-					message_out.push_back('0'); //etag item
-					message_out.append(item_id);
-					message_out.append(aug1);
-					message_out.append("00000");
-					message_out.append(aug2);
-					message_out.append("00000");
-					message_out.append(aug3);
-					message_out.append("00000");
-					message_out.append(aug4);
-					message_out.append("00000");
-					message_out.append(aug5);
-					message_out.append("00000");
-					message_out.append(aug6);
-					message_out.append("00000");
-					message_out.append(is_evolving);
-					message_out.append(evolutionGroup);
-					message_out.append(evolutionLevel);
-					message_out.append(ornamentationIconID);
-					message_out.append("00000");
-					message_out.append(itemHash);
-					message_out.append(text);
-					message_out.push_back('\x12');
-
-					break;
-				}
-				default:
-					//unsupported etag right now; just pass it as is
-					message_out.append(segments[segment_iter]);
-					break;
-				}
+				ConvertLinkSegment(message_out, segments[segment_iter], EQ::versions::ClientVersion::Laurion);
 			}
 			else {
 				message_out.append(segments[segment_iter]);
@@ -6201,8 +6221,25 @@ namespace Laurion
 		}
 	}
 
-	static inline void LaurionToServerConvertLinks(std::string& message_out, const std::string& message_in) {
-		message_out = message_in;
+	// Incoming links arrive in the Laurion layout. Normalise them to the server canonical form so the
+	// code that reads a link (#giveitem, #summonitem, Client::GarbleMessage, DialogueWindow) sees one
+	// layout.
+	static inline void LaurionToServerConvertLinks(std::string& message_out, const std::string& message_in)
+	{
+		if (message_in.find('\x12') == std::string::npos) {
+			message_out = message_in;
+			return;
+		}
+
+		auto segments = Strings::Split(message_in, '\x12');
+		for (size_t segment_iter = 0; segment_iter < segments.size(); ++segment_iter) {
+			if (segment_iter & 1) {
+				ConvertLinkSegment(message_out, segments[segment_iter], EQ::versions::ClientVersion::RoF2);
+			}
+			else {
+				message_out.append(segments[segment_iter]);
+			}
+		}
 	}
 
 	static inline uint32 ServerToLaurionSpawnAppearanceType(uint32 server_type) {

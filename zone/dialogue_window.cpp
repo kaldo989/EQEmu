@@ -298,11 +298,20 @@ void DialogueWindow::Render(Client *c, std::string markdown)
 			// strip saylinks and normalize to [regular message]
 			size_t link_open  = bracket_message.find('\x12');
 			size_t link_close = bracket_message.find_last_of('\x12');
-			if (link_open != link_close && (bracket_message.length() - link_open) > EQ::constants::SAY_LINK_BODY_SIZE) {
+			// The data block is a fixed size, but which size depends on the layout the link was written in.
+			// Use the fixed width test rather than the maximal hex run: a display text that starts with a hex
+			// character ('Corpses', 'Doors') makes the run longer than the canonical block and the link would
+			// be missed here.
+			const std::string link_segment = (link_open != link_close) ? bracket_message.substr(link_open + 1, link_close - link_open - 1) : "";
+			const size_t      link_data_size = EQ::saylink::DetectLinkDataWidth(link_segment);
+			const size_t      laurion_data = EQ::constants::GetSayLinkBodySize(EQ::versions::ClientVersion::Laurion) - 1;
+			const size_t      canonical_data = EQ::constants::GetSayLinkBodySize(EQ::versions::ClientVersion::RoF2) - 1;
+
+			if (link_open != link_close && (link_data_size == laurion_data || link_data_size == canonical_data)) {
 				replacements.emplace(
 					std::pair<std::string, std::string>(
 						bracket_message,
-						bracket_message.substr(EQ::constants::SAY_LINK_BODY_SIZE + 1)
+						bracket_message.substr(link_open + link_data_size + 2)
 					)
 				);
 			}
@@ -348,8 +357,9 @@ void DialogueWindow::Render(Client *c, std::string markdown)
 	// build saylinks
 	if (responses.size() > 1) {
 		for (auto &r: responses) {
+			// The window is rendered for one client, so write the link in that client's layout.
 			bracket_responses.emplace_back(
-				fmt::format("[{}]", Saylink::Create(r))
+				fmt::format("[{}]", Saylink::Create(r, false, "", c->ClientVersion()))
 			);
 		}
 	}

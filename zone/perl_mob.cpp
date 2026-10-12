@@ -934,7 +934,11 @@ void Perl_Mob_Message(Mob* self, uint32 type, const char* message) // @categorie
 		DialogueWindow::Render(self->CastToClient(), message);
 	}
 	else if (RuleB(Chat, AutoInjectSaylinksToClientMessage)) {
-		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(message);
+		// Single recipient, so the link can be written in that client's layout directly.
+		EQ::versions::ClientVersion version = self->IsClient()
+			? self->CastToClient()->ClientVersion()
+			: EQ::SayLinkEngine::GetDefaultClientVersion();
+		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(message, version);
 		self->Message(type, new_message.c_str());
 	}
 	else {

@@ -784,7 +784,12 @@ void Lua_Mob::Message(uint32 type, const char *message) {
 		DialogueWindow::Render(self->CastToClient(), window_markdown);
 	}
 	else if (RuleB(Chat, AutoInjectSaylinksToClientMessage)) {
-		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(message);
+		// Single recipient, so the link can be written in that client's layout directly instead of writing
+		// the canonical form and having the patch layer convert it afterwards.
+		EQ::versions::ClientVersion version = self->IsClient()
+			? self->CastToClient()->ClientVersion()
+			: EQ::SayLinkEngine::GetDefaultClientVersion();
+		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(message, version);
 		self->Message(type, new_message.c_str());
 	}
 	else {

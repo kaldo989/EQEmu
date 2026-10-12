@@ -22,6 +22,7 @@
 #include "tests/hextoi_32_64_test.h"
 #include "tests/ipc_mutex_test.h"
 #include "tests/memory_mapped_file_test.h"
+#include "tests/saylink_test.h"
 #include "tests/skills_util_test.h"
 #include "tests/string_util_test.h"
 #include "tests/task_state_test.h"
@@ -53,6 +54,7 @@ int main()
 		tests.add(new atoboolTest());
 		tests.add(new hextoi_32_64_Test());
 		tests.add(new StringUtilTest());
+		tests.add(new SaylinkTest());
 		tests.add(new DataVerificationTest());
 		tests.add(new SkillsUtilsTest());
 		tests.add(new TaskStateTest());

@@ -37,15 +37,12 @@ void command_giveitem(Client *c, const Seperator *sep)
 	size_t       link_open     = cmd_msg.find('\x12');
 	size_t       link_close    = cmd_msg.find_last_of('\x12');
 
-	const size_t   link_body_size = EQ::constants::GetSayLinkBodySize(c->ClientVersion());
+	// The link body is a fixed size data block; measure it rather than assuming the client's size, since
+	// the Laurion patch layer normalises incoming links to the canonical RoF2 form and either layout can
+	// reach this point.
+	EQ::SayLinkBody_Struct link_body;
 
-	if (link_open != link_close && (cmd_msg.length() - link_open) > link_body_size) {
-		EQ::SayLinkBody_Struct link_body;
-		EQ::saylink::DegenerateLinkBody(
-			link_body,
-			cmd_msg.substr(link_open + 1, link_body_size),
-			c->ClientVersion()
-		);
+	if (link_open != link_close && EQ::saylink::DegenerateLinkBodyFromMessage(link_body, cmd_msg, link_open)) {
 		item_id       = link_body.item_id;
 		augment_one   = link_body.augment_1;
 		augment_two   = link_body.augment_2;

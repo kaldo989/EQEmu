@@ -116,6 +116,7 @@ set(common_sources
     rdtsc.cpp
     rulesys.cpp
     say_link.cpp
+    say_link_body.cpp
     serialize_buffer.cpp
     server_event_scheduler.cpp
     serverinfo.cpp

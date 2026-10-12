@@ -43,6 +43,24 @@ namespace EQ
 		extern bool DegenerateLinkBody(SayLinkBody_Struct& say_Link_body_struct, const std::string& say_link_body, versions::ClientVersion client_version = EQ::versions::ClientVersion::RoF2);
 		extern bool GenerateLinkBody(std::string& say_link_body, const SayLinkBody_Struct& say_link_body_struct, versions::ClientVersion client_version = EQ::versions::ClientVersion::RoF2);
 
+		// The client indexes its per-etag data size table (TagSizes) with the raw character that follows
+		// the '\x12', and that table only has entries for the ten digit etags. A link whose etag is
+		// anything else makes the client read a pointer as a length and copy out of bounds, so the server
+		// has to keep every etag it emits inside '0' - '9'.
+		extern bool IsLinkEtag(char etag);
+
+		// Which fixed data block width a link segment fills: 90 (Laurion) or 55 (RoF2 canonical). This has
+		// to be tested against the fixed widths rather than measured as a hex run, because a display text
+		// that begins with a hex character ('Corpses', 'Doors') extends the run past the canonical width
+		// and the segment would be attributed to no layout at all. Returns 0 when neither width is fully
+		// covered, which means the segment is not a link.
+		extern size_t DetectLinkDataWidth(const std::string& say_link_body);
+
+		// Parse the link body of a message string, where `link_open` is the index of the '\x12' that opens
+		// it. The layout is read from the width the data block actually fills instead of assumed, so a link
+		// that arrived in the Laurion form and one that arrived in the canonical form both parse.
+		extern bool DegenerateLinkBodyFromMessage(SayLinkBody_Struct& say_link_body_struct, const std::string& message, size_t link_open);
+
 	} /*saylink*/
 
 	struct SayLinkBody_Struct {
@@ -98,9 +116,14 @@ namespace EQ
 		void SetTaskUse() { m_TaskUse = true; }
 
 		// Link body layout is client version specific (RoF2 = 56 chars, Laurion = 91 chars).
+		// The engine writes the layout for the client it is given, defaulting to the server canonical form.
 		void SetClientVersion(EQ::versions::ClientVersion client_version) { m_ClientVersion = client_version; }
 		EQ::versions::ClientVersion GetClientVersion() const { return m_ClientVersion; }
 		static void SetDefaultClientVersion(EQ::versions::ClientVersion client_version) { s_DefaultClientVersion = client_version; }
+		// The layout GenerateLink() writes when no recipient is known. RoF2 is the server canonical form
+		// every patch layer translates to and from, so a link in a message string can be identified by the
+		// width its data block fills.
+		static EQ::versions::ClientVersion GetDefaultClientVersion() { return s_DefaultClientVersion; }
 
 		const std::string& GenerateLink();
 		bool LinkError() { return m_Error; }
@@ -109,11 +132,15 @@ namespace EQ
 		const std::string& LinkBody() { return m_LinkBody; }	// contains string format: '<LinkBody>'
 		const std::string& LinkText() { return m_LinkText; }	// contains string format: '<LinkText>'
 
-		static std::string GenerateQuestSaylink(const std::string& saylink_text, bool silent, const std::string& link_name);
+		// When the recipient is known, the link is written in that client's layout directly instead of
+		// writing the canonical form and having a patch layer convert it afterwards.
+		static std::string GenerateQuestSaylink(const std::string& saylink_text, bool silent, const std::string& link_name,
+			EQ::versions::ClientVersion client_version = s_DefaultClientVersion);
 
 		void Reset();
 
-		static std::string InjectSaylinksIfNotExist(const char *message);
+		static std::string InjectSaylinksIfNotExist(const char *message,
+			EQ::versions::ClientVersion client_version = s_DefaultClientVersion);
 		static void LoadCachedSaylinks();
 	private:
 		void generate_body();
@@ -139,6 +166,10 @@ namespace EQ
 
 class Saylink {
 public:
-	static std::string Create(const std::string &saylink_text, bool silent = false, const std::string &link_name = "");
-	static std::string Silent(const std::string &saylink_text, const std::string &link_name = "");
+	// The link is written in `client_version`'s layout. Callers that know the recipient pass its version;
+	// callers that broadcast to an unknown mix of clients leave the default and let the patch layer convert.
+	static std::string Create(const std::string &saylink_text, bool silent = false, const std::string &link_name = "",
+		EQ::versions::ClientVersion client_version = EQ::SayLinkEngine::GetDefaultClientVersion());
+	static std::string Silent(const std::string &saylink_text, const std::string &link_name = "",
+		EQ::versions::ClientVersion client_version = EQ::SayLinkEngine::GetDefaultClientVersion());
 };
