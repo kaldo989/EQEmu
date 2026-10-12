@@ -110,6 +110,24 @@ struct ActivityInformation {
 
 	void SerializeSelector(SerializeBuffer& out, EQ::versions::ClientVersion client_version) const
 	{
+		// Laurion reader FUN_1404ec5b0 (opcode 0x3e4e) - see docs/tasks.md section 9.
+		// The element slot index is written by the caller, so this record is:
+		// int32, string, lenstr, int32, lenstr, lenstr, string, string, string.
+		// The solo/group/raid int32 and dz_switch_id are not read by this record.
+		if (client_version == EQ::versions::ClientVersion::Laurion)
+		{
+			out.WriteInt32(static_cast<int32_t>(activity_type));
+			out.WriteString(target_name);
+			out.WriteLengthString(item_list);
+			out.WriteInt32(activity_type == TaskActivityType::GiveCash ? 1 : goal_count);
+			out.WriteLengthString(skill_list);
+			out.WriteLengthString(spell_list);
+			out.WriteString(zones);                // -> CTaskElement::ZoneID[0x40]
+			out.WriteString(description_override); // -> ElementDescriptionOverride[0x80]
+			out.WriteString(zones);                // -> TargetZoneID[0x40]
+			return;
+		}
+
 		out.WriteInt32(static_cast<int32_t>(activity_type));
 		out.WriteInt32(0); // solo/group/raid request type? (no longer in live)
 		out.WriteString(target_name); // target name used in objective type string (max 64)
@@ -147,6 +165,23 @@ struct ActivityInformation {
 		{
 			done_count = (done_count >= goal_count) ? 1 : 0;
 			real_goal_count = 1;
+		}
+
+		// Laurion (LS) does not read the RoF-era objective record. Its reader parses a compact
+		// status record: 4 x int32, int8 flag, null terminated string (max 0x3f copied).
+		// Client reader: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
+		// Provably consumed by the client: int32[0] (matched against the selected activity /
+		// mission id in FUN_1404ee5e0 and the 0x588c handler), int32[2] (compared against a
+		// count), the flag and the string. int32[1] and int32[3] are stored but never read.
+		if (client_version == EQ::versions::ClientVersion::Laurion)
+		{
+			out.WriteInt32(req_activity_id);                        // record +0  -> activity/mission id
+			out.WriteInt32(static_cast<int32_t>(activity_type));    // record +4  -> inert
+			out.WriteInt32(real_goal_count);                        // record +8  -> compared against a count
+			out.WriteInt32(done_count);                             // record +12 -> inert
+			out.WriteInt8(optional ? 1 : 0);                        // record +16 -> flag
+			out.WriteString(target_name);                           // record +17 -> display name (buffer 0x40)
+			return;
 		}
 
 		out.WriteInt32(static_cast<int32_t>(activity_type));
@@ -246,7 +281,16 @@ struct TaskInformation {
 		}
 
 		out.WriteUInt32(duration);    // task duration (seconds) (0: task_duration_code used, "Unlimited" on live)
-		out.WriteUInt32(static_cast<int>(duration_code)); // 1: Short 2: Medium 3: Long anything else Unlimited (no longer in live)
+
+		// Laurion reader FUN_1404ec5b0 (opcode 0x3e4e) reads the per-task record as:
+		//   int32 TaskID, int32 RewardAdjustment (float), int32 DurationSeconds,
+		//   string TaskTitle (max 0x3f), string RawStartText (max 3999), u8 bHasRewardSet,
+		//   int32 element count, then element records.
+		// duration_code is not part of the LS record - see docs/tasks.md section 9.
+		if (client_version != EQ::versions::ClientVersion::Laurion) {
+			out.WriteUInt32(static_cast<int>(duration_code)); // 1: Short 2: Medium 3: Long anything else Unlimited (no longer in live)
+		}
+
 		out.WriteString(title);       // max 64 with null
 		out.WriteString(description); // max 4000 with null
 

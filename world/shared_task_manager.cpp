@@ -107,6 +107,7 @@ void SharedTaskManager::AttemptSharedTaskCreation(
 
 		e.character_id   = m.character_id;
 		e.is_leader      = (m.is_leader ? 1 : 0);
+		e.mission        = m.mission;
 		e.shared_task_id = new_shared_task.GetDbSharedTask().id;
 
 		shared_task_db_members.emplace_back(e);
@@ -211,7 +212,7 @@ void SharedTaskManager::RemoveMember(SharedTask* s, const SharedTaskMember& memb
 	RemovePlayerFromSharedTask(s, member.character_id);
 	SendRemovePlayerFromSharedTaskPacket(member.character_id, s->GetDbSharedTask().task_id, remove_from_db);
 
-	SendSharedTaskMemberRemovedToAllMembers(s, member.character_name);
+	SendSharedTaskMemberRemovedToAllMembers(s, member.character_name, member.mission);
 
 	ClientList::Instance()->SendCharacterMessageID(member.character_id, Chat::Yellow,
 		TaskStr::PLAYER_REMOVED, {member.character_name, s->GetTaskData().title});
@@ -408,6 +409,7 @@ void SharedTaskManager::LoadSharedTaskState()
 				SharedTaskMember member = {};
 				member.character_id = m.character_id;
 				member.is_leader    = (m.is_leader ? 1 : 0);
+				member.mission      = m.mission;
 
 				auto it = std::find_if(
 					shared_task_character_data.begin(), shared_task_character_data.end(),
@@ -770,7 +772,8 @@ void SharedTaskManager::SendSharedTaskMemberChange(
 	uint32 character_id,
 	int64 shared_task_id,
 	const std::string &player_name,
-	bool removed
+	bool removed,
+	uint32 mission
 )
 {
 	uint32_t size = sizeof(ServerSharedTaskMemberChangePacket_Struct);
@@ -780,6 +783,7 @@ void SharedTaskManager::SendSharedTaskMemberChange(
 	d->destination_character_id = character_id;
 	d->shared_task_id           = shared_task_id;
 	d->removed                  = removed;
+	d->mission                  = mission;
 	strn0cpy(d->player_name, player_name.c_str(), sizeof(d->player_name));
 
 	ClientListEntry *cle = ClientList::Instance()->FindCLEByCharacterID(character_id);
@@ -884,17 +888,17 @@ void SharedTaskManager::SendSharedTaskMemberListToAllMembers(SharedTask *s)
 	}
 }
 
-void SharedTaskManager::SendSharedTaskMemberAddedToAllMembers(SharedTask *s, const std::string &player_name)
+void SharedTaskManager::SendSharedTaskMemberAddedToAllMembers(SharedTask *s, const std::string &player_name, uint32 mission)
 {
 	for (const auto &m : s->GetMembers()) {
-		SendSharedTaskMemberChange(m.character_id, s->GetDbSharedTask().id, player_name, false);
+		SendSharedTaskMemberChange(m.character_id, s->GetDbSharedTask().id, player_name, false, mission);
 	}
 }
 
-void SharedTaskManager::SendSharedTaskMemberRemovedToAllMembers(SharedTask *s, const std::string &player_name)
+void SharedTaskManager::SendSharedTaskMemberRemovedToAllMembers(SharedTask *s, const std::string &player_name, uint32 mission)
 {
 	for (const auto &m : s->GetMembers()) {
-		SendSharedTaskMemberChange(m.character_id, s->GetDbSharedTask().id, player_name, true);
+		SendSharedTaskMemberChange(m.character_id, s->GetDbSharedTask().id, player_name, true, mission);
 	}
 }
 
@@ -1026,6 +1030,10 @@ void SharedTaskManager::AddPlayerByCharacterIdAndName(
 	new_member.character_id   = character_id;
 	new_member.character_name = character_name;
 
+	// mission defaults to the character's class (see common/shared_tasks.cpp GetRequestCharacters)
+	auto cd = CharacterDataRepository::FindOne(*m_database, static_cast<int>(character_id));
+	new_member.mission = cd.class_;
+
 	bool does_member_exist = false;
 
 	for (auto &m: s->GetMembers()) {
@@ -1057,7 +1065,7 @@ void SharedTaskManager::AddPlayerByCharacterIdAndName(
 		SendAcceptNewSharedTaskPacket(character_id, s->GetTaskData().id, 0, s->GetDbSharedTask().accepted_time);
 
 		// add to shared task
-		SendSharedTaskMemberAddedToAllMembers(s, character_name);
+		SendSharedTaskMemberAddedToAllMembers(s, character_name, new_member.mission);
 		s->SetMembers(members);
 		SaveMembers(s, members);
 		SendSharedTaskMemberList(character_id, s->GetMembers()); // new member gets full member list

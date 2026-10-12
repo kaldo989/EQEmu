@@ -82,7 +82,8 @@ public:
 		uint32 character_id,
 		int64 shared_task_id,
 		const std::string &player_name,
-		bool removed
+		bool removed,
+		uint32 mission
 	);
 	void RemovePlayerFromSharedTask(SharedTask *s, uint32 character_id);
 	void PrintSharedTaskState();
@@ -152,8 +153,8 @@ protected:
 	void HandleCompletedTask(SharedTask* s);
 	void LoadDynamicZoneTemplate(SharedTask* s);
 	void SendSharedTaskMemberListToAllMembers(SharedTask *s);
-	void SendSharedTaskMemberAddedToAllMembers(SharedTask *s, const std::string &player_name);
-	void SendSharedTaskMemberRemovedToAllMembers(SharedTask *s, const std::string &player_name);
+	void SendSharedTaskMemberAddedToAllMembers(SharedTask *s, const std::string &player_name, uint32 mission);
+	void SendSharedTaskMemberRemovedToAllMembers(SharedTask *s, const std::string &player_name, uint32 mission);
 	void SaveMembers(SharedTask *s, std::vector<SharedTaskMember> members);
 	void SendSharedTaskInvitePacket(SharedTask *s, int64 invited_character_id);
 	void RecordSharedTaskCompletion(SharedTask *s);

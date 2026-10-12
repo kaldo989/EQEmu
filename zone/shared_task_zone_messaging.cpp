@@ -113,7 +113,7 @@ void SharedTaskZoneMessaging::HandleWorldMessage(ServerPacket *pack)
 
 				for (auto &m : members) {
 					buf.WriteString(m.character_name);
-					buf.WriteInt32(0); // monster mission
+					buf.WriteInt32(m.mission); // monster mission template id
 					buf.WriteInt8(m.is_leader ? 1 : 0);
 				}
 
@@ -143,6 +143,23 @@ void SharedTaskZoneMessaging::HandleWorldMessage(ServerPacket *pack)
 
 				auto outapp = std::make_unique<EQApplicationPacket>(OP_SharedTaskMemberChange, std::move(buf));
 				c->QueuePacket(outapp.get());
+
+				// Laurion splits this into two packets. The join/leave packet (0x1520) carries no mission
+				// id, so SharedTaskClientPlayerInfo::TemplateID stays 0 until the role packet (0x57f)
+				// arrives. The name is a fixed 64-byte block here, not a null terminated string.
+				// Client reader: FUN_140175340 case 0x57f, docs/tasks.md section 11.
+				if (!p->removed && c->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+					SerializeBuffer role_buf;
+					role_buf.WriteInt32(0);
+					role_buf.WriteInt32(0);
+					for (int i = 0; i < 64; i++) {
+						role_buf.WriteUInt8(static_cast<uint8_t>(p->player_name[i]));
+					}
+					role_buf.WriteInt32(p->mission); // mission template id
+
+					auto role_app = std::make_unique<EQApplicationPacket>(OP_SharedTaskMemberRole, std::move(role_buf));
+					c->QueuePacket(role_app.get());
+				}
 			}
 
 			break;

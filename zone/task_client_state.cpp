@@ -88,6 +88,51 @@ void ClientTaskState::SendTaskHistory(Client *client, int task_index)
 		return;
 	}
 
+	// Laurion reads the reply as a stream, not as TaskHistoryReplyData2_Struct.
+	// Header: int32 index, int32 count. Record: int32 type, string target_name, lenstr item_list,
+	// int32 goal_count, lenstr skill_list, lenstr spell_list, string task_title, string zone_id,
+	// int32 dz_switch_id, string description_override, string target_zone_id.
+	// Client reader: FUN_1401769e0 (opcode 0x719a) - see docs/tasks.md section 9.
+	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		// CTaskElement has a hard cap of 20 elements per task (MAXACTIVITIESPERTASK)
+		int laurion_count = 0;
+		for (int i = 0; i < task_data->activity_count && laurion_count < MAXACTIVITIESPERTASK; i++) {
+			if (m_completed_tasks[adjusted_task_index].activity_done[i]) {
+				laurion_count++;
+			}
+		}
+
+		SerializeBuffer buf;
+		buf.WriteInt32(task_index);
+		buf.WriteInt32(laurion_count);
+
+		int sent = 0;
+		for (int i = 0; i < task_data->activity_count && sent < laurion_count; i++) {
+			if (!m_completed_tasks[adjusted_task_index].activity_done[i]) {
+				continue;
+			}
+
+			const auto& activity = task_data->activity_information[i];
+
+			buf.WriteInt32(static_cast<int32_t>(activity.activity_type));   // CTaskElement::Type
+			buf.WriteString(activity.target_name);                          // TargetName[0x40]
+			buf.WriteLengthString(activity.item_list);                      // ItemNameList
+			buf.WriteInt32(activity.goal_count);                            // RequiredCount
+			buf.WriteLengthString(activity.skill_list);                     // SkillIDList
+			buf.WriteLengthString(activity.spell_list);                     // SpellIDList
+			buf.WriteString(task_data->title);                              // TaskTitle
+			buf.WriteString(activity.zones);                                // ZoneID[0x40]
+			buf.WriteInt32(activity.dz_switch_id);                          // DZSwitchID
+			buf.WriteString(activity.description_override);                 // ElementDescriptionOverride[0x80]
+			buf.WriteString(activity.zones);                                // TargetZoneID[0x40]
+			sent++;
+		}
+
+		auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskHistoryReply, std::move(buf));
+		client->QueuePacket(outapp.get());
+		return;
+	}
+
 	TaskHistoryReplyHeader_Struct *task_history_reply;
 	TaskHistoryReplyData1_Struct  *task_history_reply_data_1;
 	TaskHistoryReplyData2_Struct  *task_history_reply_data_2;

@@ -118,6 +118,10 @@ SharedTaskRequest SharedTask::GetRequestCharacters(Database &db, uint32_t reques
 		SharedTaskMember member = {};
 		member.character_id   = character.id;
 		member.character_name = character.name;
+		// Live stores the monster mission template per member (SharedTaskClientPlayerInfo::TemplateID).
+		// EQEmu has no mission picker yet, so the member's class is used as the default - this is what
+		// SharedTaskMemberList_Struct::monster_mission was always commented as ("class chosen").
+		member.mission         = character.class_;
 		if (character.id == requested_character_id)
 		{
 			member.is_leader = true;

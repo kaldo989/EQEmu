@@ -4576,6 +4576,17 @@ struct SharedTaskInviteResponse_Struct {
 	int8_t  padding[3]; // padding garbage probably
 };
 
+// Laurion splits the shared task member change into two packets: 0x1520 (join/leave) and 0x57f (role).
+// The name here is a fixed 64-byte block, not a null terminated string, and the trailing dword is the
+// member's monster mission template id.
+// Client reader: FUN_140175340 case 0x57f - docs/tasks.md section 11.
+struct SharedTaskMemberRole_Struct {
+	int32_t unknown00;
+	int32_t unknown04;
+	char    player_name[64];
+	int32_t mission_template_id; // -> SharedTaskClientPlayerInfo::TemplateID
+};
+
 struct SharedTaskAccept_Struct {
 	int32_t  unknown00;
 	int32_t  unknown04;

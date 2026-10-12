@@ -7242,6 +7242,18 @@ CREATE TABLE `character_loot_settings` (
 )",
 		.content_schema_update = false
 	},
+	ManifestEntry{
+		.version = 9331,
+		.description = "2026_10_07_shared_task_members_mission.sql",
+		.check = "SHOW COLUMNS FROM `shared_task_members` LIKE 'mission'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+ALTER TABLE `shared_task_members`
+	ADD COLUMN `mission` INT UNSIGNED NOT NULL DEFAULT '0' AFTER `is_leader`;
+)",
+		.content_schema_update = false
+	},
 
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{

@@ -943,6 +943,31 @@ void TaskManager::SendCompletedTasksToClient(Client *c, ClientTaskState *cts)
 		packet_length = packet_length + 8 + task_data->title.size() + 1;
 	}
 
+	// Laurion reads TimeCompleted as eqtime_t (8 bytes) into CTaskEntry + 0x3d20, so each record is
+	// strlen + 13 bytes, not strlen + 9. Client reader: FUN_140175340 case 0x3614 - docs/tasks.md §9.
+	if (c->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		int laurion_len = 4;
+		for (int i = first_task_to_send; i < last_task_to_send; i++) {
+			const auto task_data = GetTaskData(cts->m_completed_tasks[i].task_id);
+			if (!task_data) { continue; }
+			laurion_len += 4 + static_cast<int>(task_data->title.size()) + 1 + 8;
+		}
+
+		SerializeBuffer buf(laurion_len);
+		buf.WriteInt32(last_task_to_send - first_task_to_send);
+		for (int i = first_task_to_send; i < last_task_to_send; i++) {
+			const auto task_data = GetTaskData(cts->m_completed_tasks[i].task_id);
+			if (!task_data) { continue; }
+			buf.WriteInt32(cts->m_completed_tasks[i].task_id);
+			buf.WriteString(task_data->title);
+			buf.WriteInt64(static_cast<int64_t>(cts->m_completed_tasks[i].completed_time));
+		}
+
+		auto laurion_outapp = std::make_unique<EQApplicationPacket>(OP_CompletedTasks, std::move(buf));
+		c->QueuePacket(laurion_outapp.get());
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_CompletedTasks, packet_length);
 	char *buf   = (char *) outapp->pBuffer;
 
@@ -975,9 +1000,25 @@ void TaskManager::SendTaskActivityShort(Client *client, int task_id, int activit
 	// in the client.
 	const auto task_data = GetTaskData(task_id);
 
+	// Laurion header: 4 x int32, int8 flag, int32 record count (21 bytes), then the records.
+	// Client reader: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
+	// The RoF-era list_group dword and the 0xffffffff filler are not present in the LS header.
+	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SerializeBuffer buf(21);
+		buf.WriteInt32(client_task_index);
+		buf.WriteInt32(static_cast<int32_t>(task_data->type));
+		buf.WriteInt32(task_id);
+		buf.WriteInt32(activity_id);
+		buf.WriteInt8(0);                              // header flag -> CTaskEntry completion flag
+		buf.WriteInt32(0);                             // no records: activity is not unlocked yet
+		auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskActivity, std::move(buf));
+		client->QueuePacket(outapp.get());
+		return;
+	}
+
 	auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskActivity, 25);
 	outapp->WriteUInt32(client_task_index);
-	outapp->WriteUInt32(static_cast<uint32>(task_data->type));
+	outapp->WriteUInt32(static_cast<uint32_t>(task_data->type));
 	outapp->WriteUInt32(task_id);
 	outapp->WriteUInt32(activity_id);
 	outapp->WriteUInt32(task_data->activity_information[activity_id].list_group);
@@ -998,14 +1039,30 @@ void TaskManager::SendTaskActivityLong(
 
 	SerializeBuffer buf(100);
 
+	const auto& activity = task_data->activity_information[activity_id];
+	int done_count = client->GetTaskActivityDoneCount(task_data->type, client_task_index, activity_id);
+
+	// Laurion header: 4 x int32, int8 flag, int32 record count (21 bytes), then the records.
+	// Client reader: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
+	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		buf.WriteInt32(client_task_index);                       // TaskSequenceNumber
+		buf.WriteInt32(static_cast<int32_t>(task_data->type));   // task type
+		buf.WriteInt32(task_id);
+		buf.WriteInt32(activity_id);
+		buf.WriteInt8(task_complete ? 1 : 0);                    // header flag -> CTaskEntry completion flag
+		buf.WriteInt32(1);                                       // one record follows
+		activity.SerializeObjective(buf, client->ClientVersion(), done_count);
+
+		auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskActivity, std::move(buf));
+		client->QueuePacket(outapp.get());
+		return;
+	}
+
 	buf.WriteUInt32(client_task_index);    // TaskSequenceNumber
 	buf.WriteUInt32(static_cast<uint32>(task_data->type)); // task type
 	buf.WriteUInt32(task_id);
 	buf.WriteUInt32(activity_id);
 	buf.WriteUInt32(task_data->activity_information[activity_id].list_group);
-
-	const auto& activity = task_data->activity_information[activity_id];
-	int done_count = client->GetTaskActivityDoneCount(task_data->type, client_task_index, activity_id);
 
 	activity.SerializeObjective(buf, client->ClientVersion(), done_count);
 

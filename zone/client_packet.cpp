@@ -17678,10 +17678,19 @@ void Client::Handle_OP_SharedTaskInviteResponse(const EQApplicationPacket *app)
 	}
 
 	auto *r = (SharedTaskInviteResponse_Struct *) app->pBuffer;
+
+	// Laurion layout is { u32 invite_id at +0, stale u32 at +4, u32 accepted at +8 } - the invite id
+	// is the first dword, not the second. Client send function: FUN_140174c10 (gated on dialog 0x3fcb).
+	// docs/tasks.md §9.
+	uint32_t invite_id = r->invite_id;
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		invite_id = r->unknown00;
+	}
+
 	LogTasks(
 		"unknown00 [{}] invite_id [{}] accepted [{}]",
 		r->unknown00,
-		r->invite_id,
+		invite_id,
 		r->accepted
 	);
 
@@ -17695,7 +17704,7 @@ void Client::Handle_OP_SharedTaskInviteResponse(const EQApplicationPacket *app)
 
 	// fill
 	c->source_character_id = CharacterID();
-	c->shared_task_id      = r->invite_id;
+	c->shared_task_id      = invite_id;
 	c->accepted            = r->accepted;
 	strn0cpy(c->player_name, GetName(), sizeof(c->player_name));
 

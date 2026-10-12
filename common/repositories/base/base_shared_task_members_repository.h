@@ -39,6 +39,7 @@ public:
 		int64_t shared_task_id;
 		int64_t character_id;
 		int8_t  is_leader;
+		uint32_t mission;
 	};
 
 	static std::string PrimaryKey()
@@ -52,6 +53,7 @@ public:
 			"shared_task_id",
 			"character_id",
 			"is_leader",
+			"mission",
 		};
 	}
 
@@ -61,6 +63,7 @@ public:
 			"shared_task_id",
 			"character_id",
 			"is_leader",
+			"mission",
 		};
 	}
 
@@ -104,6 +107,7 @@ public:
 		e.shared_task_id = 0;
 		e.character_id   = 0;
 		e.is_leader      = 0;
+		e.mission        = 0;
 
 		return e;
 	}
@@ -143,6 +147,7 @@ public:
 			e.shared_task_id = row[0] ? strtoll(row[0], nullptr, 10) : 0;
 			e.character_id   = row[1] ? strtoll(row[1], nullptr, 10) : 0;
 			e.is_leader      = row[2] ? static_cast<int8_t>(atoi(row[2])) : 0;
+			e.mission        = row[3] ? static_cast<uint32_t>(atoi(row[3])) : 0;
 
 			return e;
 		}
@@ -179,6 +184,7 @@ public:
 		v.push_back(columns[0] + " = " + std::to_string(e.shared_task_id));
 		v.push_back(columns[1] + " = " + std::to_string(e.character_id));
 		v.push_back(columns[2] + " = " + std::to_string(e.is_leader));
+		v.push_back(columns[3] + " = " + std::to_string(e.mission));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -203,6 +209,7 @@ public:
 		v.push_back(std::to_string(e.shared_task_id));
 		v.push_back(std::to_string(e.character_id));
 		v.push_back(std::to_string(e.is_leader));
+		v.push_back(std::to_string(e.mission));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -235,6 +242,7 @@ public:
 			v.push_back(std::to_string(e.shared_task_id));
 			v.push_back(std::to_string(e.character_id));
 			v.push_back(std::to_string(e.is_leader));
+			v.push_back(std::to_string(e.mission));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}
@@ -271,6 +279,7 @@ public:
 			e.shared_task_id = row[0] ? strtoll(row[0], nullptr, 10) : 0;
 			e.character_id   = row[1] ? strtoll(row[1], nullptr, 10) : 0;
 			e.is_leader      = row[2] ? static_cast<int8_t>(atoi(row[2])) : 0;
+			e.mission        = row[3] ? static_cast<uint32_t>(atoi(row[3])) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -298,6 +307,7 @@ public:
 			e.shared_task_id = row[0] ? strtoll(row[0], nullptr, 10) : 0;
 			e.character_id   = row[1] ? strtoll(row[1], nullptr, 10) : 0;
 			e.is_leader      = row[2] ? static_cast<int8_t>(atoi(row[2])) : 0;
+			e.mission        = row[3] ? static_cast<uint32_t>(atoi(row[3])) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -375,6 +385,7 @@ public:
 		v.push_back(std::to_string(e.shared_task_id));
 		v.push_back(std::to_string(e.character_id));
 		v.push_back(std::to_string(e.is_leader));
+		v.push_back(std::to_string(e.mission));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -400,6 +411,7 @@ public:
 			v.push_back(std::to_string(e.shared_task_id));
 			v.push_back(std::to_string(e.character_id));
 			v.push_back(std::to_string(e.is_leader));
+			v.push_back(std::to_string(e.mission));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}

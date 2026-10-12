@@ -89,11 +89,12 @@ struct SharedTaskMember {
 	uint32      character_id = 0;
 	std::string character_name;
 	bool        is_leader    = false;
+	uint32      mission      = 0; // monster mission template id (LS SharedTaskClientPlayerInfo::TemplateID)
 
 	template<class Archive>
 	void serialize(Archive& archive)
 	{
-		archive(character_id, character_name, is_leader);
+		archive(character_id, character_name, is_leader, mission);
 	}
 };
 
@@ -120,6 +121,7 @@ struct ServerSharedTaskMemberChangePacket_Struct {
 	uint32 shared_task_id;
 	bool   removed;
 	char   player_name[64];
+	uint32 mission; // monster mission template id, needed by the Laurion role packet (0x57f)
 };
 
 struct SharedTaskActivityStateEntry {
