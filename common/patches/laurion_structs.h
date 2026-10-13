@@ -1958,6 +1958,48 @@ namespace Laurion {
 			/*168*/
 		};
 
+		// OP_ReadBook (0x51af). CInvSlot__HandleRButtonUp @ 0x1403e9210 builds the request on the
+		// stack and sends 0x2018 payload bytes. The client's reader (FUN_1403731e0 / FUN_14046b990)
+		// parses the reply in the same shape, so both directions share this layout.
+		static const uint32 BOOK_TEXT_SIZE = 8195;
+
+		struct BookRequest_Struct {
+			/*000*/	uint32	window;			// 0xFFFFFFFF = new window
+			/*004*/	uint32	book_type;		// ItemDefinition::BookType (0 note, 1 book, 2 item info)
+			/*008*/	uint32	target_id;
+			/*012*/	int16	top_slot;		// ItemGlobalIndex
+			/*014*/	int16	sub_slot;		// ItemGlobalIndex
+			/*016*/	uint16	aug_index;		// ItemGlobalIndex
+			/*018*/	uint8	unknown018;		// zero on the request
+			/*019*/	uint8	can_scribe;		// enables the book window Scribe button
+			/*020*/	uint8	can_cast;		// enables the book window Cast Spell button
+			/*021*/	char	text[BOOK_TEXT_SIZE];	// book name (request) / book text (reply)
+			/*8216*/
+		};
+
+		// OP_BookButton (0x14d). BookWindow button handler @ 0x14046bbf0 sends 0x12 bytes total:
+		// +0 book window +0x710 (top slot + sub slot), +4 book window +0x714 (aug index),
+		// +8 target id, +12 padding.
+		struct BookButton_Struct {
+			/*000*/	int16	top_slot;
+			/*002*/	int16	sub_slot;
+			/*004*/	uint16	aug_index;
+			/*006*/	uint16	unknown006;
+			/*008*/	uint32	target_id;
+			/*012*/	uint32	unknown012;
+			/*016*/
+		};
+
+		// OP_ItemVerifyRequest (0x2003). CInvSlot__HandleRButtonUp @ 0x1403e9210 sends the whole
+		// InventorySlot_Struct (12 bytes) followed by the target entity id, so the payload is 16 bytes
+		// where EQEmu's canonical ItemVerifyRequest_Struct is only 8 (int32 slot + uint32 target).
+		// Without a Laurion decode the handler rejects the packet on size and the right-click does nothing.
+		struct ItemVerifyRequest_Struct {
+			/*000*/	InventorySlot_Struct	inventory_slot;
+			/*012*/	uint32	target;		// Target Entity ID
+			/*016*/
+		};
+
 #pragma pack()
 
 	};	//end namespace structs

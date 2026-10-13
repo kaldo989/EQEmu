@@ -2957,7 +2957,13 @@ bool IsHateSpell(uint16 spell_id) {
 
 bool IsDisciplineTome(const EQ::ItemData* item)
 {
-	if (!item->IsClassCommon() || item->ItemType != EQ::item::ItemTypeSpell) {
+	// The client only takes the book path (and sends OP_ReadBook) for items whose class is Book,
+	// so discipline tomes have to be accepted as books as well as common items.
+	if (!item->IsClassCommon() && !item->IsClassBook()) {
+		return false;
+	}
+
+	if (item->ItemType != EQ::item::ItemTypeSpell) {
 		return false;
 	}
 

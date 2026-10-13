@@ -2675,8 +2675,16 @@ void Client::SetGM(bool toggle) {
 
 void Client::ReadBook(BookRequest_Struct* book)
 {
-	const std::string& text_file = book->txtfile;
+	ReadBookFromName(book->txtfile, book->window, book->type, book->invslot, book->target_id);
+}
 
+void Client::ReadBookFromName(
+	const std::string& text_file,
+	uint8 window,
+	uint8 type,
+	int16 invslot,
+	uint32 target_id
+) {
 	if (text_file.empty()) {
 		return;
 	}
@@ -2685,18 +2693,18 @@ void Client::ReadBook(BookRequest_Struct* book)
 
 	if (!b.text.empty()) {
 		auto outapp = new EQApplicationPacket(OP_ReadBook, b.text.size() + sizeof(BookText_Struct));
-		auto inst = const_cast<EQ::ItemInstance*>(m_inv[book->invslot]);
+		auto inst = const_cast<EQ::ItemInstance*>(m_inv[invslot]);
 
 		auto t = (BookText_Struct*) outapp->pBuffer;
 
-		t->window     = book->window;
-		t->type       = book->type;
-		t->invslot    = book->invslot;
-		t->target_id  = book->target_id;
+		t->window     = window;
+		t->type       = type;
+		t->invslot    = invslot;
+		t->target_id  = target_id;
 		t->can_cast   = 0; // todo: implement
 		t->can_scribe = false;
 
-		if (ClientVersion() >= EQ::versions::ClientVersion::SoF && book->invslot <= EQ::invbag::GENERAL_BAGS_END) {
+		if (ClientVersion() >= EQ::versions::ClientVersion::SoF && invslot <= EQ::invbag::GENERAL_BAGS_END) {
 			if (inst && inst->GetItem()) {
 				auto recipe = TradeskillRecipeRepository::GetWhere(
 					content_db,
@@ -2708,6 +2716,13 @@ void Client::ReadBook(BookRequest_Struct* book)
 
 				t->type       = inst->GetItem()->Book;
 				t->can_scribe = !recipe.empty();
+
+				// A discipline tome is not a tradeskill recipe, so the recipe lookup above never enables
+				// the button. Book-class tomes reach this path (class 0 tomes are learned straight from the
+				// right-click in Handle_OP_ItemVerifyRequest), so grant the flag here for them.
+				if (IsDisciplineTome(inst->GetItem())) {
+					t->can_scribe = true;
+				}
 			}
 		}
 
@@ -2731,7 +2746,7 @@ void Client::ReadBook(BookRequest_Struct* book)
 				inst
 			};
 
-			parse->EventPlayer(EVENT_READ_ITEM, this, book->txtfile, inst ? inst->GetID() : 0, &args);
+			parse->EventPlayer(EVENT_READ_ITEM, this, text_file, inst ? inst->GetID() : 0, &args);
 		}
 
 		QueuePacket(outapp);

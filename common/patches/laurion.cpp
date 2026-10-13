@@ -2537,6 +2537,41 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_ReadBook)
+	{
+		ENCODE_LENGTH_ATLEAST(BookText_Struct);
+		SETUP_VAR_ENCODE(BookText_Struct);
+
+		// The client parses the reply with the same reader it used for the request (FUN_1403731e0 /
+		// FUN_14046b990): window, book type, target, ItemGlobalIndex, then the two button flags at
+		// +19/+20 and the text at +21. EQEmu's canonical struct has single-byte window/type and a
+		// trailing variable text, so the wire has to be rebuilt field by field.
+		uint32 text_len = __packet->size - (sizeof(BookText_Struct) - 1);
+		if (text_len > structs::BOOK_TEXT_SIZE) {
+			text_len = structs::BOOK_TEXT_SIZE;
+		}
+
+		ALLOC_VAR_ENCODE(structs::BookRequest_Struct, 21 + text_len);
+
+		eq->window = emu->window;
+		eq->book_type = emu->type;
+		eq->target_id = emu->target_id;
+
+		// Rebuild the split ItemGlobalIndex from the canonical slot so the client can match the reply
+		// to the book window it opened.
+		structs::TypelessInventorySlot_Struct laurion_slot = ServerToLaurionTypelessSlot(emu->invslot, EQ::invtype::typePossessions);
+		eq->top_slot = laurion_slot.Slot;
+		eq->sub_slot = laurion_slot.SubIndex;
+		eq->aug_index = static_cast<uint16>(laurion_slot.AugIndex);
+
+		eq->unknown018 = 0;
+		eq->can_scribe = emu->can_scribe;
+		eq->can_cast = emu->can_cast;
+		memcpy(eq->text, emu->booktext, text_len);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_SendAATable)
 	{
 		EQApplicationPacket* in = *p;
@@ -4288,6 +4323,64 @@ namespace Laurion
 		IN(slot);
 		IN(spell_id);
 		IN(reduction);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_ItemVerifyRequest)
+	{
+		DECODE_LENGTH_EXACT(structs::ItemVerifyRequest_Struct);
+		SETUP_DIRECT_DECODE(ItemVerifyRequest_Struct, structs::ItemVerifyRequest_Struct);
+
+		// Laurion sends the whole InventorySlot_Struct (12 bytes) where EQEmu's canonical struct has a
+		// single int32 slot id. Collapse it back into EQEmu's RoF2-based slot space.
+		emu->slot = static_cast<int32>(LaurionToServerSlot(eq->inventory_slot));
+
+		IN(target);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_BookButton)
+	{
+		DECODE_LENGTH_EXACT(structs::BookButton_Struct);
+		SETUP_DIRECT_DECODE(BookButton_Struct, structs::BookButton_Struct);
+
+		// BookWindow sends the full ItemGlobalIndex (top slot, sub slot, aug index) where EQEmu's
+		// canonical struct has a single int16.
+		structs::TypelessInventorySlot_Struct laurion_slot{};
+		laurion_slot.Slot = eq->top_slot;
+		laurion_slot.SubIndex = eq->sub_slot;
+		laurion_slot.AugIndex = static_cast<int16>(eq->aug_index);
+		laurion_slot.Padding = 0;
+		emu->invslot = LaurionToServerTypelessSlot(laurion_slot, EQ::invtype::typePossessions);
+		emu->target_id = eq->target_id;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_ReadBook)
+	{
+		DECODE_LENGTH_EXACT(structs::BookRequest_Struct);
+		SETUP_DIRECT_DECODE(BookRequest_Struct, structs::BookRequest_Struct);
+
+		// EQEmu's canonical struct is 28 bytes (single-byte window and type, book name capped at 20),
+		// so map the wide Laurion fields back into it.
+		emu->window = static_cast<uint8>(eq->window);
+		emu->type = static_cast<uint8>(eq->book_type);
+		emu->target_id = eq->target_id;
+
+		structs::TypelessInventorySlot_Struct laurion_slot{};
+		laurion_slot.Slot = eq->top_slot;
+		laurion_slot.SubIndex = eq->sub_slot;
+		laurion_slot.AugIndex = static_cast<int16>(eq->aug_index);
+		laurion_slot.Padding = 0;
+		emu->invslot = LaurionToServerTypelessSlot(laurion_slot, EQ::invtype::typePossessions);
+
+		// +19/+20 are the book window's Scribe and Cast Spell button flags. EQEmu's canonical
+		// BookRequest_Struct has no room for them, so they are only carried on the reply
+		// (BookText_Struct) that Client::ReadBook() builds.
+		strn0cpy(emu->txtfile, eq->text, sizeof(emu->txtfile));
 
 		FINISH_DIRECT_DECODE();
 	}

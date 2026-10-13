@@ -939,6 +939,9 @@ public:
 	void Stun(int duration, uint8 flag = 0);
 	void UnStun();
 	void ReadBook(BookRequest_Struct *book);
+	// Laurion sends a fixed 8216 byte book request whose text field is the book name; the legacy
+	// BookRequest_Struct only has a 20 byte txtfile buffer, so the name is passed separately.
+	void ReadBookFromName(const std::string& book_name, uint8 window, uint8 type, int16 invslot, uint32 target_id);
 	void ReadBookByName(std::string book_name, uint8 book_type);
 	void QuestReadBook(const char* text, uint8 type);
 	void SendMoneyUpdate();

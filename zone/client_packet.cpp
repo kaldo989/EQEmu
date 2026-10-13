@@ -4247,6 +4247,8 @@ void Client::Handle_OP_BoardBoat(const EQApplicationPacket *app)
 
 void Client::Handle_OP_BookButton(const EQApplicationPacket* app)
 {
+	// The Laurion decode (common/patches/laurion.cpp DECODE(OP_BookButton)) runs before this handler,
+	// so the packet is already normalized to the canonical struct regardless of client version.
 	if (app->size != sizeof(BookButton_Struct))
 	{
 		LogError("Size mismatch in OP_BookButton. expected [{}] got [{}]", sizeof(BookButton_Struct), app->size);
@@ -4259,9 +4261,41 @@ void Client::Handle_OP_BookButton(const EQApplicationPacket* app)
 	const EQ::ItemInstance* const inst = GetInv().GetItem(book->invslot);
 	if (inst && inst->GetItem())
 	{
+		const EQ::ItemData* item = inst->GetItem();
+
 		// todo: cast spell button (unknown if anything on live uses this)
-		ScribeRecipes(inst->GetItem()->ID);
-		DeleteItemInInventory(book->invslot, 1, true);
+		if (IsDisciplineTome(item))
+		{
+			// Discipline tomes are books, so they never reach the scroll path that scribes spells.
+			// The learn button on the book window is what grants the discipline.
+			const uint32 spell_id = item->Scroll.Effect;
+
+			if (!IsValidSpell(spell_id))
+			{
+				Message(Chat::Red, "This tome contains invalid knowledge.");
+				return;
+			}
+
+			if (HasDisciplineLearned(static_cast<uint16>(spell_id)))
+			{
+				Message(Chat::Red, "You already know this discipline.");
+				return;
+			}
+
+			if (GetNextAvailableDisciplineSlot() == -1)
+			{
+				Message(Chat::Red, "Your discipline slots are full.");
+				return;
+			}
+
+			TrainDiscBySpellID(static_cast<int32>(spell_id));
+			DeleteItemInInventory(book->invslot, 1, true);
+		}
+		else
+		{
+			ScribeRecipes(item->ID);
+			DeleteItemInInventory(book->invslot, 1, true);
+		}
 	}
 
 	EQApplicationPacket outapp(OP_FinishWindow, 0);
@@ -13945,6 +13979,8 @@ void Client::Handle_OP_RandomReq(const EQApplicationPacket *app)
 
 void Client::Handle_OP_ReadBook(const EQApplicationPacket *app)
 {
+	// DECODE(OP_ReadBook) in common/patches/laurion.cpp normalizes the 8216-byte Laurion request into
+	// this canonical struct before the handler runs, so no client-version branch is needed here.
 	if (app->size != sizeof(BookRequest_Struct)) {
 		LogError("Wrong size: OP_ReadBook, size=[{}], expected [{}]", app->size, sizeof(BookRequest_Struct));
 		return;
