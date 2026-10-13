@@ -994,6 +994,56 @@ void TaskManager::SendCompletedTasksToClient(Client *c, ClientTaskState *cts)
 	safe_delete(outapp);
 }
 
+// Laurion record for a quest/task activity row: FUN_1401773a0 (opcode 0x7e7a), the only activity
+// reader that resolves a task or quest entry. FUN_140175bf0 (0x3677) searches SharedTaskEntries
+// only, so it can never fill a quest/task row. See docs/tasks.md section 15.
+static void WriteLaurionElementRecord(
+	SerializeBuffer& out,
+	int client_task_index,
+	int task_type,
+	int task_id,
+	int activity_id,
+	const ActivityInformation& activity,
+	const std::string& record_title,
+	int done_count,
+	bool hidden
+)
+{
+	out.WriteInt32(client_task_index);                                        // wire 0  -> slot index
+	out.WriteInt32(task_type);                                                // wire 4  -> task type (0 Task / 1 Shared / 2 Quest)
+	// wire 8 is the task id. FUN_1401773a0 advances the read cursor past this dword without
+	// reading it, so it must be present or every field below is shifted by 4 bytes.
+	out.WriteInt32(task_id);                                                  // wire 8  -> task id (skipped by the client)
+	out.WriteInt32(activity_id);                                              // wire 12 -> CTaskElement slot index
+	out.WriteInt32(activity.list_group);                                      // wire 16 -> ElementGroup (+0xCC)
+	out.WriteInt32(hidden ? -1 : static_cast<int32_t>(activity.activity_type)); // wire 20 -> CTaskElement::Type (+0x00); 0 clears the record
+	out.WriteUInt8(activity.optional ? 1 : 0);                                // wire 24 -> bOptional (+0xC8)
+
+	// Type == 0 clears the record and Type == -1 renders "???" - in both cases the reader stops
+	// after the flag, so nothing further is consumed for a hidden activity.
+	if (hidden) {
+		return;
+	}
+
+	out.WriteString(activity.target_name.substr(0, 0x3f));                    // -> TargetName[0x40]
+	out.WriteLengthString(activity.item_list);                                 // -> ItemNameList
+	out.WriteInt32(activity.goal_count);                                       // -> RequiredCount
+	out.WriteLengthString(activity.skill_list);                                // -> SkillIDList
+	out.WriteLengthString(activity.spell_list);                                // -> SpellIDList
+	// +0x170 is the per-record title. FUN_1404f1d30 appends it once per displayed row into the
+	// TaskWnd description string (TaskWnd + 0x2e8), which FUN_1404f18f0 renders in the STML pane.
+	// Putting the task title here repeats it once per activity, so the record carries the
+	// objective's own line instead. EQEmu's RoF SerializeObjective() has no title field at all -
+	// this slot only exists in the 0x7e7a / 0x719a record shapes.
+	out.WriteLengthString(record_title);                                        // -> CTaskElement + 0x170
+	out.WriteString(activity.zones.substr(0, 0x3f));                           // -> ZoneID[0x40]
+	out.WriteInt32(activity.dz_switch_id);                                     // -> DZSwitchID
+	out.WriteString(activity.description_override.substr(0, 0x7f));            // -> ElementDescriptionOverride[0x80]
+	out.WriteInt32(done_count);                                                // -> PCTaskStatus::CurrentCounts[slot]
+	out.WriteUInt8(1);                                                         // -> PCTaskStatus::ElementActive[slot]
+	out.WriteString(activity.zones.substr(0, 0x3f));                           // -> TargetZoneID[0x40]
+}
+
 void TaskManager::SendTaskActivityShort(Client *client, int task_id, int activity_id, int client_task_index)
 {
 	// This activity_information Packet is sent for activities that have not yet been unlocked and appear as ???
@@ -1001,10 +1051,22 @@ void TaskManager::SendTaskActivityShort(Client *client, int task_id, int activit
 	const auto task_data = GetTaskData(task_id);
 
 	// Laurion header: 4 x int32, int8 flag, int32 record count (21 bytes), then the records.
-	// Client reader: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
-	// The RoF-era list_group dword and the 0xffffffff filler are not present in the LS header.
+	// Client reader: FUN_140175bf0 (opcode 0x3677) - shared tasks only. Quest/task rows go to
+	// FUN_1401773a0 (opcode 0x7e7a) instead. See docs/tasks.md section 15.
 	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
-		SerializeBuffer buf(21);
+		if (task_data->type != TaskType::Shared) {
+			SerializeBuffer buf;
+			const auto& activity = task_data->activity_information[activity_id];
+			WriteLaurionElementRecord(
+				buf, client_task_index, static_cast<int32_t>(task_data->type), task_id, activity_id,
+				activity, activity.description_override, 0, true
+			);
+			auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskActivityUpdate, std::move(buf));
+			client->QueuePacket(outapp.get());
+			return;
+		}
+
+		SerializeBuffer buf(21);                       // shared-task record (FUN_140175bf0)
 		buf.WriteInt32(client_task_index);
 		buf.WriteInt32(static_cast<int32_t>(task_data->type));
 		buf.WriteInt32(task_id);
@@ -1042,9 +1104,19 @@ void TaskManager::SendTaskActivityLong(
 	const auto& activity = task_data->activity_information[activity_id];
 	int done_count = client->GetTaskActivityDoneCount(task_data->type, client_task_index, activity_id);
 
-	// Laurion header: 4 x int32, int8 flag, int32 record count (21 bytes), then the records.
-	// Client reader: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
 	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		if (task_data->type != TaskType::Shared) {
+			// Quest/task row: FUN_1401773a0 (opcode 0x7e7a), single record, no header.
+			WriteLaurionElementRecord(
+				buf, client_task_index, static_cast<int32_t>(task_data->type), task_id, activity_id,
+				activity, activity.description_override, done_count, false
+			);
+			auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskActivityUpdate, std::move(buf));
+			client->QueuePacket(outapp.get());
+			return;
+		}
+
+		// Shared-task record: FUN_140175bf0 (opcode 0x3677) - see docs/tasks.md section 9.
 		buf.WriteInt32(client_task_index);                       // TaskSequenceNumber
 		buf.WriteInt32(static_cast<int32_t>(task_data->type));   // task type
 		buf.WriteInt32(task_id);
@@ -1294,6 +1366,47 @@ void TaskManager::SendActiveTaskDescription(
 	}
 
 	packet_length += reward.length() + 1 + t->item_link.length() + 1;
+
+	// Laurion has no reader for the RoF-era TaskDescription shape. Its active-task packet is opcode
+	// 0x6a00 (FUN_140176e00), which is the only reader that writes CTaskEntry::TaskID - without it the
+	// Task window has no entry to list, so nothing shows in "Current Tasks". See docs/tasks.md section 15.
+	if (client->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SerializeBuffer buf;
+
+		buf.WriteInt32(task_info.slot);                                // CTaskEntry slot index
+		buf.WriteInt32(task_id);                                       // -> CTaskEntry::TaskID
+		buf.WriteUInt8(1);                                             // flag: 0 would clear the 20 element slots
+		buf.WriteInt32(static_cast<int32_t>(t->type));                 // -> CTaskEntry::TaskSystem
+		buf.WriteInt32(is_don_reward ? t->reward_point_type : 0);      // -> CTaskEntry::PointType
+
+		// All four strings in this packet are length-prefixed (int32 len + bytes), not NUL-terminated:
+		// the reader uses FUN_1405646e0, which takes the first 4 bytes as the length and does not bound
+		// it against the remaining packet, so a NUL-terminated string here makes it memcpy a garbage
+		// length and crashes (FUN_14011c720 -> FUN_1406bdb30).
+		buf.WriteLengthString(t->title.substr(0, 0x3f));               // -> TaskTitle[0x40]
+		buf.WriteInt32(duration);                                      // -> DurationSeconds (no duration_code in LS)
+		buf.WriteInt32(start_time);                                    // client: FastTime() - value
+		buf.WriteLengthString(t->description.substr(0, 0xFA0));        // -> RawStartText[0xFA0]
+
+		buf.WriteUInt8(1);                                             // -> bShowReward
+		buf.WriteInt32(t->cash_reward);                                // -> RewardCash
+		buf.WriteUInt8(t->experience_reward ? 1 : 0);                  // -> RewardExp (u8, not u32)
+		buf.WriteInt32(t->faction_amount);                             // -> RewardFactionAmount (read before faction id)
+		buf.WriteInt32(t->faction_reward);                             // -> RewardFactionID
+		buf.WriteLengthString(t->item_link);                           // -> RewardItemTag
+		buf.WriteInt32(t->reward_points);                              // -> RewardPoints
+
+		buf.WriteUInt8(0);                                             // -> bHasRewardSet
+		buf.WriteInt32(t->min_players);                                // -> MinPlayers
+		buf.WriteInt32(t->max_players);                                // -> MaxPlayers
+		buf.WriteInt32(static_cast<int32_t>(t->min_level));            // -> MinLevel
+		buf.WriteInt32(static_cast<int32_t>(t->max_level));            // -> MaxLevel
+		buf.WriteLengthString(reward);                                 // -> UnknownString
+
+		auto outapp = std::make_unique<EQApplicationPacket>(OP_TaskDescription, std::move(buf));
+		client->QueuePacket(outapp.get());
+		return;
+	}
 
 	char                          *Ptr;
 	TaskDescriptionHeader_Struct  *task_description_header;
