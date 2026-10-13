@@ -4877,9 +4877,11 @@ void EntityList::SendIllusionWearChange(Client *c)
 
 void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 {
-	// This is only called for SoF clients, as regular /who is now handled server-side for that client.
+	// Zone-local /who. Every client version sends the request on OP_WhoAllRequest (0x2a09);
+	// only the response layout differs, handled by the Laurion ENCODE patch.
 	uint32 PacketLength = 0;
 	uint32 Entries = 0;
+	uint32 Written = 0;
 	uint8 WhomLength = strlen(Who->whom);
 
 	std::list<Client *> client_sub_list;
@@ -4913,15 +4915,24 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 
 			Entries++;
 			client_sub_list.push_back(ClientEntry);
-
-			PacketLength = PacketLength + strlen(ClientEntry->GetName());
-
-			if (strlen(guild_mgr.GetGuildName(ClientEntry->GuildID())) > 0)
-				PacketLength = PacketLength + strlen(guild_mgr.GetGuildName(ClientEntry->GuildID())) + 2;
 		}
 	}
 
-	PacketLength = PacketLength + sizeof(WhoAllReturnStruct) + (47 * Entries);
+	// World truncates the reply at 20 entries for anyone below GMAdmin and uses the
+	// "more than 20" string instead of the count. The zone path previously sent every match.
+	uint32 PlayersToShow = Entries;
+	if (PlayersToShow > 20 && c->Admin() < AccountStatus::GMAdmin)
+		PlayersToShow = 20;
+
+	uint32 Shown = 0;
+	for (auto lit = client_sub_list.begin(); lit != client_sub_list.end() && Shown < PlayersToShow; ++lit, ++Shown) {
+		Client *ClientEntry = *lit;
+		PacketLength += strlen(ClientEntry->GetName());
+		if (strlen(guild_mgr.GetGuildName(ClientEntry->GuildID())) > 0)
+			PacketLength += strlen(guild_mgr.GetGuildName(ClientEntry->GuildID())) + 2;
+	}
+
+	PacketLength += sizeof(WhoAllReturnStruct) + (47 * PlayersToShow);
 	auto outapp = new EQApplicationPacket(OP_WhoAllResponse, PacketLength);
 	char *Buffer = (char *)outapp->pBuffer;
 	WhoAllReturnStruct *WARS = (WhoAllReturnStruct *)Buffer;
@@ -4933,24 +4944,24 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 
 	switch(Entries) {
 		case 0:
-			WARS->playersinzonestring = 5029;
+			WARS->playersinzonestring = WHOALL_NO_RESULTS;
 			break;
 		case 1:
 			WARS->playersinzonestring = 5028; // 5028 There is %1 player in EverQuest.
 			break;
 		default:
-			WARS->playersinzonestring = 5036; // 5036 There are %1 players in EverQuest.
+			WARS->playersinzonestring = (PlayersToShow < Entries) ? WHOALL_TOO_MANY_RESULTS : 5036; // 5036 There are %1 players in EverQuest.
 	}
 
 	WARS->unknown44[0] = 0;
 	WARS->unknown44[1] = 0;
-	WARS->unknown52 = Entries;
-	WARS->unknown56 = Entries;
-	WARS->playercount = Entries;
+	WARS->unknown52 = PlayersToShow;
+	WARS->unknown56 = 1;
+	WARS->playercount = PlayersToShow;
 	Buffer += sizeof(WhoAllReturnStruct);
 
 	auto sit = client_sub_list.begin();
-	while (sit != client_sub_list.end()) {
+	while (sit != client_sub_list.end() && Written < PlayersToShow) {
 		Client *ClientEntry = *sit;
 		++sit;
 
@@ -4982,25 +4993,35 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 				GuildName += guild_mgr.GetGuildName(ClientEntry->GuildID());
 				GuildName += ">";
 			}
+			// The zone path used to leave every display slot as -1, so the client rendered only
+			// the header. These now mirror world/clientlist.cpp SendWhoAll.
+			bool admin_sees_details = c->Admin() >= ClientEntry->Admin() && c->Admin() > AccountStatus::Player;
+
 			uint32 FormatMSGID = 5025; // 5025 %T1[%2 %3] %4 (%5) %6 %7 %8 %9
 			if (ClientEntry->GetAnon() == 1)
-				FormatMSGID = 5024; // 5024 %T1[ANONYMOUS] %2 %3
+				FormatMSGID = admin_sees_details ? 5022 : 5024; // 5022 shows everything, 5024 %T1[ANONYMOUS] %2 %3
 			else if (ClientEntry->GetAnon() == 2)
-				FormatMSGID = 5023; // 5023 %T1[ANONYMOUS] %2 %3 %4
+				FormatMSGID = admin_sees_details ? 5022 : 5023; // 5023 %T1[ANONYMOUS] %2 %3 %4
 			uint32 PlayerClass = Class::None;
 			uint32 PlayerLevel = 0;
 			uint32 PlayerRace = Race::Doug;
 			uint32 ZoneMSGID = 0xFFFFFFFF;
+			uint32 PlayerZone = 0;
+			uint32 PIDMSGID = 0xFFFFFFFF;
 
-			if (ClientEntry->GetAnon()==0) {
+			if (ClientEntry->GetAnon() == 0 || admin_sees_details) {
 				PlayerClass = ClientEntry->GetClass();
 				PlayerLevel = ClientEntry->GetLevel();
 				PlayerRace = ClientEntry->GetRace();
+				ZoneMSGID = 5006; // 5006 ZONE: %1
+				PlayerZone = zone->GetZoneID();
+				if (c->Admin() >= AccountStatus::GMAdmin)
+					PIDMSGID = 5003; // 5003 (USER PID %1)
 			}
 
 			WhoAllPlayerPart1* WAPP1 = (WhoAllPlayerPart1*)Buffer;
 			WAPP1->FormatMSGID = FormatMSGID;
-			WAPP1->PIDMSGID = 0xFFFFFFFF;
+			WAPP1->PIDMSGID = PIDMSGID;
 			strcpy(WAPP1->Name, ClientEntry->GetName());
 			Buffer += sizeof(WhoAllPlayerPart1) + strlen(WAPP1->Name);
 			WhoAllPlayerPart2* WAPP2 = (WhoAllPlayerPart2*)Buffer;
@@ -5034,7 +5055,7 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 			strcpy(WAPP2->Guild, GuildName.c_str());
 			Buffer += sizeof(WhoAllPlayerPart2) + strlen(WAPP2->Guild);
 			WhoAllPlayerPart3* WAPP3 = (WhoAllPlayerPart3*)Buffer;
-			WAPP3->Unknown80[0] = 0xFFFFFFFF;
+			WAPP3->Unknown80[0] = admin_sees_details ? static_cast<uint32>(ClientEntry->Admin()) : 0xFFFFFFFF;
 
 			if (is_laurion)
 				WAPP3->Unknown80[1] = StatusFlags;
@@ -5044,15 +5065,16 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 				WAPP3->Unknown80[1] = 0xFFFFFFFF;
 
 			WAPP3->ZoneMSGID = ZoneMSGID;
-			WAPP3->Zone = 0;
+			WAPP3->Zone = PlayerZone;
 			WAPP3->Class_ = PlayerClass;
 			WAPP3->Level = PlayerLevel;
 			WAPP3->Race = PlayerRace;
 			WAPP3->Account[0] = 0;
 			Buffer += sizeof(WhoAllPlayerPart3);
 			WhoAllPlayerPart4* WAPP4 = (WhoAllPlayerPart4*)Buffer;
-			WAPP4->Unknown100 = 0;
+			WAPP4->Unknown100 = 207;
 			Buffer += sizeof(WhoAllPlayerPart4);
+			++Written;
 		}
 
 	}
