@@ -813,6 +813,75 @@ void Client::SendFeatureList()
 	safe_delete(outapp);
 }
 
+// Sends the per-ring key ring slot allowance. The Laurion client copies the five values straight into
+// PCClient::BaseKeyRingSlots (0x2EE8) and computes a ring's capacity as items_in_ring + that value,
+// capped at 250/250/350/500/250, then refuses a drop unless the capacity is above the slots already
+// used. Without this packet every ring has capacity 0 and no key item can be added to one.
+// Reverse notes: docs/op_7d5b_keyring_slots.md
+void Client::SendKeyRingSlots()
+{
+	// Only the Laurion client has a handler for this packet.
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	// mount, illusion, familiar, Hero's Forge, teleportation - the client's KeyRingType order.
+	static const int ring_count = 5;
+
+	uint16 slots[ring_count] = {0};
+	int ring = 0;
+
+	for (const std::string& entry : Strings::Split(RuleS(Inventory, KeyRingSlots), ',')) {
+		if (entry.empty()) {
+			continue;
+		}
+
+		int value = 0;
+		try {
+			value = std::stoi(entry, nullptr, 0);
+		} catch (...) {
+			LogInventory("Malformed key ring slot value [{}] in Inventory:KeyRingSlots, using 0", entry);
+			value = 0;
+		}
+
+		// The client stores the value in a short and every reader treats it as signed, so a value
+		// above 32767 becomes a negative capacity and breaks the ring.
+		if (value < 0) {
+			value = 0;
+		}
+		else if (value > 32767) {
+			value = 32767;
+		}
+
+		if (ring >= ring_count) {
+			LogInventory("Ignoring extra key ring slot value [{}] in Inventory:KeyRingSlots, there are five rings", entry);
+			break;
+		}
+
+		slots[ring++] = static_cast<uint16>(value);
+	}
+
+	// A short list repeats its last value, which is what the client does with a short packet body, so
+	// a single value sets every ring.
+	for (; ring < ring_count; ++ring) {
+		slots[ring] = slots[ring - 1];
+	}
+
+	LogInventory("Sending key ring slots to [{}]: mount {} illusion {} familiar {} heroforge {} teleportation {}",
+		GetCleanName(), slots[0], slots[1], slots[2], slots[3], slots[4]);
+
+	auto outapp = new EQApplicationPacket(OP_KeyRingSlots, sizeof(KeyRingSlots_Struct));
+	KeyRingSlots_Struct* kr = (KeyRingSlots_Struct*)outapp->pBuffer;
+	kr->mount_keyring_slots = slots[0];
+	kr->illusion_keyring_slots = slots[1];
+	kr->familiar_keyring_slots = slots[2];
+	kr->heroforge_keyring_slots = slots[3];
+	kr->teleportation_keyring_slots = slots[4];
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
 // Sends the client complete inventory used in character login
 void Client::BulkSendInventoryItems()
 {

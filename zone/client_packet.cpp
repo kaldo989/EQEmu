@@ -1840,6 +1840,10 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	// inventory slots on a feature entry, so it needs the map before it draws the inventory window.
 	SendFeatureList();
 
+	// Key ring capacity is client side arithmetic on BaseKeyRingSlots, and the rings are feature gated,
+	// so the allowance has to arrive after the feature list and before the inventory is drawn.
+	SendKeyRingSlots();
+
 	if (loaditems) { /* Don't load if a length error occurs */
 		if (m_pp.gm) {
 			m_inv.SetGMInventory(true); // set to true to allow expansion-restricted packets through

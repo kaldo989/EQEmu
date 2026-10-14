@@ -50,7 +50,7 @@ namespace Laurion {
 			/*001*/ uint32 races;	// Seen ff ff 01 00
 			/*005*/ uint32 classes;	// Seen ff ff 01 00
 			/*009*/ uint32 entrysize; // Seen 33
-			/*013*/ int32 entries[33]; // Most -1, 1, and 0 for Gold Status
+			/*013*/ int32 entries[33]; // FreeToPlayClient::LimitData[0..32], see docs/op_2aca_membership.md
 			/*145*/
 		};
 
@@ -122,11 +122,16 @@ namespace Laurion {
 		/*
 		** 0x2aca - FreeToPlay membership.
 		**
-		** Wire order verified from FUN_140640960 (bounds-guarded stream reader):
-		**   [uint8 flag]            -> FreeToPlay +0x00
-		**   [uint32]                -> FreeToPlay +0x04 (class bitmask, tested by the 0x832 handler)
-		**   [uint32]                -> FreeToPlay +0x08 (race bitmask, tested by the 0x832 handler)
-		**   [uint32 count][count x uint32] -> FreeToPlay +0x0C + i*4 (capped at 32)
+		** Wire order verified from FUN_140640960 (bounds-guarded stream reader), the applier called by
+		** the 0x2aca handler at 0x1401df153 and by the WorldAuthenticate handler FUN_1402a6fd0 at
+		** 0x1402a7719:
+		**   [uint8 flag]                    -> FreeToPlayClient +0x00 (MembershipLevel)
+		**   [uint32]                        -> FreeToPlayClient +0x04 (Races bitmask, tested by the 0x832 handler)
+		**   [uint32]                        -> FreeToPlayClient +0x08 (Classes bitmask, tested by the 0x832 handler)
+		**   [uint32 count][count x uint32]  -> FreeToPlayClient +0x0C + i*4 (LimitData), i < 33
+		** The loop guard is `if (0x20 < i) return;`, so index 32 is the last entry the client stores.
+		** Every read is bounds-checked against the remaining payload, so a short packet leaves the
+		** untouched LimitData entries at their previous value instead of zeroing them.
 		** The generic EQEmu Membership_Struct has no leading byte flag, so every field sits one
 		** byte earlier than the client expects.
 		*/
@@ -1059,6 +1064,21 @@ namespace Laurion {
 			/*016*/ EqGuid	invitee_guid;
 			/*024*/ EqGuid	inviter_guid;	// read at payload+0x18 by FUN_1403aa570
 			/*032*/
+		};
+
+		// Opcode 0x7d5b (OP_KeyRingSlots), server -> client, 10 byte body. Dispatcher branch 0x1401e303b
+		// (CMP 0x7d5b at 0x1401d7018) calls FUN_1401fb9d0(payload, payload_size), which writes five u16
+		// straight into pinstLocalPC->BaseKeyRingSlots[0..4] (PCClient + 0x2EE8). There is no count field
+		// and no size gate: a body shorter than 10 bytes repeats its last value into the remaining slots,
+		// so always send all five. The client reads them back as signed short, so keep every value at or
+		// below 32767. Reverse notes: docs/op_7d5b_keyring_slots.md
+		struct KeyRingSlots_Struct {
+			/*000*/ uint16	mount_keyring_slots;
+			/*002*/ uint16	illusion_keyring_slots;
+			/*004*/ uint16	familiar_keyring_slots;
+			/*006*/ uint16	heroforge_keyring_slots;
+			/*008*/ uint16	teleportation_keyring_slots;
+			/*010*/
 		};
 
 		struct GroupGeneric_Struct {

@@ -2343,6 +2343,7 @@ private:
 
 	void BulkSendInventoryItems();
 	void SendFeatureList();
+	void SendKeyRingSlots();
 
 	faction_map factionvalues;
 

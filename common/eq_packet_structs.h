@@ -5128,6 +5128,19 @@ struct GroupInvitePrompt_Struct {
 	uint32 inviter_id;
 };
 
+// Laurion key ring slot allowance (opcode 0x7d5b, OP_KeyRingSlots), server -> client only. A
+// whole-program search of eqgame.exe finds 0x7d5b in exactly one instruction, the dispatcher compare
+// at 0x1401d7018, so the client can never request it. The handler FUN_1401fb9d0 copies five u16 into
+// pinstLocalPC->BaseKeyRingSlots[0..4] (PCClient + 0x2EE8) in mount, illusion, familiar, Hero's Forge,
+// teleportation order. Reverse notes: docs/op_7d5b_keyring_slots.md
+struct KeyRingSlots_Struct {
+	uint16 mount_keyring_slots;
+	uint16 illusion_keyring_slots;
+	uint16 familiar_keyring_slots;
+	uint16 heroforge_keyring_slots;
+	uint16 teleportation_keyring_slots;
+};
+
 // Laurion clients send the two names plus a 24 byte tail, so the payload is 152 bytes rather than
 // 128. The tail is padding: every byte the client writes is a constant (0 or 0x100) and 5 of the 24
 // bytes are never written at all. EQEmu only consumes the two names, so accept either size.

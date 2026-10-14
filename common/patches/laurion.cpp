@@ -45,6 +45,7 @@
 #include <numeric>
 #include <cassert>
 #include <cinttypes>
+#include <cstdint>
 #include <cstring>
 
 namespace Laurion
@@ -2866,6 +2867,96 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	/*
+	** OP_SendMembership (0x2aca) entries[] is the client's feature table: FreeToPlayClient::LimitData[33]
+	** at +0x0C.  PCClient::GetGameFeature(i) reads it directly (vtable thunk FUN_1402c2420 ->
+	** FUN_1401d4d30 = *(int *)(FreeToPlayClient__Instance() + 0xc + i * 4)), so whatever is sent here is
+	** what every feature check in the client sees.
+	**
+	** The index -> meaning column below is the client's own name table, RestrictionInfo at 0x140aa24d0:
+	** 33 records of {const char *name; bool plural; bool boolean;}, the all-zero record at 0x140aa24c0
+	** being the Invalid/-1 slot.  A record whose boolean member is true is a yes/no permission and is
+	** sent as 0 or 1; the rest are counts, and -1 means "no limit".  Full evidence:
+	** docs/op_2aca_membership.md.
+	*/
+	static const int LAURION_FEATURE_LIMIT_COUNT = 33;
+
+	// Used verbatim when Membership:FeatureLimits is empty, and per index when a value is malformed.
+	static const int32_t kLaurionFeatureLimitDefaults[LAURION_FEATURE_LIMIT_COUNT] = {
+		-1,  //  0 "AAs"                                        count
+		-1,  //  1 "maximum level"                              count
+		-1,  //  2 "character slots"                            count
+		-1,  //  3 "ability to use this spell tier"             count (highest tier)
+		-1,  //  4 "inventory slots"                            count; OP_SendFeatureList is the authoritative path
+		-1,  //  5 "total platinum"                             count
+		1,   //  6 "ability to send mail"                       [flag]
+		1,   //  7 "ability to send parcels"                    [flag]
+		1,   //  8 "ability to spend loyalty"                   [flag]
+		-1,  //  9 "mercenary ranking cap"                      count (max merc tier)
+		1,   // 10 "access to a number of guild hall functions" [flag]
+		1,   // 11 "shared bank slot access"                    [flag]
+		1,   // 12 "number of active quests"                    [flag]
+		1,   // 13 "ability to create a guild"                  [flag]
+		1,   // 14 "ability to sell in the bazaar"              [flag]
+		1,   // 15 "ability to create buy lines in the bazaar"  [flag]
+		1,   // 16 "ability to use global chat"                 [flag]
+		1,   // 17 "ability to petition"                        [flag]
+		1,   // 18 "advertising mode"                           count
+		1,   // 19 "ability to use this item"                   [flag]
+		-1,  // 20 "starting cities"                            count
+		1,   // 21 "appearance slot use"                        count
+		0,   // 22 "heroic character"                           [flag]; EQEmu has no heroic characters
+		0,   // 23 "auto-grant AAs"                             [flag]; AA granting is server side
+		0,   // 24 "mount key ring slots"                       count; base allowance, see OP_KeyRingSlots
+		0,   // 25 "illusion key ring slots"                    count; idem
+		0,   // 26 "familiar key ring slots"                    count; idem
+		1,   // 27 "familiar auto leave"                        [flag]
+		0,   // 28 "hero's forge key ring slots"                count; idem
+		0,   // 29 "dragon's hoard slots"                       count; EQEmu has no Dragon's Hoard
+		0,   // 30 "teleportation item key ring slots"          count; idem
+		0,   // 31 "personal depot slots"                       count; EQEmu has no personal depot
+		0   // 32 "name reservations"                          count; EQEmu has no name reservations
+	};
+
+	static void GetLaurionFeatureLimits(int32_t out[LAURION_FEATURE_LIMIT_COUNT])
+	{
+		for (int i = 0; i < LAURION_FEATURE_LIMIT_COUNT; ++i) {
+			out[i] = kLaurionFeatureLimitDefaults[i];
+		}
+
+		const std::string rule = RuleS(Membership, FeatureLimits);
+		if (rule.empty()) {
+			return;
+		}
+
+		// Positional, not sparse: a partial list would silently shift every feature after the gap, and
+		// these 33 values are not the same kind of quantity, so a wrong length is treated as a
+		// configuration error rather than a prefix.
+		std::vector<std::string> values = Strings::Split(rule, ',');
+		if (static_cast<int>(values.size()) != LAURION_FEATURE_LIMIT_COUNT) {
+			LogNetcode("Membership:FeatureLimits expects {} comma separated values, got {} - using the built-in defaults", LAURION_FEATURE_LIMIT_COUNT, values.size());
+			return;
+		}
+
+		for (int i = 0; i < LAURION_FEATURE_LIMIT_COUNT; ++i) {
+			std::string value = values[i];
+			Strings::Trim(value);
+
+			int32_t limit = kLaurionFeatureLimitDefaults[i];
+			try {
+				const long parsed = std::stol(value, nullptr, 0);
+				limit = (parsed > INT32_MAX) ? INT32_MAX
+						: (parsed < INT32_MIN) ? INT32_MIN
+						: static_cast<int32_t>(parsed);
+			}
+			catch (...) {
+				LogNetcode("Malformed Membership:FeatureLimits value [{}] at position {} - using the default {}", value, i, kLaurionFeatureLimitDefaults[i]);
+			}
+
+			out[i] = limit;
+		}
+	}
+
 	ENCODE(OP_SendMembership) {
 		ENCODE_LENGTH_EXACT(Membership_Struct);
 		SETUP_DIRECT_ENCODE(Membership_Struct, structs::Membership_Struct);
@@ -2873,40 +2964,18 @@ namespace Laurion
 		eq->membership = emu->membership;
 		eq->races = emu->races;
 		eq->classes = emu->classes;
-		eq->entrysize = 33;
-		eq->entries[0] = -1;  // Max AA Restriction
-		eq->entries[1] = -1;  // Max Level Restriction
-		eq->entries[2] = -1;  // Max Char Slots per Account (not used by client?)
-		eq->entries[3] = -1;  // SpellTier
-		eq->entries[4] = -1;  // Main Inventory Size
-		eq->entries[5] = -1;  // Max Platinum per level
-		eq->entries[6] = 1;   // Send Mail
-		eq->entries[7] = 1;   // Use Parcels
-		eq->entries[8] = 1;   // Loyalty
-		eq->entries[9] = -1;  // Merc Tiers
-		eq->entries[10] = 1;  // Housing
-		eq->entries[11] = -1; // Shared Bank Slots
-		eq->entries[12] = -1; // Max Journal Quests
-		eq->entries[13] = 1;  // CreateGuild
-		eq->entries[14] = 1;  // Bazaar
-		eq->entries[15] = 1;  // Barter
-		eq->entries[16] = 1;  // Chat
-		eq->entries[17] = 1;  // Petition
-		eq->entries[18] = 1;  // Advertising
-		eq->entries[19] = -1; // UseItem
-		eq->entries[20] = -1; // StartingCity
-		eq->entries[21] = 1;  // Ornament
-		eq->entries[22] = 0;  // HeroicCharacter
-		eq->entries[23] = 0;  // AutoGrantAA
-		eq->entries[24] = 0;  // MountKeyRingSlots
-		eq->entries[25] = 0;  // IllusionKeyRingSlots
-		eq->entries[26] = 0;  // FamiliarKeyRingSlots
-		eq->entries[27] = 0;  // FamiliarAutoLeave
-		eq->entries[28] = 0;  // HeroForgeKeyRingSlots
-		eq->entries[29] = 0;  // DragonHoardSlots
-		eq->entries[30] = 0;  // TeleportKeyRingSlots
-		eq->entries[31] = 0;  // PersonalDepotSlots
-		eq->entries[32] = 0;
+
+		/*
+		** entries[] is Membership:FeatureLimits, the client's FreeToPlayClient::LimitData[0..32].  The
+		** index -> meaning table and the flag/count convention are on kLaurionFeatureLimitDefaults above.
+		*/
+		int32_t limits[LAURION_FEATURE_LIMIT_COUNT];
+		GetLaurionFeatureLimits(limits);
+
+		eq->entrysize = LAURION_FEATURE_LIMIT_COUNT;
+		for (int i = 0; i < LAURION_FEATURE_LIMIT_COUNT; ++i) {
+			eq->entries[i] = limits[i];
+		}
 
 		FINISH_ENCODE();
 	}
@@ -3731,6 +3800,27 @@ namespace Laurion
 		SETUP_DIRECT_ENCODE(GroupInvitePrompt_Struct, structs::GroupInvitePrompt_Struct);
 
 		eq->inviter_guid.Id = emu->inviter_id;
+
+		FINISH_ENCODE();
+	}
+
+	ENCODE(OP_KeyRingSlots) // 0x7d5b - key ring slot allowance
+	{
+		// FUN_1401fb9d0 copies the five u16 straight into pinstLocalPC->BaseKeyRingSlots[0..4]
+		// (PCClient + 0x2EE8). That array is the base of the client's key ring capacity:
+		// capacity = min(items_in_ring + BaseKeyRingSlots[ring], 250/250/350/500/250) (FUN_1402c2630,
+		// PCClient vtable slot 0x128), and FUN_1402b69e0 rejects a move when that capacity is not above
+		// the slots already used. With the array at zero - which is what a client that never received
+		// this packet has - no key item can be added to any ring. The client reads the values back as
+		// signed short, so the sender clamps them to 32767. Reverse notes: docs/op_7d5b_keyring_slots.md
+		ENCODE_LENGTH_EXACT(KeyRingSlots_Struct);
+		SETUP_DIRECT_ENCODE(KeyRingSlots_Struct, structs::KeyRingSlots_Struct);
+
+		eq->mount_keyring_slots = emu->mount_keyring_slots;
+		eq->illusion_keyring_slots = emu->illusion_keyring_slots;
+		eq->familiar_keyring_slots = emu->familiar_keyring_slots;
+		eq->heroforge_keyring_slots = emu->heroforge_keyring_slots;
+		eq->teleportation_keyring_slots = emu->teleportation_keyring_slots;
 
 		FINISH_ENCODE();
 	}
