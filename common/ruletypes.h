@@ -1058,6 +1058,7 @@ RULE_CATEGORY_END()
 RULE_CATEGORY(Loot)
 RULE_INT(Loot, AdvLootAskTimerSeconds, 60, "Advanced Loot per-item ask/roll window, in seconds. The timer is armed when the master looter sets a row to Auto Ask/Roll (OP_AdvLoot subcmd 0x11 state 2), or at the first opt-in when AdvLootAutoStartTimer is on")
 RULE_BOOL(Loot, AdvLootAutoStartTimer, true, "Arm the Advanced Loot roll timer at the first opt-in when the master looter has not armed it. Set to false for strict live parity, where only the master looter starts the roll")
+RULE_BOOL(Loot, AdvLootSendItemLinks, true, "Write the serialized item link into the +0x20 optional block of every OP_AdvLoot item record. The client stores it verbatim (FUN_1405647b0 -> FUN_140563220) and hands it to the link payload builder FUN_140576230, which is what makes an Advanced Loot row carry a real item link. Set to false to send the empty block instead")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Client)

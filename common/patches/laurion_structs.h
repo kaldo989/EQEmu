@@ -1294,6 +1294,13 @@ namespace Laurion {
 			/*00*/	uint16	subcmd;
 		};
 
+		// OP_AdvLootManage (0x360e) - variable length, client->server only. Same sub-command numbering as
+		// OP_AdvLoot, only 0x0D / 0x0F / 0x14 are ever sent on it (see advloot.md section 10.7). Left raw:
+		// no decoder is registered, so PassDecoder hands the payload to Client::Handle_OP_AdvLootManage.
+		struct AdvLootManage_Struct {
+			/*00*/	uint16	subcmd;
+		};
+
 		struct HoardItem_Struct { // OP_0x229c, 2 byte payload
 			/*00*/	uint8	action;
 			/*01*/	uint8	slot;
@@ -1331,6 +1338,34 @@ namespace Laurion {
 			/*12*/	char	name[1];
 			/*xx*/
 		};
+
+		// OP_0x6159 request. CAdvancedLootWnd alt+right-click inspect path: FUN_1400A6370 ->
+		// FUN_1400A6250 -> FUN_14046C5C0(DAT_140d83170 /*ItemDisplayWnd singleton*/, record[0] /*item id*/).
+		// Fixed 24 byte body. CPacketScrambler__hton is the identity here (it only bumps DAT_140f0367c),
+		// so 0x6159 is the wire opcode itself, same as 0x609c for FUN_14040fbf0.
+		struct ItemDisplayWndRequest_Struct { // OP_0x6159, 28 byte payload (FUN_14046c5c0)
+			/*00*/	uint32	item_id;        // AdvLoot row record +0x00 (param_2)
+			/*04*/	uint32	unknown004;     // written 0
+			/*08*/	uint32	unknown008;     // written 0
+			/*12*/	uint32	unknown00C;     // written 0xFFFFFFFF
+			/*16*/	uint32	unknown010;     // written 0
+			/*20*/	uint32	unknown014;     // never written by the client
+			/*24*/	uint32	unknown018;     // stack local masked with 0xffff0000
+			/*28*/
+		};
+
+		// Laurion alt+left-click inspect request, wire opcode 0x0497 (client FUN_14040FA60, 80 bytes).
+		// Layout from FUN_14040FA60: +0 item id, +4 flags (|= 2 when shift held), +8..0x47 a 64 byte
+		// null terminated item link string, +0x48 and +0x4C two extra dwords.
+		struct ItemLinkInspect_Struct { // OP_0x0497, 80 byte payload (FUN_14040fa60)
+			/*00*/	uint32		item_id;
+			/*04*/	uint32		flags;
+			/*08*/	char			item_name[64];
+			/*48*/	uint32		unknown048;
+			/*4C*/	uint32		unknown04C;
+			/*50*/
+		};
+		static_assert(sizeof(ItemLinkInspect_Struct) == 80, "bad size");
 
 		// OP_0x1d00 wire form is variable length (null terminated GUID, then length prefixed strings),
 		// so this is only the internal carrier EQEmu uses to reach the encoder. The instance pointer is

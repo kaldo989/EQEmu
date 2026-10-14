@@ -269,11 +269,34 @@ public:
 	// 0x11 is the Ask/AutoRoll state only), so the choice is recorded from /advloot need|greed|never
 	// and pushed back to the window through subcmd 0x0b.
 	AdvLoot::Roll* GetAdvLootRoll(uint32_t item_id);
+	// Every roll this corpse owns, keyed by item id. A Manage Loot ask-response request (0x360e / 0x0D)
+	// only carries the client's own ask-group id, so when that id has not been learned from a subcmd 0x0B
+	// the server has to pick the roll out of this map instead.
+	const std::map<uint32_t, AdvLoot::Roll>& GetAdvLootRolls() const { return m_advloot_rolls; }
 	AdvLoot::Roll& RecordAdvLootChoice(Client *c, uint32_t item_id, uint32_t choice);
+	// Create the roll for an item without recording a participant. Subcmd 0x0a is how the client tells us it
+	// has moved a row into Ask / Ask auto Roll / Free Grab, and at that point the server may not have any
+	// participant yet - RecordAdvLootChoice would resolve an empty row immediately, which is not what an Ask
+	// is. This only makes sure the row exists so the state and the ask window have somewhere to live.
+	AdvLoot::Roll& EnsureAdvLootRoll(uint32_t item_id);
+	// Record a looter's Need / Greed / Never answer without arming or resolving the row. Subcmd 0x0b is how the
+	// ND and GD checkboxes in Manage Loot reach the server (FUN_1400a4d80 -> FUN_1400a81b0 with action 3 = Need,
+	// 2 = Greed, 0 = cleared), and a tick is not an opt-in: the master looter answers on behalf of people who
+	// never clicked anything. RecordAdvLootChoice arms, and with a single participant even resolves, the row -
+	// which is not what ticking a box means.
+	void SetAdvLootResponse(uint32_t item_id, const std::string &name, uint32_t choice);
 	void ArmAdvLootRoll(AdvLoot::Roll& roll);
+	// Arm the window with a deadline the client supplied instead of the rule value. Subcmd 0x0a carries the
+	// remaining seconds (FUN_140085c80 writes record+0x18 - clock), and the client renders its countdown from
+	// that, so the server has to expire at the same moment or the two disagree.
+	void ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds);
 	void ProcessAdvLootRolls();
 	void ResolveAdvLootRoll(AdvLoot::Roll& roll);
 	void AssignAdvLootRoll(AdvLoot::Roll& roll, Client *target);
+	// ML_LeaveOnCorpse (subcmd 0x0e, flag 1): the item stays on the corpse and the row is dropped. This is a
+	// decision, not a no-op - it has to cancel any running ask window and tell the other members, or their
+	// rows keep counting down for a claim nobody is making.
+	void LeaveAdvLootRollOnCorpse(AdvLoot::Roll& roll, Client *who);
 
 private:
 	void AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,

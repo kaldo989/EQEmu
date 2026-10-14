@@ -1205,6 +1205,20 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 			GetAdvLootPendingRows(c->CharacterID()),
 			m_corpse_delay_timer.GetRemainingTime()
 		);
+
+		// The legacy window stays closed (it would pay the item and the corpse cash a second time), but
+		// the right-click is still the player's attempt to open this corpse - so answer it with the
+		// AdvLoot window instead of a bare error. Subcmd 0x03 is the only packet that draws rows
+		// (CAdvancedLootWnd::AddCorpse, FUN_14009e310 -> FUN_14009e460), and it walks m_item_list, so
+		// this is also what makes an item injected by /advloot additem appear here.
+		// See docs/advloot.md 8.1.10.
+		c->advloot_corpse = this;
+		if (std::find(c->advloot_corpses.begin(), c->advloot_corpses.end(), GetID()) == c->advloot_corpses.end()) {
+			c->advloot_corpses.push_back(GetID());
+		}
+		c->SendAdvLootCorpseRebuild();
+		c->MessageString(Chat::Yellow, AdvLoot::StringId::AdvLootCorpse);
+
 		SendLootReqErrorPacket(c, LootResponse::NotAtThisTime);
 		return;
 	}
@@ -2673,15 +2687,30 @@ AdvLoot::Roll* Corpse::GetAdvLootRoll(uint32_t item_id)
 
 void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll)
 {
+	ArmAdvLootRoll(roll, static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)));
+}
+
+// Arm the window with a caller-supplied window instead of the rule value. Subcmd 0x0a carries the seconds
+// the initiating client has left on its own countdown (FUN_140085c80 writes record+0x18 - clock), so the
+// server expires at the same moment the client's row does. A zero or absurd value falls back to the rule.
+void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds)
+{
+	const uint32_t rule_seconds = static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds));
+
+	if (seconds == 0 || seconds > rule_seconds) {
+		seconds = rule_seconds;
+	}
+
 	roll.armed = true;
-	roll.ask_timer.SetTimer(RuleI(Loot, AdvLootAskTimerSeconds) * 1000);
+	roll.ask_timer.SetTimer(seconds * 1000);
 
 	LogLootFilters(
-		"[{}] advloot roll armed item [{}] corpse [{}] window [{}]s",
+		"[{}] advloot roll armed item [{}] corpse [{}] window [{}]s (rule [{}]s)",
 		roll.item_name,
 		roll.item_id,
 		GetID(),
-		RuleI(Loot, AdvLootAskTimerSeconds)
+		seconds,
+		rule_seconds
 	);
 }
 
@@ -2699,23 +2728,91 @@ void Corpse::AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
 	}
 }
 
-AdvLoot::Roll& Corpse::RecordAdvLootChoice(Client* c, uint32_t item_id, uint32_t choice)
+AdvLoot::Roll& Corpse::EnsureAdvLootRoll(uint32_t item_id)
 {
 	auto it = m_advloot_rolls.find(item_id);
+	if (it != m_advloot_rolls.end()) {
+		return it->second;
+	}
+
+	AdvLoot::Roll roll;
+	roll.corpse_key = GetID();
+	roll.item_id    = item_id;
+
+	const auto* item = database.GetItem(item_id);
+	if (item) {
+		roll.item_name = item->Name;
+	}
+
+	it = m_advloot_rolls.insert(std::make_pair(item_id, roll)).first;
+
+	LogLootFilters("advloot roll created item [{}] corpse [{}]", item_id, GetID());
+
+	return it->second;
+}
+
+// Apply a Manage Loot ND / GD tick to the row without touching the ask window. The name comes straight off the
+// wire (FUN_1400a81b0 copies the ML_PlayerList row's text into the entry), so it is matched by name rather
+// than by the sender - the master looter is the one who sends it, not the one who was answered for.
+void Corpse::SetAdvLootResponse(uint32_t item_id, const std::string& name, uint32_t choice)
+{
+	if (name.empty()) {
+		return;
+	}
+
+	auto it = m_advloot_rolls.find(item_id);
 	if (it == m_advloot_rolls.end()) {
-		AdvLoot::Roll roll;
-		roll.corpse_key = GetID();
-		roll.item_id    = item_id;
-
-		const auto* item = database.GetItem(item_id);
-		if (item) {
-			roll.item_name = item->Name;
+		// A cleared answer for a row this corpse never had is noise; a real answer means the master looter
+		// answered before anyone opted in, so create the row.
+		if (choice == AdvLoot::ChoiceNone) {
+			return;
 		}
-
-		it = m_advloot_rolls.insert(std::make_pair(item_id, roll)).first;
+		it = m_advloot_rolls.find(EnsureAdvLootRoll(item_id).item_id);
 	}
 
 	AdvLoot::Roll& roll = it->second;
+
+	for (auto& participant : roll.participants) {
+		if (participant.name == name) {
+			participant.choice = choice;
+			LogLootFilters(
+				"advloot response item [{}] corpse [{}] looter [{}] -> [{}]",
+				item_id,
+				GetID(),
+				name,
+				AdvLoot::ChoiceName(choice)
+			);
+			return;
+		}
+	}
+
+	if (choice == AdvLoot::ChoiceNone) {
+		return;
+	}
+
+	AdvLoot::Participant participant;
+	participant.name         = name;
+	participant.choice       = choice;
+	participant.opt_in_order = ++m_advloot_opt_in_counter;
+
+	if (Client* client = entity_list.GetClientByName(name.c_str())) {
+		participant.character_id = client->CharacterID();
+	}
+
+	roll.participants.push_back(participant);
+
+	LogLootFilters(
+		"advloot response item [{}] corpse [{}] looter [{}] added as [{}]",
+		item_id,
+		GetID(),
+		name,
+		AdvLoot::ChoiceName(choice)
+	);
+}
+
+AdvLoot::Roll& Corpse::RecordAdvLootChoice(Client* c, uint32_t item_id, uint32_t choice)
+{
+	AdvLoot::Roll& roll = EnsureAdvLootRoll(item_id);
 
 	AdvLoot::Participant* participant = nullptr;
 	for (auto& p: roll.participants) {
@@ -2932,6 +3029,43 @@ void Corpse::AssignAdvLootRoll(AdvLoot::Roll& roll, Client* target)
 	);
 
 	AdvLootTransaction(target, roll.item_id, quantity);
+}
+
+// ML_LeaveOnCorpse: the master looter (or the player the row belongs to) has decided the item stays on the
+// corpse. Cancel any running ask, mark the row removed, tell the participants with the client's own wording
+// (eqstr 11313 "--%1 left %2 %3 on %4.--"), and drop the row from the window of everyone who had one.
+void Corpse::LeaveAdvLootRollOnCorpse(AdvLoot::Roll& roll, Client* who)
+{
+	roll.armed = false;
+	roll.ask_timer.Disable();
+	roll.state = AdvLoot::StateRemoved;
+
+	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
+	if (!quantity) {
+		quantity = 1;
+	}
+
+	char count_str[32];
+
+	AdvLootChatToRoll(roll, AdvLoot::StringId::LeftOnCorpse,
+		who ? who->GetCleanName() : "",
+		ConvertArray(static_cast<int64>(quantity), count_str),
+		roll.item_name.c_str(),
+		corpse_name);
+
+	LogLootFilters(
+		"advloot leave on corpse item [{}] corpse [{}] by [{}] - [{}] unit(s) left, window cancelled",
+		roll.item_id,
+		GetID(),
+		who ? who->GetCleanName() : "?",
+		quantity
+	);
+
+	// The row is still on the corpse, so only the window representation changes: FUN_140154a90 with a
+	// non-zero flag removes the matching row without a full rebuild.
+	if (who) {
+		who->SendAdvLootRowRemoved(roll.item_id, roll.item_name);
+	}
 }
 
 void Corpse::LoadPlayerCorpseDecayTime(uint32 corpse_db_id)

@@ -51,6 +51,7 @@
 	void Handle_OP_AAAction(const EQApplicationPacket *app);
 	void Handle_OP_AcceptNewTask(const EQApplicationPacket *app);
 	void Handle_OP_AdvLoot(const EQApplicationPacket *app);
+	void Handle_OP_AdvLootManage(const EQApplicationPacket *app);
 	void Handle_OP_AdventureInfoRequest(const EQApplicationPacket *app);
 	void Handle_OP_AdventureLeaderboardRequest(const EQApplicationPacket *app);
 	void Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app);
@@ -224,6 +225,7 @@
 	void Handle_OP_InspectRequest(const EQApplicationPacket *app);
 	void Handle_OP_InstillDoubt(const EQApplicationPacket *app);
 	void Handle_OP_ItemLinkClick(const EQApplicationPacket *app);
+	void Handle_OP_ItemLinkInspect(const EQApplicationPacket *app);
 	void Handle_OP_ItemLinkResponse(const EQApplicationPacket *app);
 	void Handle_OP_ItemName(const EQApplicationPacket *app);
 	void Handle_OP_ItemPreview(const EQApplicationPacket *app);

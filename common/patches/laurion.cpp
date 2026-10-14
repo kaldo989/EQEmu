@@ -4686,6 +4686,42 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	// AdvLoot inspect request. CAdvancedLootWnd alt+right-click on the item-name column of a loot list:
+	// FUN_1400A6370 -> FUN_1400A6250 -> FUN_14046C5C0(DAT_140d83170 /*ItemDisplayWnd singleton*/,
+	// AdvLoot row record +0x00 /*item id*/), then Show(bShow=1, bFocus=1) on that window through vtable
+	// slot +0x1C0. The client arms the window locally, so it opens either way; what was missing is the
+	// server reply that fills it. EQEmu had no mapping for 0x6159 (patch_Laurion.conf left it 0x0000) and
+	// no decoder, so the request was dropped as OP_Unknown. Rebuild the fixed ItemViewRequest_Struct that
+	// Handle_OP_ItemLinkClick already expects, with the augments cleared: the AdvLoot row record carries no
+	// augment data, and copying the wire body verbatim would hand 0xFFFFFFFF to CreateItem as augment 2.
+	DECODE(OP_ItemLinkClick) // 0x6159
+	{
+		DECODE_LENGTH_EXACT(structs::ItemDisplayWndRequest_Struct);
+		SETUP_DIRECT_DECODE(ItemViewRequest_Struct, structs::ItemDisplayWndRequest_Struct);
+		MEMSET_IN(ItemViewRequest_Struct);
+
+		emu->item_id = eq->item_id;
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	// AdvLoot inspect request (the other half of the inspect surface). CAdvancedLootWnd alt+left-click on
+	// the item-name column: FUN_1400A4020 checks column == 0, reads the row's item data, resolves the
+	// AdvLoot record at index * 0x98 + this+8, builds an item link string through FUN_1405607B0 and calls
+	// FUN_14040FA60, which sends wire opcode 0x0497 with an 80 byte body. EQEmu had no mapping for 0x0497
+	// so it was dropped as OP_Unknown. The first 72 bytes of that body are exactly what the client's own
+	// 0x609c item-view reply decoder expects, so truncate to LDONItemViewRequest_Struct and reuse
+	// Handle_OP_ItemLinkResponse, which does CreateItem(item_id) and sends ItemPacketViewLink.
+	DECODE(OP_ItemLinkInspect) // 0x0497
+	{
+		DECODE_LENGTH_EXACT(structs::ItemLinkInspect_Struct);
+		SETUP_DIRECT_DECODE(LDONItemViewRequest_Struct, structs::ItemLinkInspect_Struct);
+
+		emu->item_id = eq->item_id;
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_Consume) // 0x5ef7
 	{
 		// Laurion widened the packet to 20 bytes: slot, item global index, uint16, auto_consumed and a

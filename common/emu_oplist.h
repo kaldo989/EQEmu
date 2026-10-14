@@ -35,6 +35,7 @@ N(OP_Action),
 N(OP_Action2),
 N(OP_AddNimbusEffect),
 N(OP_AdvLoot),
+N(OP_AdvLootManage),	// SoF x64: Laurion Advanced Loot request channel 0x360e, client->server only
 N(OP_AdventureData),
 N(OP_AdventureDetails),
 N(OP_AdventureFinish),
@@ -690,4 +691,5 @@ N(OP_CharListWindowUpdate),
 N(OP_ServerList),
 N(OP_CharacterSelectRequest),
 N(OP_ItemLuck),
+N(OP_ItemLinkInspect),   // Laurion alt+left-click inspect request, wire opcode 0x0497 (FUN_14040fa60)
 // mail and chat opcodes located in ../mail_oplist.h
