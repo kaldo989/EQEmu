@@ -1124,6 +1124,29 @@ namespace Laurion {
 		};
 
 		/*
+		** Click Object Struct (client -> server, echoed back server -> client)
+		** CEverQuest__LMouseUp (FUN_140264b70), send site 0x140266293: clicking a ground item.
+		** Wire 14 bytes = 2 byte opcode + 12 byte payload, sent through CConnection__sendPacket
+		** (FUN_140523530, channel 4) from the shared buffer at DAT_140e35fa0.
+		**   +0  u32  drop_id   - ground item record + 0x20. FUN_14020b530 (the OP_GroundSpawn reader)
+		**                        stores the first u32 of the spawn packet there, and FUN_14020b4a0
+		**                        looks a record up by that same field.
+		**   +4  u32  player_id  - pinstLocalPlayer + 0x168 (the local player's spawn id)
+		**   +8  u8   flag       - written as 0 by the click path; the client only zeroes the low byte
+		**                        (MOV byte [RBP+0x70], 0 then reads back a dword), so +9..+11 are
+		**                        stale bytes from the shared send buffer. Do not trust them.
+		** EQEmu's ClickObject_Struct is 8 bytes (drop_id + player_id) - Handle_OP_ClickObject rejects
+		** the 12 byte packet with "Invalid size on ClickObject_Struct" and the pickup never happens.
+		*/
+		struct ClickObject_Struct {
+			/*00*/	uint32	drop_id;
+			/*04*/	uint32	player_id;
+			/*08*/	uint8	unknown08;	// flag, seen 0 from the client
+			/*09*/	uint8	unknown09[3];	// uninitialised in the client
+			/*12*/
+		};
+
+		/*
 		** Click Object Acknowledgement Struct
 		** Response to client clicking on a World Container (ie, forge)
 		** Seems to have not changed from RoF2

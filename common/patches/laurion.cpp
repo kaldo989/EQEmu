@@ -481,6 +481,25 @@ namespace Laurion
 		dest->FastQueuePacket(&in, ack_req);
 	}
 
+	// Echo of the click, broadcast to every client in the zone so the ground item actor is dropped.
+	// Receive branch: ZonePacket__dispatchRecv 0x1401e4828 (CMP 0x687e) -> 0x1401e7749. It reads
+	// player_id at +4 and, when that is 0 or equals the local player's id (FUN_1401d4d90), clears the
+	// "someone else is using this" state at DAT_140e3b9e0. It then resolves the ground item by
+	// drop_id (FUN_14020b4a0 compares record + 0x20) and removes it when record + 0x98 - the weight
+	// dword ENCODE(OP_GroundSpawn) writes from object_type - is >= 0, or when the flag byte at +8 is
+	// non-zero. We send flag = 1 so the removal does not depend on that weight value.
+	ENCODE(OP_ClickObject)
+	{
+		ENCODE_LENGTH_EXACT(ClickObject_Struct);
+		SETUP_DIRECT_ENCODE(ClickObject_Struct, structs::ClickObject_Struct);
+
+		OUT(drop_id);
+		OUT(player_id);
+		eq->unknown08 = 1;
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_ClickObjectAction)
 	{
 		ENCODE_LENGTH_EXACT(ClickObjectAction_Struct);
@@ -4206,6 +4225,21 @@ namespace Laurion
 		SETUP_DIRECT_DECODE(ClickDoor_Struct, structs::ClickDoor_Struct);
 
 		IN(doorid);
+		IN(player_id);
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	// Laurion widened the click packet from 8 to 12 bytes - see structs::ClickObject_Struct.
+	// Without this decoder Handle_OP_ClickObject saw size 12 against an 8 byte ClickObject_Struct,
+	// logged "Invalid size on ClickObject_Struct" and dropped the packet, so clicking a ground item
+	// opened the inventory window but nothing ever landed on the cursor.
+	DECODE(OP_ClickObject)
+	{
+		DECODE_LENGTH_EXACT(structs::ClickObject_Struct);
+		SETUP_DIRECT_DECODE(ClickObject_Struct, structs::ClickObject_Struct);
+
+		IN(drop_id);
 		IN(player_id);
 
 		FINISH_DIRECT_DECODE();
