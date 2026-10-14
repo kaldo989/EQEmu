@@ -9600,7 +9600,15 @@ void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
 		database.CreateItem(item, item->MaxCharges, ivrs->augments[0], ivrs->augments[1], ivrs->augments[2],
 			ivrs->augments[3], ivrs->augments[4], ivrs->augments[5]);
 	if (inst) {
-		SendItemPacket(0, inst, ItemPacketViewLink);
+		// Laurion answers 0x6159 on 0x6159: the client deserializes the reply into an ItemBase and hands
+		// it to the Object Preview window. The 0x609c view link it used to get back only enriches a
+		// display window that already holds a matching item, so the window came up empty.
+		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			SendItemPreview(inst, OP_ItemLinkClick);
+		}
+		else {
+			SendItemPacket(0, inst, ItemPacketViewLink);
+		}
 		safe_delete(inst);
 	}
 }
@@ -9608,16 +9616,24 @@ void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
 void Client::Handle_OP_ItemLinkInspect(const EQApplicationPacket *app)
 {
 	// Laurion alt+left-click inspect request (wire opcode 0x0497, client FUN_14040FA60). laurion.cpp
-	// truncates the 80 byte body to LDONItemViewRequest_Struct, so the reply path is identical to the
-	// 0x609c item-link response: build the item and send it back as a view link.
+	// truncates the 80 byte body to LDONItemViewRequest_Struct, so only the item id is used here.
 	VERIFY_PACKET_LENGTH(OP_ItemLinkInspect, app, LDONItemViewRequest_Struct);
 	LDONItemViewRequest_Struct *ivrs = (LDONItemViewRequest_Struct *)app->pBuffer;
 	EQ::ItemInstance *inst = database.CreateItem(ivrs->item_id);
-	if (inst) {
-		SendItemPacket(0, inst, ItemPacketViewLink);
-		safe_delete(inst);
+	if (!inst) {
+		return;
 	}
-	return;
+
+	// Reply on 0x0497. The client's receive case (FUN_140200390) builds a live ItemBase out of the reply
+	// and calls CItemDisplayManager::ShowItem, which is the only path that sets CItemDisplayWnd::pItem -
+	// without it the click looks like it did nothing at all. See docs/advloot.md 11.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendItemPreview(inst, OP_ItemLinkInspect);
+	}
+	else {
+		SendItemPacket(0, inst, ItemPacketViewLink);
+	}
+	safe_delete(inst);
 }
 
 void Client::Handle_OP_ItemLinkResponse(const EQApplicationPacket *app)

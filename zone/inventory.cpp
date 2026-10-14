@@ -3052,6 +3052,44 @@ void Client::SendItemPacket(int16 slot_id, const EQ::ItemInstance* inst, ItemPac
 	FastQueuePacket(&outapp);
 }
 
+// Answer an item inspect request on the opcode it arrived on, with the item itself attached.
+//
+// Laurion's client has a receive case for both inspect requests, and both deserialize the reply into a
+// live ItemBase and install it into a window:
+//   0x0497 -> FUN_140200390 -> CItemDisplayManager::ShowItem -> CItemDisplayWnd::SetItem
+//   0x6159 -> FUN_1401E2C28 -> FUN_14046C730 -> the Object Preview window's inner display window
+// That install is the only thing that writes CItemDisplayWnd::pItem, and pItem is what the 0x609c
+// enrich reply (FUN_140410B20) matches a response against. So SendItemPacket(..., ItemPacketViewLink)
+// cannot make an inspect work on its own: it emits 0x609c, which finds no item to match and is
+// discarded, leaving the window on "No item preview available".
+//
+// The carrier is the same ItemPacket_Struct SendItemPacket builds so every patch reads it identically;
+// only the Laurion strategy has encoders for these two opcodes, so callers must gate on client version.
+void Client::SendItemPreview(const EQ::ItemInstance *inst, EmuOpcode reply_opcode)
+{
+	if (!inst) {
+		return;
+	}
+
+	if (!eqs) {
+		return;
+	}
+
+	// The slot is only carried through the internal struct; the Laurion encoder replaces it with its
+	// own preview slot. See docs/advloot.md 11.4.
+	std::string packet = inst->Serialize(EQ::invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE);
+
+	EQApplicationPacket *outapp = new EQApplicationPacket(reply_opcode, packet.length() + sizeof(ItemPacket_Struct));
+	ItemPacket_Struct *itempacket = (ItemPacket_Struct *) outapp->pBuffer;
+	memcpy(itempacket->SerializedItem, packet.c_str(), packet.length());
+	itempacket->PacketType = ItemPacketViewLink;
+
+#if EQDEBUG >= 9
+		DumpPacket(outapp);
+#endif
+	FastQueuePacket(&outapp);
+}
+
 // Opcode 0x1d00. The Laurion encoder turns this internal carrier into the variable length wire form
 // FUN_1401fb190 reads. The client resolves the GUID through the profile container walk, so the instance
 // must already be known to the client at the slot we sent it to - a freshly created item has a different

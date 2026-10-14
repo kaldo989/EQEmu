@@ -1265,6 +1265,7 @@ public:
 	void SendItemLink(const EQ::ItemInstance* inst, bool sendtoall=false);
 	void SendLootItemInPacket(const EQ::ItemInstance* inst, int16 slot_id);
 	void SendItemPacket(int16 slot_id, const EQ::ItemInstance* inst, ItemPacketType packet_type);
+	void SendItemPreview(const EQ::ItemInstance* inst, EmuOpcode reply_opcode);
 	void SendItemLuckPacket(int16 slot_id, const EQ::ItemInstance* inst, uint32 luck);
 	bool IsValidSlot(uint32 slot);
 	bool IsBankSlot(uint32 slot);

@@ -1410,6 +1410,41 @@ namespace Laurion {
 		};
 		static_assert(sizeof(ItemLinkInspect_Struct) == 80, "bad size");
 
+		// CItemDisplayWnd::SetItem flags, MacroQuestLS src/eqlib/UI.h L4484 ItemDisplayFlags.
+		enum ItemDisplayFlags : uint32_t {
+			ItemDisplayPreventLink      = 0x00000001,
+			ItemDisplayRecycleWindow    = 0x00000002,
+			ItemDisplayFromLink         = 0x00000004,
+			ItemDisplayFromBazaarSearch = 0x00000008,   // ShowItem routes these two to another manager
+			ItemDisplayFromBarterSearch = 0x00000010,   // (FUN_140410DE0 flags & 0x08 / & 0x10)
+		};
+
+		// OP_0x0497 reply, server -> client on the same opcode the request used. Read by
+		// ZonePacket__dispatchRecv case 0x1401d90fb -> FUN_140200390, which reads the three dwords and
+		// then hands the rest of the buffer to ItemClient__CreateItemClient (0x14029D8F0). The item it
+		// gets back goes straight to CItemDisplayManager::ShowItem (FUN_140410DE0) -> CItemDisplayWnd::
+		// SetItem, which is the only writer of CItemDisplayWnd::pItem (window +0x3F8).
+		struct ItemLinkInspectReply_Struct { // OP_0x0497 reply header, then the serialized item
+			/*00*/	int32		luck;         // -> ItemBase::Luck (+0x100); applied only when the definition
+												// has a luck range (FUN_14060E440: MaxLuck >= MinLuck, not both 0)
+			/*04*/	int32		charges;      // -> FUN_140619140 -> ItemBase::Charges (+0xB8); applied only when
+												// > 0, clamped to 100 and to ItemSpellData::Spells[0].MaxCharges (+0x22C),
+												// and forced to 0 when Spells[0].SpellID (+0x220) is -1
+			/*08*/	uint32	display_flags;  // ItemDisplayFlags, passed unchanged to ShowItem
+			/*0C*/	// serialized item follows, byte for byte what SerializeItem writes for OP_ItemPacket
+		};
+
+		// OP_0x6159 reply, server -> client on the same opcode the request used. Read by
+		// ZonePacket__dispatchRecv case 0x1401e2c28: FUN_1401D1DA0 wraps the payload, then
+		// ItemClient__CreateItemClient deserializes it, then FUN_1401D4A90 reads one trailing byte.
+		// The holder is handed to FUN_14046C730(DAT_140d83170 /*ObjectPreviewWnd*/, &holder,
+		// auto || trailing, trailing), which sets the item on the preview's inner display window
+		// (ObjectPreviewWnd +0x2E8) and shows/hides its eleven child widgets (+0x348 .. +0x3A0).
+		struct ItemDisplayWndReply_Struct { // OP_0x6159 reply: serialized item, then this byte
+			/*00*/	uint8	show_3d_preview; // 0 -> FUN_1402BAA90 builds the actor preview; non zero ->
+											   // FUN_1402BAE30 compares against the local player instead
+		};
+
 		// OP_0x1d00 wire form is variable length (null terminated GUID, then length prefixed strings),
 		// so this is only the internal carrier EQEmu uses to reach the encoder. The instance pointer is
 		// carried by the standard EQ::InternalSerializedItem_Struct that follows it.

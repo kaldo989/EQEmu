@@ -908,6 +908,90 @@ namespace Laurion
 		delete in;
 	}
 
+	// The two item-preview replies below both arrive carrying the internal carrier SendItemPacket
+	// builds: an ItemPacket_Struct whose SerializedItem holds the 10 byte InternalSerializedItem_Struct
+	// { int16 slot_id; const void* inst; }. The instance pointer is only meaningful inside the zone
+	// process, which is why the item is serialized here rather than in SendItemPacket.
+	//
+	// The slot is the tradeskill combine slot on purpose. SerializeItem only emits the SubContentSize
+	// field when the slot survives its own container resolution, so an invalid slot would silently drop
+	// it and desynchronize the client's reader. SLOT_TRADESKILL_EXPERIMENT_COMBINE (1000) resolves to
+	// { typeWorld, slot -1, sub -1, aug -1 } in ServerToLaurionSlot: a complete, well formed record that
+	// points at no container the client renders, so a preview item can never disturb the inventory.
+	static const int16 PreviewItemSlot = EQ::invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE;
+
+	// Laurion alt+left-click inspect reply: 0x0497, the same opcode the request came in on.
+	//
+	// Client: ZonePacket__dispatchRecv case 0x1401d90fb -> FUN_140200390(payload, size):
+	//   i32 luck, i32 charges, u32 flags, then ItemClient__CreateItemClient on the rest of the buffer.
+	// If the item deserializes it calls CItemDisplayManager::ShowItem(pinstCItemDisplayManager, &item,
+	// flags) (FUN_140410DE0), which finds or creates a CItemDisplayWnd and runs
+	// CItemDisplayWnd::SetItem (FUN_1404100C0). That is the only writer of CItemDisplayWnd::pItem
+	// (window +0x3F8), and pItem is exactly what FUN_140410B20 - the 0x609c handler - matches a reply
+	// against. Answering 0x0497 with 0x609c therefore cannot work: the window has no item, so the
+	// enrich reply matches nothing and is discarded.
+	ENCODE(OP_ItemLinkInspect) // 0x0497
+	{
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		EQ::InternalSerializedItem_Struct* int_struct = (EQ::InternalSerializedItem_Struct*)(&in->pBuffer[4]);
+		const EQ::ItemInstance* inst = (const EQ::ItemInstance*)int_struct->inst;
+		if (!inst || !inst->GetItem()) {
+			delete in;
+			return;
+		}
+
+		SerializeBuffer buffer;
+		buffer.WriteInt32(0);                                              // luck: no per instance augment luck yet
+		buffer.WriteInt32(inst->GetCharges());                             // charges
+		buffer.WriteUInt32(structs::ItemDisplayPreventLink);              // ShowItem flags
+		SerializeItem(buffer, inst, PreviewItemSlot, 0, ItemPacketViewLink);
+
+		auto outapp = new EQApplicationPacket(OP_ItemLinkInspect, buffer.size());
+		outapp->WriteData(buffer.buffer(), buffer.size());
+		dest->FastQueuePacket(&outapp, ack_req);
+
+		delete in;
+	}
+
+	// Laurion alt+right-click Object Preview reply: 0x6159, again the request's own opcode.
+	//
+	// Client: ZonePacket__dispatchRecv case 0x1401e2c28:
+	//   FUN_1401D1DA0(&buffer, payload, size)                 wrap, no fields consumed
+	//   ItemClient__CreateItemClient(&holder, &buffer)       deserialize the item
+	//   FUN_1400C4F40(&holder)                               bail when the item is null
+	//   FUN_1401D4A90(&buffer, &trailing_byte)               one u8 read AFTER the item
+	//   icon = ItemBase__GetImageNum(def, 0x24)
+	//   b92  = 1, cleared only when !FUN_140614F40(item) and icon is 0x3F or 0x40 (no image)
+	//   FUN_14046C730(DAT_140d83170, &holder, b92 || trailing, trailing)
+	// FUN_14046C730 sets the item on the preview's inner display window (ObjectPreviewWnd +0x2E8) and
+	// then FUN_14046C860 shows the window and its eleven children (+0x348 .. +0x3A0). The request side,
+	// FUN_14046C5C0, only sends the request and raises the z-order (FUN_1405A3380) - it never installs
+	// an item, which is why the window came up on "No item preview available".
+	ENCODE(OP_ItemLinkClick) // 0x6159
+	{
+		EQApplicationPacket* in = *p;
+		*p = nullptr;
+
+		EQ::InternalSerializedItem_Struct* int_struct = (EQ::InternalSerializedItem_Struct*)(&in->pBuffer[4]);
+		const EQ::ItemInstance* inst = (const EQ::ItemInstance*)int_struct->inst;
+		if (!inst || !inst->GetItem()) {
+			delete in;
+			return;
+		}
+
+		SerializeBuffer buffer;
+		SerializeItem(buffer, inst, PreviewItemSlot, 0, ItemPacketViewLink);
+		buffer.WriteUInt8(0); // show_3d_preview: 0 -> FUN_1402BAA90 builds the actor preview
+
+		auto outapp = new EQApplicationPacket(OP_ItemLinkClick, buffer.size());
+		outapp->WriteData(buffer.buffer(), buffer.size());
+		dest->FastQueuePacket(&outapp, ack_req);
+
+		delete in;
+	}
+
 	ENCODE(OP_ItemLinkResponse) // 0x609c
 	{
 		// Reply to CItemDisplayWnd::SendItemLink, consumed by FUN_1401fb540 -> FUN_140410b20. Every

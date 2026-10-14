@@ -38,6 +38,11 @@ E(OP_GroundSpawn)
 E(OP_HPUpdate)
 E(OP_Illusion)
 E(OP_ItemPacket)
+// Both item inspect requests are answered on the opcode they were sent on: 0x0497 preloads the item
+// into the item display manager, 0x6159 preloads it into the Object Preview window. 0x609c on its own
+// only enriches a window that already holds a matching item, so it cannot open either one.
+E(OP_ItemLinkClick)
+E(OP_ItemLinkInspect)
 E(OP_ItemLinkResponse)
 E(OP_ItemLuck)
 E(OP_KeyRingSlots)
