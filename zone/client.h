@@ -1070,32 +1070,54 @@ public:
 	bool advloot_enabled = false;
 	bool advloot_master_looter_candidate = false;
 
-	// The client's green loot button sends subcmd 0x08 without a legacy loot request, so the server
-	// has to remember which corpse the rows it pushed belong to. Set when rows are delivered.
-	Corpse* advloot_corpse = nullptr;
+	// The client's green loot button sends subcmd 0x08 without a legacy loot request, so the server has to
+	// remember which corpse the rows it pushed belong to. Set when rows are delivered. It is an id rather
+	// than a pointer: use AdvLootCorpse(), which resolves it through entity_list.
+	uint16_t advloot_last_corpse_id = 0;
 
-	// Every corpse this client still has unresolved AdvLoot rows for. A looted row cannot be decremented or
-	// removed by any server packet, so the window is rebuilt from this list after each transaction.
+	// Every corpse this client still has unresolved AdvLoot rows for. This is the client-side half of the
+	// view: a weak list of corpse ids, resolved through entity_list every time it is used, so a decayed
+	// corpse cannot be dereferenced. The authoritative per-corpse view (pending rows and ask keys) lives in
+	// that corpse's AdvLoot::Session.
 	std::vector<uint16_t> advloot_corpses;
 
-	// Ask groups the client has told us about, keyed by the id the client allocated itself (AdvLoot row
-	// record +0x60). The client only ever reveals that id on subcmd 0x0B (FUN_1400a82a0 -> FUN_140154830,
-	// which writes record+0x60 into the block's first u32), and it is the only key the 0x360e / 0x0D Manage
-	// Loot request carries - so without this map the server cannot tell which corpse and item the request
-	// is about. The client resets its id counter (manager+0x1e8) and clears the table (manager+0x128) on
-	// every subcmd 0x03 rebuild, so the ids are only stable within one corpse cycle.
-	struct AdvLootAskGroup {
-		uint32_t corpse_key = 0;
-		uint32_t item_id    = 0;
-	};
-	std::map<uint32_t, AdvLootAskGroup> advloot_ask_groups;
+	// Ask keys (AdvLoot row record +0x60) are allocated by the client itself (FUN_1401501c0 from the counter
+	// at LootFiltersManager+0x1e8) and are only ever revealed on subcmd 0x0B (FUN_1400a82a0 -> FUN_140154830,
+	// which writes record+0x60 into the block's first u32). They are the only key a 0x360e / 0x0D Manage Loot
+	// request carries, so the server has to remember them - but they belong to a corpse, and the client resets
+	// its id counter and clears its table on every subcmd 0x03 rebuild. They are stored in the corpse's
+	// AdvLoot::Session under this character's View, so they die with the corpse exactly as they die on the
+	// client.
 
 	void LoadAdvLootFilters();
 	void LoadAdvLootSettings();
 	void SendAdvLootFilterSet();
 	uint32_t AdvLootFilterBits(uint32_t item_id) const;
-	void SendAdvLootCorpse(const AdvLoot::CorpseGroup& corpse_group);
-	void SendAdvLootCorpseRebuild();
+	// Send one corpse's group record to this client. Only AdvLoot::Session::Render calls it - a group record
+	// is built in exactly one place so the two panes cannot drift apart.
+	void SendAdvLootGroup(const AdvLoot::CorpseGroup& corpse_group);
+	// Re-render every corpse this client has rows for, as ONE subcmd 0x03. FUN_140153970 clears the corpse
+	// hash, the ask table and both panes before re-adding, so a partial render would wipe the other corpses'
+	// rows. A corpse with nothing left is dropped from the window instead of resent.
+	void AdvLootRender();
+	// Step 8 cleanup. This client is leaving the zone, disconnecting, or being destroyed: drop its View from
+	// every corpse it had rows on, which returns anything it was awarded but never picked up to that corpse's
+	// shared pool and removes it from any ask still running.
+	void ForgetAdvLootViewers();
+	// This client died. They drop out of every in-flight ask on their AdvLoot corpses - a dead looter must not
+	// win a roll they cannot collect - but what was already awarded to them stays awarded, so a wipe does not
+	// re-open loot the master looter had given them.
+	void AdvLootViewerDied();
+	// The client's group or raid changed (join, leave, disband, MoveMember, master looter change). Re-derive
+	// each affected corpse's mode and re-render it so the window's mode list and Master Looter marker match.
+	// AuthorityFor() already reads the construct live, so this is about what the window shows, not about what
+	// the server accepts.
+	void RefreshAdvLootAuthority();
+	// Refuse an Advanced Loot decision this client has no authority to make. The client set record+0x6C
+	// (CLootInProgress) before it sent the request and only an exact-match 0x10 clears it, so a refusal has
+	// to release the row as well as print the client's own wording - otherwise the next click errors with
+	// eqstr 643 and the row looks broken. See AdvLoot::Session::AuthorityFor.
+	void RefuseAdvLootAction(const char* what, Corpse* corpse, uint32_t ask_key, uint32_t item_id, uint32_t loot_details_key);
 	// subcmd 0x0C with flag 0 - FUN_140154a90 -> FUN_1400a8350. This only restates the need/greed/never
 	// choice on a row the client already has; it cannot create one. Rows are created by subcmd 0x03.
 	void SendAdvLootChoice(uint32_t item_id, uint32_t choice, const std::string& name);
@@ -1106,8 +1128,19 @@ public:
 	void SendAdvLootLootMode();
 	void SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t icon, const std::string& name);
 	// subcmd 0x0B (FUN_140154830) is the only packet that carries the client's own ask-group id; record it
-	// so a later 0x360e / 0x0D request can be resolved to a corpse and item.
+	// against the corpse the request is about so a later 0x360e / 0x0D can be resolved to a corpse and item.
 	void RememberAdvLootAskGroup(uint32_t ask_key, uint32_t corpse_key, uint32_t item_id);
+	// The reverse lookup: the ask key a (corpse, item) row is currently addressed by, or 0 when it has never
+	// had an ask installed. 0 is what the client itself sends in that field for such a row, so it is a valid
+	// reply value rather than a missing one.
+	uint32_t FindAdvLootAskKey(uint32_t corpse_key, uint32_t item_id) const;
+	// Look an ask key the client allocated up in the AdvLoot::Session views this character owns. Returns the
+	// corpse key and item id it was recorded against. This is what a 0x360e / 0x0D or 0x0F request is
+	// resolved with, because those carry nothing but the id.
+	bool FindAdvLootAskGroup(uint32_t ask_key, uint32_t *corpse_key, uint32_t *item_id) const;
+	// The corpse this client most recently had rows for, resolved from advloot_corpses. Returns nullptr when
+	// that corpse is gone.
+	Corpse* AdvLootCorpse() const;
 	// Answer a 0x360e / 0x0D request with subcmd 0x0D: the looter response list the Manage Loot window
 	// shows in ML_PlayerList (Player / ND / GD).
 	void SendAdvLootAskResponses(uint32_t ask_key, uint32_t corpse_key, uint32_t item_id);
@@ -1115,7 +1148,7 @@ public:
 	// about. The client is inconsistent about what that key is - the send side writes record+0x60 (its own
 	// ask-group id) while the receive side hashes it into the corpse hash - so this tries the ask-group map
 	// first, then the key as a corpse entity id, then the corpse this client last opened.
-	Corpse* ResolveAdvLootGroup(uint32_t group_key, uint32_t item_id_hint, uint32_t *out_item_id);
+	Corpse* ResolveAdvLootGroup(uint32_t key, uint32_t item_id_hint, uint32_t *out_item_id);
 	// subcmd 0x0A - echo an ask-group record to the rest of the construct so an Ask started by one client
 	// shows as a running countdown in everybody else's window (FUN_1400aa1b0 stores the deadline at
 	// record+0x88 and repaints the row).

@@ -1447,6 +1447,22 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		if (zone) {
 			if (rga->zoneid == zone->GetZoneID() && rga->instance_id == zone->GetInstanceID())
 				break;
+
+			// Raid::SetGroupLeader writes raid_members.isgroupleader and sends this packet, and the world
+			// forwards it to every zone - but the handler here did nothing, so a raid spread over more than
+			// one zone kept showing the old group leader. Re-learn the roster and rebuild that group's window,
+			// which is where SendGroupUpdate fills leadersname from is_group_leader.
+			Raid *r = entity_list.GetRaidByID(rga->rid);
+			if (r) {
+				r->LearnMembers();
+				r->VerifyRaid();
+
+				const uint32 gid = r->GetGroup(rga->playername);
+				if (gid < MAX_RAID_GROUPS) {
+					r->UpdateGroupAAs(gid);
+					r->GroupUpdate(gid, false);
+				}
+			}
 		}
 		break;
 	}

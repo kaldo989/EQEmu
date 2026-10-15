@@ -69,6 +69,9 @@ public:
 	bool	DelMemberOOZ(const char *Name);
 	bool	DelMember(Mob* oldmember,bool ignoresender = false);
 	void	DisbandGroup(bool joinraid = false);
+	// Step 8: re-derive and re-render the Advanced Loot corpses this group's members have rows on. Called
+	// whenever the membership or the master looter changes.
+	void	RefreshAdvLootAuthority();
 	void	GetMemberList(std::list<Mob*>& member_list, bool clear_list = true);
 	void	GetClientList(std::list<Client*>& client_list, bool clear_list = true);
 	void	GetBotList(std::list<Bot*>& bot_list, bool clear_list = true);

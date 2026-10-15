@@ -21,6 +21,7 @@
 #include "common/repositories/raid_details_repository.h"
 #include "common/repositories/raid_members_repository.h"
 #include "common/strings.h"
+#include "zone/advloot.h"
 #include "zone/bot.h"
 #include "zone/client.h"
 #include "zone/dynamic_zone.h"
@@ -248,6 +249,10 @@ void Raid::AddBot(Bot* b, uint32 group, bool raid_leader, bool group_leader, boo
 	rga->instance_id = zone->GetInstanceID();
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
+
+	// A member joined: the raid's loot rule now applies to them, and their presence can change who the raid
+	// treats as authority on the corpses everyone is sharing.
+	RefreshAdvLootAuthority();
 }
 
 
@@ -289,10 +294,22 @@ void Raid::RemoveMember(const char *character_name)
 	strn0cpy(rga->playername, character_name, sizeof(rga->playername));
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
+
+	RefreshAdvLootAuthority();
 }
 
 void Raid::DisbandRaid()
 {
+	// LearnMembers() re-reads the roster as we go, so collect the clients first: the Advanced Loot refresh at
+	// the end of this function would otherwise find an empty raid.
+	std::vector<Client *> disbanded;
+
+	for (int i = 0; i < MAX_RAID_MEMBERS; ++i) {
+		if (members[i].member && !members[i].is_bot) {
+			disbanded.push_back(members[i].member);
+		}
+	}
+
 	const auto query = fmt::format(
 		"DELETE FROM raid_members WHERE raidid = {}",
 		GetID()
@@ -313,30 +330,84 @@ void Raid::DisbandRaid()
 	safe_delete(pack);
 
 	forceDisband = true;
+
+	// Each of those players is now ungrouped, which is a different Advanced Loot authority: an ungrouped
+	// looter is their own master looter.
+	AdvLoot::RefreshCorpsesFor(disbanded);
 }
 
 void Raid::MoveMember(const char *name, uint32 newGroup)
 {
+	if (!name || !name[0]) {
+		return;
+	}
 
+	int old_index = -1;
+
+	for (int i = 0; i < MAX_RAID_MEMBERS; ++i) {
+		if (!strcmp(name, members[i].member_name)) {
+			old_index = i;
+			break;
+		}
+	}
+
+	if (old_index < 0) {
+		// GetPlayerIndex() returns 0 for a miss, so anything that resolved an index unchecked was quietly
+		// acting on members[0] instead. Refuse rather than move the wrong roster slot.
+		LogError("Raid::MoveMember: [{}] is not on the roster of raid [{}]", name, GetID());
+		return;
+	}
+
+	const uint32 old_group   = members[old_index].group_number;
+	const bool   moved_group = (old_group != newGroup);
+
+	// A member cannot lead a group they are leaving, so the flag comes off with the move. Whether the
+	// destination needs a leader is decided from the roster after the move lands, not from what the caller
+	// remembered beforehand - that is what left groups leaderless.
 	const auto query = fmt::format(
-		"UPDATE raid_members SET groupid = {} WHERE name = '{}'",
+		"UPDATE raid_members SET groupid = {}{} WHERE name = '{}'",
 		newGroup,
+		moved_group ? ", isgroupleader = 0" : "",
 		name
-		);
+	);
 	auto results = database.QueryDatabase(query);
 
 	LearnMembers();
 	VerifyRaid();
+
+	// Repair the invariant on both sides of the move. SetGroupLeader() re-reads the roster, so these run
+	// against the post-move state and are idempotent: a caller that already named a leader for either group
+	// is left alone.
+	const bool source_repaired = moved_group && EnsureGroupLeader(old_group);
+	const bool dest_repaired   = moved_group && EnsureGroupLeader(newGroup, name);
+
 	SendRaidMoveAll(name);
 
 	auto pack = new ServerPacket(ServerOP_RaidChangeGroup, sizeof(ServerRaidGeneralAction_Struct));
-	auto* rga = (ServerRaidGeneralAction_Struct*) pack->pBuffer;
+	ServerRaidGeneralAction_Struct* rga = (ServerRaidGeneralAction_Struct*) pack->pBuffer;
 	strn0cpy(rga->playername, name, sizeof(rga->playername));
 	rga->rid         = GetID();
 	rga->zoneid      = zone->GetZoneID();
 	rga->instance_id = zone->GetInstanceID();
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
+
+	// SetGroupLeader() already told the other zones about the flag. The local members still need their group
+	// window rebuilt, which is where SendGroupUpdate fills leadersname from. initial = false because the
+	// ServerOP_RaidChangeGroup above already made the other zones re-learn the roster.
+	if (source_repaired) {
+		UpdateGroupAAs(old_group);
+		GroupUpdate(old_group, false);
+	}
+
+	if (dest_repaired) {
+		UpdateGroupAAs(newGroup);
+		GroupUpdate(newGroup, false);
+	}
+
+	// Under RaidLootType::LeaderAndGroupLeadersOnly the group leader is the authority, so moving a member -
+	// or moving a leader - changes who may act on every shared corpse.
+	RefreshAdvLootAuthority();
 }
 
 void Raid::SetGroupLeader(const char *who, bool glFlag)
@@ -361,6 +432,20 @@ void Raid::SetGroupLeader(const char *who, bool glFlag)
 	safe_delete(pack);
 }
 
+// The clear form of SetGroupLeader. It was declared in raids.h for a long time with no definition anywhere -
+// nothing called it, so it linked - which is why every caller that wanted to drop a leader wrote
+// SetGroupLeader(name, false) instead. It only drops the flag: naming a replacement is EnsureGroupLeader's
+// job, so the two compose instead of duplicating each other. It does not touch raid_leaders, which stores
+// the group's leadership AA and main tank / assist markers and belongs to the group, not to the person.
+void Raid::RemoveGroupLeader(const char *who)
+{
+	if (!who || !who[0]) {
+		return;
+	}
+
+	SetGroupLeader(who, false);
+}
+
 Client *Raid::GetGroupLeader(uint32 group_id)
 {
 	if (group_id == RAID_GROUPLESS) {
@@ -374,6 +459,65 @@ Client *Raid::GetGroupLeader(uint32 group_id)
 	}
 
 	return nullptr;
+}
+
+// See the declaration in raids.h. `preferred`, used only when the group has no leader, is the member to name
+// rather than the first one on the roster: MoveMember passes the member who just moved in, because dragging
+// a player into a group is how the client asks for that player to lead it.
+//
+// Names are collected before anything is written because SetGroupLeader() re-reads the roster from the
+// database and rewrites members[], which would invalidate an index.
+bool Raid::EnsureGroupLeader(uint32 group_id, const char *preferred)
+{
+	if (group_id >= MAX_RAID_GROUPS) {
+		return false;
+	}
+
+	std::string first_leader;
+	std::vector<std::string> extra_leaders;
+	std::string candidate;
+	std::string preferred_candidate;
+
+	for (const auto &m : members) {
+		if (!m.member_name[0] || m.group_number != group_id) {
+			continue;
+		}
+
+		if (m.is_group_leader) {
+			if (first_leader.empty()) {
+				first_leader = m.member_name;
+			}
+			else {
+				extra_leaders.push_back(m.member_name);
+			}
+		}
+		else if (preferred && !strcmp(preferred, m.member_name)) {
+			preferred_candidate = m.member_name;
+		}
+		else if (candidate.empty()) {
+			candidate = m.member_name;
+		}
+	}
+
+	if (!first_leader.empty()) {
+		if (extra_leaders.empty()) {
+			return false;   // exactly one leader, nothing to do
+		}
+
+		for (const auto &extra : extra_leaders) {
+			RemoveGroupLeader(extra.c_str());
+		}
+
+		return true;
+	}
+
+	if (candidate.empty() && preferred_candidate.empty()) {
+		return false;   // the group has no members left
+	}
+
+	SetGroupLeader(!preferred_candidate.empty() ? preferred_candidate.c_str() : candidate.c_str(), true);
+
+	return true;
 }
 
 void Raid::SetRaidLeader(const char *wasLead, const char *name)
@@ -447,7 +591,8 @@ void Raid::SaveRaidLeaderAA()
 void Raid::UpdateGroupAAs(uint32 gid)
 {
 
-	if (gid > MAX_RAID_GROUPS || gid == RAID_GROUPLESS || gid < 0) {
+	// gid indexes group_aa[MAX_RAID_GROUPS], so 12 itself is already out of bounds.
+	if (gid >= MAX_RAID_GROUPS) {
 		return;
 	}
 
@@ -488,12 +633,32 @@ bool Raid::IsGroupLeader(const char* name)
 	return false;
 }
 
+// This overload used to return true for any raid member - it never read is_group_leader, unlike the
+// const char* overload above. Nothing in the zone called it (every internal caller passes a name), so the
+// only reachable users were the Lua binding Lua_Raid::IsGroupLeader(Lua_Client) and the Perl binding
+// Perl_Raid_IsGroupLeader(Raid*, Client*), both of which are thin pass-throughs with no documented
+// behaviour. Scripts that passed a Client and relied on the old answer were getting "is a raid member",
+// which IsRaidMember(Client*) already answers. Fixed to match the name overload.
 bool Raid::IsGroupLeader(Client *c)
 {
 	if (c) {
 		for (const auto &m: members) {
 			if (m.member == c) {
-				return true;
+				return m.is_group_leader;
+			}
+		}
+	}
+
+	return false;
+}
+
+// The looter list the raid window's "Selected" loot rule edits (AddRaidLooter / RemoveRaidLooter).
+bool Raid::IsRaidLooter(Client *c)
+{
+	if (c) {
+		for (const auto &m: members) {
+			if (m.member == c) {
+				return m.is_looter;
 			}
 		}
 	}
@@ -1019,6 +1184,11 @@ void Raid::ChangeLootType(uint32 type)
 									 (unsigned long)type, (unsigned long)GetID());
 	auto results = database.QueryDatabase(query);
 	LootType = type;
+
+	// RaidLootType is what AdvLoot::Session::AuthorityFor reads first: EntireRaid turns every member into an
+	// authority who may free-grab, LeaderSelected gates on the looter list, LeaderAndGroupLeadersOnly on the
+	// group leaders. Changing it re-decides every shared corpse.
+	RefreshAdvLootAuthority();
 }
 
 void Raid::AddRaidLooter(const char* looter)
@@ -1044,6 +1214,8 @@ void Raid::AddRaidLooter(const char* looter)
 	rga->instance_id = zone->GetInstanceID();
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
+
+	RefreshAdvLootAuthority();
 }
 
 void Raid::RemoveRaidLooter(const char* looter)
@@ -1069,6 +1241,8 @@ void Raid::RemoveRaidLooter(const char* looter)
 	rga->instance_id = zone->GetInstanceID();
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
+
+	RefreshAdvLootAuthority();
 }
 
 bool Raid::IsRaidMember(const char *name)
@@ -3010,4 +3184,24 @@ Client* Raid::GetMasterLooter()
 void Raid::SetMasterLooter(Client* c)
 {
 	master_looter_name = c ? c->GetCleanName() : "";
+
+	// Advanced Loot gates every decision sub-command on who the master looter is, and the window shows that
+	// name in its 0x03 mode list. Both change here.
+	RefreshAdvLootAuthority();
+}
+
+// Step 8: the raid's composition, its loot rule or its master looter changed. Re-derive the mode of every
+// Advanced Loot corpse any member has rows on and re-render each one once. AuthorityFor() reads the raid live
+// so the server's gate is already correct; what needs the re-render is the mode list the window shows.
+void Raid::RefreshAdvLootAuthority()
+{
+	std::vector<Client *> clients;
+
+	for (int i = 0; i < MAX_RAID_MEMBERS; ++i) {
+		if (members[i].member && !members[i].is_bot) {
+			clients.push_back(members[i].member);
+		}
+	}
+
+	AdvLoot::RefreshCorpsesFor(clients);
 }

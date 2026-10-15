@@ -4,6 +4,7 @@ set(zone_sources
     aa.cpp
     aa_ability.cpp
     advloot.cpp
+    advloot_session.cpp
     aggro.cpp
     aggromanager.cpp
     api_service.cpp
@@ -120,6 +121,7 @@ set(zone_sources
 set(zone_headers
     aa_ability.h
     advloot.h
+    advloot_session.h
     aa_ability.h
     aggromanager.h
     api_service.h

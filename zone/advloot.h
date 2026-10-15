@@ -61,7 +61,12 @@ namespace AdvLoot {
 		SubFilterSetRequest   = 0x02, // C->S only, FUN_140153570 - bare request, clears the filter hash first
 		SubFilterSetSync      = 0x03, // BOTH, FUN_140153970 / reader FUN_1400874d0
 		SubChatNotify         = 0x06, // S->C only, FUN_140152cb0 / reader FUN_140086d70
-		SubCorpseRowNotify    = 0x07, // C->S only, FUN_1401522b0 / serializer FUN_1400859e0
+		SubCorpseRowNotify    = 0x07, // C->S only, sender FUN_1401522b0 / serializer FUN_1400859e0:
+		                              // u64 item_id, u32 corpse_key, u32 quantity. FUN_14009e460 sends it on the
+		                              // Never tick from record+0x00, group record+0 and record+0x14; FUN_1400a4750
+		                              // sends one per nested record before the Remove button drops the Personal
+		                              // row. There is no receive case for it in FUN_140151c60, so the server only
+		                              // ever reads this packet - it has no builder on purpose.
 		SubTransactionRequest = 0x08, // C->S only, FUN_140154cd0 / serializer FUN_140085aa0
 		SubItemActionNotify   = 0x09, // S->C only, FUN_140151810 / reader FUN_140086e00
 		// The answer to a 0x08 request. `action` selects a chat line and, for 1 and 2, erases the item from the
@@ -196,6 +201,15 @@ namespace AdvLoot {
 	// The eqstr_us.txt id each action prints, or 0 for the silent ones.
 	uint32_t LootActionStringId(uint16_t action);
 	const char* LootActionName(uint16_t action);
+
+	// subcmd 0x06's last field: which suffix the client appends to the money line. FUN_140152cb0 only looks
+	// for 1, 2 and 4 - any other value (including 0) prints no suffix at all, which is the plain split case.
+	enum BonusType : uint32_t {
+		BonusNone       = 0, // no suffix
+		BonusExtraLucky = 1, // eqstr 6036  " (with an extra lucky bonus)"
+		BonusLucky      = 2, // eqstr 14581 " (with a lucky bonus)"
+		BonusFlat       = 4, // eqstr 6037  " (with a bonus)"
+	};
 
 	// Map the server's Choice onto the client's subcmd 0x0C action numbering.
 	inline uint32_t ChoiceToClientAction(uint32_t choice)
@@ -350,39 +364,56 @@ namespace AdvLoot {
 
 	// One-line, human readable description of a payload. Falls back to a hex dump for
 	// sub-commands whose layout is not yet confirmed.
+	// One nested item record of a subcmd 0x03 group record (reader FUN_1400839b0, writer
+	// WriteItemRecord). This is the single place the record's raw offsets are written down; the
+	// builders below consume these names and no other struct in the codec reuses these offsets.
+	//
+	//   wire order                       record offset   field
+	//   u64 item_id                     +0x00           item_id
+	//   u32 icon                        +0x08           icon
+	//   u32 shared pool quantity        +0x0C           shared_qty
+	//   u32 managed flag (always 1)     +0x10           -
+	//   u32 personal pool quantity      +0x14           personal_qty
+	//   u8  flag                        +0x18           -
+	//   u32 value                       +0x1C           -
+	//   string name                     +0x28           name
+	//   u32 block length + raw link     +0x20           -
+	//
+	// The group-record fields that travel with it (present_at_kill, corpse_key, decay_expires_in) are
+	// written by WriteGroupRecord around the nested records, not inside them.
+	//
+	// The +0x0C / +0x14 pair is the two-pool model: AddCorpse (FUN_14009e310) makes a Corpse Loot List
+	// row when +0x0C is non-zero and a Personal Loot List row when +0x14 is non-zero, and dispatcher
+	// case 0x0e moves units between them (`quantity <= entry+0x0C`, then entry+0x14 += q, entry+0x0C -= q).
+	// A zero shared pool makes a transaction reply match nothing, which leaves CLootInProgress
+	// (row +0x6C) set and the next click prints eqstr 643.
+	//
+	// Do not confuse +0x0C here with the +0x0C of the LootDetails entry (AdvancedLootItemNPC, built by
+	// FUN_14009c0a0), which is the Locked bool and comes from the group record's first byte.
 	struct Filter {
 		uint32_t   item_id = 0;
 		uint32_t   filter_bits = 0;
 		uint32_t   icon = 0;
 		std::string name;
-		// Two different objects share the +0x0C offset, which is what caused the confusion:
-		//  - the wire item record (FUN_1400839b0) has +0x0C = shared/construct loot list quantity and
-		//    +0x14 = personal loot list quantity. Dispatcher case 0x0e requires `quantity <= entry[0xC]`
-		//    to move the amount from the shared pool to the personal pool, so a zero here means the
-		//    transaction reply matches nothing and CLootInProgress (record +0x6C) is never cleared - the
-		//    second click then prints string 643 "You cannot perform that action right now".
-		//  - the LootDetails entry (AdvancedLootItemNPC, built by FUN_14009c0a0) has +0x0C = Locked,
-		//    derived from the group record's first byte, not from this field.
-		uint32_t   quantity = 0;  // +0x0C shared / construct loot list
-		uint32_t   personal = 0;  // +0x14 personal loot list
+		uint32_t   shared_qty = 0;      // +0x0C - units on the corpse, unassigned
+		uint32_t   personal_qty = 0;    // +0x14 - units already awarded to this viewer
 
-		// Group record wire field 3 -> record +4. FUN_14014f5f0 computes `value * 1000 + clock`, so
-		// this is an expiration in SECONDS, not a quantity. Writing a quantity here made the corpse
-		// row expire about a second after it was created - that is why the window closed by itself.
-		// Use the corpse decay time, or a large value for the login filter push.
-		uint32_t   expiration = 3600;
+		// Group record wire field 3 -> record +4. FUN_14014f5f0 computes `value * 1000 + clock`, so this
+		// is an expiration in SECONDS, not a quantity. Writing a quantity here made the corpse row expire
+		// about a second after it was created - that is why the window closed by itself. Set it from the
+		// corpse decay time, or a large value for the login filter push.
+		uint32_t   decay_expires_in = 3600;
 
-		// Group record wire field 1 -> record +0x146c. FUN_14009c0a0 stores
-		// `(record + 0x146c == 0)` into the LootDetails entry at +0xC, and FUN_1400a41c0 reads that
-		// byte as Locked. So this byte must be 1 for players who have loot rights (were present at
-		// the kill) - sending 0 marks every row as locked.
+		// Group record wire field 1 -> record +0x146c. FUN_14009c0a0 stores `(record + 0x146c == 0)`
+		// into the LootDetails entry at +0xC, and FUN_1400a41c0 reads that byte as Locked. It must be 1
+		// for players who have loot rights (were present at the kill); sending 0 marks every row locked.
 		uint8_t    present_at_kill = 0;
 
-		// Group record wire field 4 -> record +0, which FUN_14014f5f0 uses as the key of the
-		// corpse/loot-list hash (manager + 0, 30 buckets). For a corpse delivery this is the corpse
-		// entity id; for the login filter push the group record doubles as the filter record so the
-		// item id is used. Later sub-commands (0x09, 0x0e, 0x0f) look rows up by this key, so the
-		// server must reuse the value it wrote at row creation.
+		// Group record wire field 4 -> record +0, the key of the corpse/loot-list hash (manager + 0,
+		// 30 buckets). For a corpse delivery this is the corpse entity id; for the login filter push the
+		// group record doubles as the filter record so the item id is used. It is also the key stored at
+		// LootDetails entry +0x00, which is what subcmd 0x0e and 0x08 carry as their corpse key field,
+		// so the server must reuse the value it wrote at row creation.
 		uint32_t   corpse_key = 0;
 	};
 
@@ -415,23 +446,30 @@ namespace AdvLoot {
 	// (record+0x78 data, record+0x80 count, stride 0x50, key at entry+0, i16 quantity at entry+4) and emits
 	// one packet per entry after clamping each entry's quantity against what is left to move.
 	//
-	// Struct offsets the client uses: +0x00 item id, +0x08 entry key, +0x0C group key, +0x10 quantity,
+	// Struct offsets the client uses: +0x00 item id, +0x08 ask key, +0x0C corpse key, +0x10 quantity,
 	// +0x12 flag, +0x13 name[64].
 	//
-	// The group key is read from record+0x60 on the send side but is hashed into the corpse hash at
-	// manager+0 / manager+8 and compared against node+0x51c8 on the receive side (0x140151e47-0x140151e68),
-	// so the two sides disagree and the server has to accept either reading. See advloot.md section 10.16.
+	// The two keys, resolved 2026-10-16 against CAdvancedLootWnd__DoSharedAdvLootAction (send side),
+	// FUN_140151c60 case 0xe and FUN_1400a42f0 (receive side). The apparent contradiction recorded in
+	// advloot.md section 10.16 is not one: the LootDetails entry key IS the group record's hash key,
+	// because FUN_14009c0a0 fills entry+0x00 from group record +0x00.
+	//   ask_key   - the send side writes row +0x60 here; FUN_1400a42f0 requires packet+0x08 == row +0x60
+	//               before it clears CLootInProgress (row +0x6C). row +0x60 is 0 until an ask is installed
+	//               by FUN_1400a0480, which copies it from the ask record's key.
+	//   corpse_key- the send side writes the LootDetails entry key here; the dispatcher hashes it into the
+	//               corpse hash and compares it against node+0x51c8 (0x140151e47-0x140151e68), and
+	//               FUN_1400a42f0 compares it against the LootDetails entry key.
 	//
 	// flag 0 means "give to name": the client creates a Personal Loot row for the viewer only when the name
 	// matches the local player and flag is 0 (0x140151f11-0x140151f1f). flag 1 is ML_LeaveOnCorpse, which
 	// sends the local player's own name and leaves the quantity in the shared pool.
 	struct Transaction {
-		uint32_t    entry_key = 0;   // wire field 1 -> struct+0x08
-		uint32_t    group_key = 0;   // wire field 2 -> struct+0x0C
-		uint64_t    item_id   = 0;   // wire field 3 -> struct+0x00
-		uint16_t    quantity  = 0;   // wire field 4 -> struct+0x10
-		uint8_t     flag      = 0;   // wire field 5 -> struct+0x12
-		std::string name;            // wire field 6 -> struct+0x13
+		uint32_t    ask_key    = 0;   // wire field 1 -> struct+0x08, matched against row +0x60
+		uint32_t    corpse_key = 0;   // wire field 2 -> struct+0x0C, the group record / LootDetails key
+		uint64_t    item_id    = 0;   // wire field 3 -> struct+0x00
+		uint16_t    quantity   = 0;   // wire field 4 -> struct+0x10
+		uint8_t     flag       = 0;   // wire field 5 -> struct+0x12
+		std::string name;             // wire field 6 -> struct+0x13
 	};
 
 	bool ReadTransaction(Reader& reader, Transaction& out);
@@ -441,11 +479,11 @@ namespace AdvLoot {
 	// (FUN_14014f5f0 runs CEverQuest__trimName over it), so it must not be an item name. The item name
 	// lives in the nested record only.
 	struct CorpseGroup {
-		uint32_t      corpse_key = 0;      // group record +0 - corpse entity id
-		std::string   npc_name;            // group record +0xd - NPC name
-		uint32_t      expiration = 3600;   // group record +4 - seconds, packed as value * 1000 + clock
-		uint8_t       present_at_kill = 0; // group record +0x146c - loot-rights flag
-		std::vector<Filter> items;         // nested item records
+		uint32_t      corpse_key = 0;         // group record +0 - corpse entity id
+		std::string   npc_name;               // group record +0xd - NPC name
+		uint32_t      decay_expires_in = 3600; // group record +4 - seconds, packed as value * 1000 + clock
+		uint8_t       present_at_kill = 0;    // group record +0x146c - loot-rights flag
+		std::vector<Filter> items;            // nested item records
 	};
 
 	// Wire writer mirroring the client's serialize side (little endian, null-terminated strings).
@@ -522,21 +560,23 @@ namespace AdvLoot {
 	);
 
 	// subcmd 0x0C - reader FUN_140086ab0, handler FUN_140154a90. Wire:
-	//   u16 subcmd, u8 flag, u32 field_a (-> wnd+0x57C), u32 field_b (-> wnd+0x578),
-	//   u64 field_c (-> wnd+0x570), u16 count, count x (u32 action, string name).
+	//   u16 subcmd, u8 flag, u32 ask_key (-> wnd+0x57C), u32 loot_details_key (-> wnd+0x578),
+	//   u64 item_id (-> wnd+0x570), u16 count, count x (u32 action, string name).
 	// flag == 0 -> FUN_1400a8350(DAT_140d830d8, &row, 0, 0), and the row it is handed is
 	//   +0x00 u32 action   (ClientChoiceAction)
-	//   +0x08 u64 field_c  (compared with record+0x00, the item id)
-	//   +0x10 u32 field_b  (compared with record+0x60)
-	// A row matches when field_b == record+0x60, or when record+0x60 == 0 and field_c == item id, so
-	// sending field_b = 0 with field_c = item_id matches by item id.
+	//   +0x08 u64 item_id  (compared with record+0x00)
+	//   +0x10 u32 loot_details_key (compared with record+0x60)
+	// A row matches when loot_details_key == record+0x60, or when record+0x60 == 0 and item_id == the item id,
+	// so sending loot_details_key = 0 with item_id = the item matches by item id.
 	// flag != 0 -> FUN_1400a1340(DAT_140d830d8, &row), which removes the matching row.
 	// Neither form creates a row: only subcmd 0x03 (SubFilterSetSync) creates rows.
+	// The first u32 (window +0x57C) is not read by either consumer; it is the ask key in the client's own
+	// 0x0B block layout (FUN_1400a82a0), so send 0 unless a row is addressed by ask key.
 	EQApplicationPacket* BuildChoiceUpdatePacket(
-		uint32_t field_a,
-		uint32_t field_b,
-		uint64_t field_c,
-		uint8_t  remove_row,   // 0 = apply the choice, non-zero = remove the matching row
+		uint32_t ask_key_unused,        // -> window +0x57C, unread by FUN_1400a8350 / FUN_1400a1340
+		uint32_t loot_details_key,      // -> window +0x578, compared with row +0x60
+		uint64_t item_id,               // -> window +0x570, compared with row +0x00
+		uint8_t  remove_row,            // 0 = apply the choice, non-zero = remove the matching row
 		const std::vector<std::pair<uint32_t, std::string>>& actions   // (ClientChoiceAction, name)
 	);
 
@@ -555,9 +595,6 @@ namespace AdvLoot {
 
 	// subcmd 0x11: item_id, assignee, state, flag.
 	EQApplicationPacket* BuildStatePacket(uint32_t item_id, uint32_t assignee, uint32_t state, uint8_t flag);
-
-	// subcmd 0x07 - FUN_1400859e0: u64, u32, u32
-	EQApplicationPacket* BuildCorpseRowNotifyPacket(uint64_t item_id, uint32_t field_b, uint32_t quantity);
 
 	// subcmd 0x09 - reader FUN_140086e00: u16 action, u32 quantity, u32 transaction_id, u8 flag.
 	//
@@ -592,13 +629,16 @@ namespace AdvLoot {
 	//                    equals loot_details_key
 	EQApplicationPacket* BuildRowUnlockPacket(uint32_t ask_key, uint64_t item_id, uint32_t loot_details_key);
 
-	// subcmd 0x0e - FUN_140085890 / reader FUN_140086cb0: u32 transaction_id, u32 corpse_key,
-	// u64 item_id, u16 quantity, u8 flag, string name. The client moves `quantity` from the shared
-	// pool (entry +0xC) to the personal pool (entry +0x14) and prints the chat line when the name
-	// matches the local player and flag == 0.
+	// subcmd 0x0e - FUN_140085890 / reader FUN_140086cb0: u32 ask_key, u32 corpse_key, u64 item_id,
+	// u16 quantity, u8 flag, string name. The client moves `quantity` from the shared pool (record +0x0C)
+	// to the personal pool (record +0x14) and prints the chat line when the name matches the local player
+	// and flag == 0.
+	//
+	// ask_key must equal the row's +0x60 or FUN_1400a42f0 will not clear CLootInProgress (row +0x6C) and the
+	// row's next action prints eqstr 643. It is 0 for a row that has never had an ask installed.
 	EQApplicationPacket* BuildTransactionPacket(
-		uint32_t record_field_c,   // wire field 1 -> struct +8, compared with record +0xC by FUN_1400a42f0
-		uint32_t corpse_key,       // wire field 2 -> struct +0xC, the corpse/loot-list hash key
+		uint32_t ask_key,     // wire field 1 -> struct +0x08, compared with row +0x60 by FUN_1400a42f0
+		uint32_t corpse_key,  // wire field 2 -> struct +0x0C, the group record / LootDetails hash key
 		uint64_t item_id,
 		uint16_t quantity,
 		uint8_t flag,
@@ -632,6 +672,12 @@ namespace AdvLoot {
 		const uint32 ItemsLocked         = 11321;  // "These item(s) are locked because you were not present when the enemy died..."
 		const uint32 SplitShare          = 11322;  // "Alive %1 members received %2 as their share of the split from the corpse."
 		const uint32 GrabbedFrom         = 11323;  // "%1 grabbed %2 %3 from %4."
+		const uint32 CannotActNow        = 643;    // "You cannot perform that action right now. Please try again in a moment."
+		const uint32 YouReceiveSplit     = 12071;  // "You receive %1 as your split%2."
+		const uint32 YouReceiveCorpse    = 12072;  // "You receive %1 from the corpse%2."
+		const uint32 BonusExtraLucky     = 6036;   // " (with an extra lucky bonus)"
+		const uint32 BonusLucky          = 14581;  // " (with a lucky bonus)"
+		const uint32 BonusFlat           = 6037;   // " (with a bonus)"
 	}
 
 	// One row on one corpse: the roll the server owns. The client's row state mirrors this.
@@ -650,43 +696,93 @@ namespace AdvLoot {
 		uint32_t      state = StateWaiting;
 		Timer         ask_timer;
 		bool          armed = false;   // timer running
+
+		// The subcmd 0x0a record for this row, as the server last armed or last received it. Rule R2: the
+		// client's FUN_140153970 wipes its ask table (manager+0x128) and resets its ask counter
+		// (manager+0x1e8 -> 0) on every 0x03 rebuild, so an ask that is still outstanding has to follow the
+		// rebuild or the row loses its countdown and its record+0x60 binding - which is what 0x0e, 0x0d and
+		// 0x12 all match against. ask_deadline is the server's copy of the client's record+0x88.
+		ItemUpdate ask;
+		bool       has_ask = false;
+		uint32_t   ask_deadline = 0;   // absolute server clock, ms
 		std::vector<Participant> participants;
 	};
 
 	// subcmd 0x13 - FUN_140086fa0: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
 	// The client compares each name with the local name and prints the loot mode from the string
 	// table at 0x14086b440 (invalid/solo/molo/group/raid). This is the master looter announcement.
+	//
+	// FUN_140154200 is the whole handler. The first u32 is the only one it acts on: it goes to
+	// FUN_1400a2a40(window, &tmp, key) and then FUN_1400a7bd0(window, key, name_matched_local_player), so it
+	// is the loot-list key the mode list belongs to - 0 for a zone-wide announcement that is not tied to a
+	// corpse. The second u32 lands in the parsed record's header and the u8 at record+0x5CC; neither is read
+	// by anything in the handler, so both are sent as 0.
 	EQApplicationPacket* BuildLootModePacket(
-		uint32_t field_a,
-		uint32_t field_b,
-		uint8_t  field_c,
+		uint32_t loot_list_key,
+		uint32_t unused_u32,
+		uint8_t  unused_u8,
 		const std::vector<std::pair<uint16_t, std::string>>& members
 	);
 
 	// subcmd 0x0D - the answer to a 0x360e / 0x0D request. Reader FUN_140086ab0, handler case 0x140151f43.
 	// Wire (NO flag byte, unlike subcmd 0x0C which reads one first):
-	//   u16 subcmd, u32 ask_key, u32 field_b, u64 field_c, u16 count,
+	//   u16 subcmd, u32 ask_key, u32 pad_u32, u64 pad_u64, u16 count,
 	//   count x (u32 response, string name)
 	// FUN_14009f6b0 walks the corpse list and matches ask_key against record+0x60, the client's own
 	// ask-group id (allocated by FUN_1401501c0 from the counter at manager+0x1e8) - not the item id, so
-	// ask_key must be echoed back exactly or nothing matches and the window stays empty. field_b and
-	// field_c are not read by the 0x0D handler at all; they are carried for symmetry with the 0x0B sender.
-	// Each entry becomes one ML_PlayerList row: see LooterResponse above.
+	// ask_key must be echoed back exactly or nothing matches and the window stays empty. The two fields
+	// after it are padding: FUN_140086ab0 stores them and FUN_140151f43 never reads them, and they are sent
+	// as 0. Each entry becomes one ML_PlayerList row: see LooterResponse above.
 	EQApplicationPacket* BuildAskResponsePacket(
 		uint32_t ask_key,
-		uint32_t field_b,
-		uint64_t field_c,
+		uint32_t pad_u32,
+		uint64_t pad_u64,
 		const std::vector<std::pair<uint32_t, std::string>>& responses
 	);
 
-	// subcmd 0x0F - reader FUN_140086c50: u64 key, string name. FUN_1401509d0 moves one unit from the
-	// shared pool (entry +0xC) to the personal pool (entry +0x14) and prints the chat line when the name
-	// matches the local player. This is the reply to a 0x360e / 0x0F Free Grab.
+	// subcmd 0x0F - reader FUN_140086c50: u64 key, string name. FUN_1401509d0 walks the ask group at
+	// manager[key % 0x14 + 0x29], finds the corpse's item record with a non-zero shared pool, and moves ONE
+	// unit (+0xC -> +0x14). The name decides who that unit lands on: FUN_1401509d0 strncmps it against the
+	// local player and passes the result as FUN_1400a42f0's third argument, which is what gates FUN_1400a4eb0 -
+	// only the named player adds the unit to their personal store (manager + 0x3f0), everyone else just sees
+	// the shared pool drop. It prints nothing: there is no dsp_chat anywhere in that path, so the server's own
+	// 11323 line is the only grab message. This is the reply to a 0x360e / 0x0F Free Grab.
 	EQApplicationPacket* BuildSingleTransferPacket(uint64_t key, const std::string& name);
 
+	// subcmd 0x06 - reader FUN_140086d70: u8 announce, u64 money, u8 personal, u32 bonus. FUN_140152cb0 is
+	// the whole handler and it is money-only: the u64 is a total in EQ's canonical unit (platinum * 1000 +
+	// gold * 100 + silver * 10 + copper - the same decomposition Client::AddMoneyToPP(uint64) uses, and
+	// FUN_140084bc0 splits it with the identical 1000 / 100 / 10 chain), which the client formats itself with
+	// FormatMoneyString. If that total is zero the handler returns without printing anything, so a 0x06 with
+	// no money in it is a no-op rather than an empty line.
+	//
+	// The two flag bytes pick which of the client's four lines you get:
+	//
+	//   announce  personal  line
+	//   1         0         11322 "Alive %1 members received %2 as their share of the split from the corpse."
+	//                       - %1 is "group" or "raid", chosen by FUN_1400f4b20 (in a group, not a raid).
+	//   1         1         12071 "You receive %1 as your split%2."
+	//   0         1         12072 "You receive %1 from the corpse%2." - only while the AdvLoot window is in
+	//                       managed mode (manager + 0x241); outside it this falls through to 11307.
+	//   0         0         11307 "The master looter, %1, looted %2 from the corpse%3." - %1 is the name the
+	//                       client already holds at manager + 0x1f4, so the server cannot supply one here.
+	//
+	// The personal branches also play WavePlay(0x8a) and set pinstLocalPC + 0x2858. FUN_1400f3800 in that
+	// branch only decomposes the amount into four locals and discards them, so it credits nothing: the
+	// server's AddMoneyToPP is still the only thing that moves money.
+	EQApplicationPacket* BuildChatNotifyPacket(
+		uint8_t  announce,
+		uint64_t money_total,
+		uint8_t  personal,
+		uint32_t bonus = BonusNone
+	);
+
 	// subcmd 0x14 - reader FUN_140086e90: u32 key, u8 flag, u32 count, count x item record (FUN_140085440,
-	// the same layout WriteItemRecord emits). FUN_140152510 looks key up in the loot-list hash and writes
-	// the item names to chat. The client builds this payload itself on 0x360e, so the server relays it.
+	// the same layout WriteItemRecord emits). FUN_140152510 looks key up in the loot-list hash and then
+	// types the items, as say-links, into the chat *input box* (CChatWindowManager + 0x2e0) - it does not
+	// write to the chat history. That is the window's "share this list" button, so the server must relay what
+	// the client sent and must never initiate this itself: doing so would overwrite whatever the player was
+	// about to type.
 	EQApplicationPacket* BuildItemListChatPacket(
 		uint32_t key,
 		uint8_t  flag,
@@ -700,5 +796,9 @@ namespace AdvLoot {
 
 	// Same for OP_AdvLootManage (0x360e), whose three sub-commands reuse the 0x3175 numbering.
 	std::string DescribeManagePayload(const uint8_t* payload, uint32_t size);
+
+	// Step 8. Re-derive the mode of every Advanced Loot corpse any of `viewers` has rows on and re-render each
+	// corpse exactly once. Shared by Client::RefreshAdvLootAuthority and the Group / Raid membership hooks.
+	void RefreshCorpsesFor(const std::vector<Client *> &viewers);
 }
 

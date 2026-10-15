@@ -119,11 +119,23 @@ public:
 	void	RemoveMember(const char *character_name);
 	void	DisbandRaid();
 	void	MoveMember(const char *name, uint32 newGroup);
+	// Step 8: re-derive and re-render the Advanced Loot corpses this raid's members have rows on. Called
+	// whenever the roster, the loot rule or the master looter changes.
+	void	RefreshAdvLootAuthority();
 	void	SetGroupLeader(const char *who, bool glFlag = true);
 	Client	*GetGroupLeader(uint32 group_id);
+	// Drop who's is_group_leader flag. Does not name a replacement - call EnsureGroupLeader for that.
 	void	RemoveGroupLeader(const char *who);
+	// A raid group that has members must have exactly one of them flagged is_group_leader. GetGroupLeader()
+	// returns nullptr otherwise, SendGroupUpdate leaves leadersname empty, and the client renders a group
+	// with no leader crown. This promotes a member when the group has none (preferring `preferred`), or drops
+	// the extras when it somehow has more than one, and returns true when the flag changed.
+	bool	EnsureGroupLeader(uint32 group_id, const char* preferred = nullptr);
 	bool	IsGroupLeader(const char* name);
 	bool	IsGroupLeader(Client *c);
+	// The looter list the raid window's "Selected" loot rule edits (RaidMember::is_looter, written by
+	// AddRaidLooter / RemoveRaidLooter). There was no accessor for it.
+	bool	IsRaidLooter(Client *c);
 	bool	IsRaidMember(const char* name);
 	bool	IsRaidMember(Client *c);
 	void	UpdateLevel(const char *name, int newLevel);

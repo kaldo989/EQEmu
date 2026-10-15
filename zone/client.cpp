@@ -764,6 +764,11 @@ Client::~Client() {
 	if(GetTarget())
 		GetTarget()->IsTargeted(-1);
 
+	// Advanced Loot state is per corpse and a corpse outlives the client that was looking at it, whether this
+	// destructor is reached by a disconnect or by zoning. Drop this character's View from every corpse it had
+	// rows on before anything else can look at those corpses.
+	ForgetAdvLootViewers();
+
 	//if we are in a group and we are not zoning, force leave the group
 	if(isgrouped && !bZoning && is_zone_loaded)
 		LeaveGroup();

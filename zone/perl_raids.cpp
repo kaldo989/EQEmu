@@ -109,6 +109,8 @@ bool Perl_Raid_IsGroupLeader(Raid* self, const char* who) // @categories Group, 
 	return self->IsGroupLeader(who);
 }
 
+// Reports the is_group_leader flag, like the name overload above. It used to report plain raid membership;
+// use IsRaidMember for that.
 bool Perl_Raid_IsGroupLeader(Raid* self, Client* c) // @categories Group, Raid
 {
 	return self->IsGroupLeader(c);

@@ -223,23 +223,23 @@ namespace AdvLoot {
 		switch (subcmd) {
 			case SubFilterSetSync: {
 				// FUN_1400874d0
-				uint32_t    field_a = reader.read_u32();
-				std::string name    = reader.read_string(64);
-				uint32_t    count   = reader.read_u32();
+				uint32_t    mode  = reader.read_u32();
+				std::string name  = reader.read_string(64);
+				uint32_t    count = reader.read_u32();
 
-				out += fmt::format(" field_a={}({}) name='{}' count={}", field_a, ModeName(field_a), name, count);
+				out += fmt::format(" mode={}({}) name='{}' count={}", mode, ModeName(mode), name, count);
 
 				for (uint32_t i = 0; i < count && !reader.truncated; i++) {
 					uint8_t present = reader.read_u8();   // +0x146c loot-rights flag
 					reader.read_u8();
-					uint32_t expiration = reader.read_u32();  // +4 - seconds, packed as value * 1000 + clock
+					uint32_t decay_expires_in = reader.read_u32();  // +4 - seconds, packed as value * 1000 + clock
 					uint32_t corpse_key = reader.read_u32();  // +0 hash key
 					uint32_t nested  = reader.read_u32();
 					std::string gname = reader.read_string(64);
 
 					out += fmt::format(
-						"\n  group present={} key={} expiration={} nested={} name='{}'",
-						present, corpse_key, expiration, nested, IsPrintableName(gname) ? gname : ""
+						"\n  group present={} key={} decay_expires_in={} nested={} name='{}'",
+						present, corpse_key, decay_expires_in, nested, IsPrintableName(gname) ? gname : ""
 					);
 
 					for (uint32_t j = 0; j < nested && !reader.truncated; j++) {
@@ -247,21 +247,17 @@ namespace AdvLoot {
 					}
 				}
 
-				uint8_t has_second = reader.read_u8();
-				if (has_second) {
-					uint32_t count2 = reader.read_u16();
-					out += fmt::format(" block2_count={}", count2);
-					for (uint32_t i = 0; i < count2 && !reader.truncated; i++) {
-						uint32_t a = reader.read_u32();
-						uint64_t b = reader.read_u64();
-						uint32_t c = reader.read_u32();
-						out += fmt::format("\n  block2 a={} b={} c={}", a, b, c);
-					}
-				}
-
-				uint8_t has_third = reader.read_u8();
-				if (has_third) {
-					out += fmt::format(" block3_present bytes_left={}", reader.remaining());
+				// Whatever follows the group records is the client's own filter-set tail and its layout is not
+				// confirmed. An earlier version of this describer guessed a u8 + u16 count + count x {u32, u64,
+				// u32} block and a second flag, which printed plausible-looking numbers out of bytes nobody had
+				// verified. Report the size and the bytes instead - the handler already logs the whole packet as
+				// hex, so nothing is lost and nothing is invented.
+				if (reader.remaining()) {
+					out += fmt::format(
+						" tail bytes={} raw=[{}]",
+						reader.remaining(),
+						HexDump(reader.data + reader.cursor, reader.remaining())
+					);
 				}
 				break;
 			}
@@ -269,14 +265,16 @@ namespace AdvLoot {
 			case SubCorpseRowNotify: {
 				// FUN_1400859e0 serializer: u64, u32, u32. Confirmed by the first live capture
 				// (2026-10-06): 07 00 | 3F EA 00 00 00 00 00 00 | 00 00 00 00 | 00 00 01 00
-				// item_id = 59903, field_b = 0, quantity = 1.
-				// FUN_14009e460 sends this when the filter record exists, the window is in managed
-				// mode (wnd + 0x18) and the filter carries the NeverLoot bit (1 << 3 = 8).
-				uint64_t item_id = reader.read_u64();
-				uint32_t field_b = reader.read_u32();
-				uint32_t quantity = reader.read_u32();
+				// item_id = 59903, corpse_key = 0, quantity = 1.
+				// FUN_14009e460 sends it on the Never tick when the filter record exists, the window is in
+				// managed mode (wnd + 0x18) and the filter carries the NeverLoot bit (1 << 3 = 8), from
+				// record+0x00 (item id), group record+0 (the corpse key) and record+0x14 (the personal pool).
+				// The capture's corpse_key is 0 because that click came from a filter row, which has no corpse.
+				uint64_t item_id    = reader.read_u64();
+				uint32_t corpse_key = reader.read_u32();
+				uint32_t quantity   = reader.read_u32();
 
-				out += fmt::format(" item_id={} field_b={}({}) quantity={}", item_id, field_b, ModeName(field_b), quantity);
+				out += fmt::format(" item_id={} corpse_key={} quantity={}", item_id, corpse_key, quantity);
 				break;
 			}
 
@@ -352,9 +350,9 @@ namespace AdvLoot {
 				ReadTransaction(reader, txn);
 
 				out += fmt::format(
-					" entry_key={} group_key={} item_id={} qty={} flag={}({}) name='{}'",
-					txn.entry_key,
-					txn.group_key,
+					" ask_key={} corpse_key={} item_id={} qty={} flag={}({}) name='{}'",
+					txn.ask_key,
+					txn.corpse_key,
 					txn.item_id,
 					txn.quantity,
 					txn.flag,
@@ -392,35 +390,61 @@ namespace AdvLoot {
 			}
 
 			case SubTransactionRequest: {
-				// FUN_140085aa0 serializer: u64, u32, u32, u32, u8. Confirmed by the live capture
-				// (2026-10-06) on the green loot button - 23 byte payload.
-				// FUN_140154cd0 stamps DAT_140bbea70 (an incrementing transaction counter) into field 4
-				// and pushes 0x20 into the pending message queue at pinstCEverQuest + 0x196f0.
+				// FUN_140085aa0 serializer, confirmed against its caller FUN_1400a9cc0 (the green loot button),
+				// which fills the struct from the personal row and its LootDetails entries:
+				//   u64 item_id        <- row +0x00
+				//   u32 corpse_key     <- LootDetails entry +0x00 (the group record hash key, i.e. the corpse id)
+				//   u32 quantity       <- clamped against the entry's i16 quantity at entry +0x04
+				//   u32 transaction_id <- stamped by FUN_140154cd0 from DAT_140bbea70
+				//   u8  flag           <- the caller's param_4
+				// One packet per LootDetails entry; 23 byte payload in the 2026-10-06 live capture.
 				uint64_t item_id     = reader.read_u64();
-				uint32_t field_b     = reader.read_u32();
-				uint32_t c           = reader.read_u32();
+				uint32_t corpse_key  = reader.read_u32();
+				uint32_t quantity    = reader.read_u32();
 				uint32_t transaction = reader.read_u32();
 				uint8_t  flag        = reader.read_u8();
 
 				out += fmt::format(
-					" item_id={} field_b={}({}) c={} transaction={} flag={}",
-					item_id, field_b, ModeName(field_b), c, transaction, flag
+					" item_id={} corpse_key={}({}) quantity={} transaction={} flag={}",
+					item_id, corpse_key, ModeName(corpse_key), quantity, transaction, flag
 				);
 				break;
 			}
 
 			case SubChatNotify: {
-				// FUN_140086d70 + string. Chat notification - FUN_140152cb0 prints string ids
-				// 0x2c3a (with "raid"/"group"), 0x2f27 + n, 0x2c2b.
-				uint8_t     flag_a = reader.read_u8();
-				uint64_t    id     = reader.read_u64();
-				uint8_t     flag_b = reader.read_u8();
-				uint32_t    value  = reader.read_u32();
-				std::string name   = reader.read_string(64);
+				// FUN_140086d70 -> FUN_140152cb0. Money only: the u64 is a total in EQ's canonical unit and
+				// FUN_140084bc0 splits it platinum / gold / silver / copper with the same 1000 / 100 / 10 chain
+				// Client::AddMoneyToPP uses. There is no trailing string - the master-looter name in the 11307
+				// branch comes from the client's own manager + 0x1f4, not from this packet.
+				uint8_t  announce = reader.read_u8();
+				uint64_t money    = reader.read_u64();
+				uint8_t  personal = reader.read_u8();
+				uint32_t bonus    = reader.read_u32();
+
+				const char *line = "?";
+				if (announce && !personal) {
+					line = "11322 group/raid split";
+				} else if (announce && personal) {
+					line = "12071 you receive your split";
+				} else if (!announce && personal) {
+					line = "12072 you receive from corpse (managed mode only)";
+				} else {
+					line = "11307 master looter looted";
+				}
 
 				out += fmt::format(
-					" flag_a={} id={} flag_b={} value={} name='{}'",
-					flag_a, id, flag_b, value, IsPrintableName(name) ? name : ""
+					" announce={} money={} ({}) personal={} bonus={} -> {}",
+					announce,
+					money,
+					Strings::Money(
+						static_cast<uint32>(money / 1000),
+						static_cast<uint32>(money / 100 % 10),
+						static_cast<uint32>(money / 10 % 10),
+						static_cast<uint32>(money % 10)
+					),
+					personal,
+					bonus,
+					line
 				);
 				break;
 			}
@@ -628,11 +652,11 @@ namespace AdvLoot {
 		// (FUN_14009f790 -> FUN_1400a9cc0 -> FUN_140154cd0), so pre-filling +0x14 loots the item for us.
 		writer.write_u64(filter.item_id);
 		writer.write_u32(filter.icon);              // +0x08
-		writer.write_u32(filter.quantity);          // +0x0C shared / construct pool
+		writer.write_u32(filter.shared_qty);        // +0x0C shared / construct pool
 		writer.write_u32(1);                        // +0x10 managed flag
 		writer.write_u8(0);                         // +0x18
 		writer.write_u32(0);                        // +0x1C
-		writer.write_u32(filter.personal);          // +0x14 personal pool - keep 0 on the initial push
+		writer.write_u32(filter.personal_qty);      // +0x14 personal pool - keep 0 on the initial push
 		writer.write_string(filter.name, 64);       // +0x28
 
 		// +0x20 optional block. FUN_1405647b0 only materialises record +0x20 when the length is positive,
@@ -650,20 +674,20 @@ namespace AdvLoot {
 	}
 
 	// FUN_140086370 group record wire order: u8 -> +0x146c (loot-rights flag), u8 -> +3, u32 -> +4
-	// (expiration), u32 -> +0 (hash key), u32 -> +8 (nested item count), string -> +0xd (name), then
+	// (decay_expires_in), u32 -> +0 (hash key), u32 -> +8 (nested item count), string -> +0xd (name), then
 	// nested_count item records.
 	static void WriteGroupRecord(
 		Writer& writer,
 		uint32_t key,
 		const std::string& name,
-		uint32_t expiration,
+		uint32_t decay_expires_in,
 		uint8_t present_at_kill,
 		const std::vector<Filter>& items,
 		EQ::versions::ClientVersion client_version
 	) {
 		writer.write_u8(present_at_kill);  // +0x146c loot-rights / presence flag
 		writer.write_u8(0);                // +3
-		writer.write_u32(expiration);      // +4 - FUN_14014f5f0: value * 1000 + clock (seconds)
+		writer.write_u32(decay_expires_in); // +4 - FUN_14014f5f0: value * 1000 + clock (seconds)
 		writer.write_u32(key);             // +0 hash key
 		writer.write_u32(static_cast<uint32_t>(items.size()));  // +8 nested item count
 		writer.write_string(name, 64);     // +0xd name
@@ -694,7 +718,7 @@ namespace AdvLoot {
 				writer,
 				filter.corpse_key ? filter.corpse_key : filter.item_id,
 				filter.name,
-				filter.expiration,
+				filter.decay_expires_in,
 				filter.present_at_kill,
 				{ filter },
 				client_version
@@ -741,7 +765,7 @@ namespace AdvLoot {
 				writer,
 				group.corpse_key,
 				group.npc_name,
-				group.expiration,
+				group.decay_expires_in,
 				group.present_at_kill,
 				group.items,
 				client_version
@@ -758,12 +782,12 @@ namespace AdvLoot {
 
 	// subcmd 0x0C. See the header note: the block is read by FUN_140086ab0 into window fields
 	// +0x57C / +0x578 / +0x570 and then handed to FUN_1400a8350 (flag 0) or FUN_1400a1340 (flag != 0) as
-	// {u32 action, <pad>, u64 field_c, u32 field_b}. field_c is compared with the row record's item id at
-	// record+0x00, field_b with record+0x60, so field_b = 0 plus field_c = item_id matches by item id.
+	// {u32 action, <pad>, u64 item_id, u32 ask_key}. item_id is compared with the row record's item id at
+	// record+0x00, ask_key with record+0x60, so ask_key = 0 plus item_id = the item matches by item id.
 	EQApplicationPacket* BuildChoiceUpdatePacket(
-		uint32_t field_a,
-		uint32_t field_b,
-		uint64_t field_c,
+		uint32_t ask_key_unused,
+		uint32_t ask_key,
+		uint64_t item_id,
 		uint8_t  remove_row,
 		const std::vector<std::pair<uint32_t, std::string>>& actions
 	) {
@@ -771,9 +795,9 @@ namespace AdvLoot {
 
 		writer.write_u16(SubChoiceUpdate);
 		writer.write_u8(remove_row ? 1 : 0);
-		writer.write_u32(field_a);
-		writer.write_u32(field_b);
-		writer.write_u64(field_c);
+		writer.write_u32(ask_key_unused);
+		writer.write_u32(ask_key);
+		writer.write_u64(item_id);
 		writer.write_u16(static_cast<uint16_t>(actions.size()));
 
 		for (const auto& action : actions) {
@@ -817,20 +841,6 @@ namespace AdvLoot {
 		writer.write_u32(assignee);
 		writer.write_u32(state);
 		writer.write_u8(flag);
-
-		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
-		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
-		return app;
-	}
-
-	EQApplicationPacket* BuildCorpseRowNotifyPacket(uint64_t item_id, uint32_t field_b, uint32_t quantity)
-	{
-		Writer writer;
-
-		writer.write_u16(SubCorpseRowNotify);
-		writer.write_u64(item_id);
-		writer.write_u32(field_b);
-		writer.write_u32(quantity);
 
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
 		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
@@ -897,7 +907,7 @@ namespace AdvLoot {
 	}
 
 	EQApplicationPacket* BuildTransactionPacket(
-		uint32_t record_field_c,
+		uint32_t ask_key,
 		uint32_t corpse_key,
 		uint64_t item_id,
 		uint16_t quantity,
@@ -908,7 +918,7 @@ namespace AdvLoot {
 		Writer writer;
 
 		writer.write_u16(SubTransaction);
-		writer.write_u32(record_field_c);
+		writer.write_u32(ask_key);
 		writer.write_u32(corpse_key);
 		writer.write_u64(item_id);
 		writer.write_u16(quantity);
@@ -979,32 +989,33 @@ namespace AdvLoot {
 	{
 		out = Transaction{};
 
-		out.entry_key = reader.read_u32();
-		out.group_key = reader.read_u32();
-		out.item_id   = reader.read_u64();
-		out.quantity  = reader.read_u16();
-		out.flag      = reader.read_u8();
-		out.name      = reader.read_string(64);
+		out.ask_key    = reader.read_u32();
+		out.corpse_key = reader.read_u32();
+		out.item_id    = reader.read_u64();
+		out.quantity   = reader.read_u16();
+		out.flag       = reader.read_u8();
+		out.name       = reader.read_string(64);
 
 		return !reader.truncated;
 	}
 
 	// subcmd 0x13 - FUN_140086fa0 reader: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
 	// FUN_140154200 prints the loot mode name per member from the string table at 0x14086b440, and the
-	// local player gets "molo" when it is the master looter.
+	// local player gets "molo" when it is the master looter. Only the first u32 is acted on - it is the key
+	// handed to FUN_1400a2a40 and FUN_1400a7bd0 - and the other two are stored and never read.
 	EQApplicationPacket* BuildLootModePacket(
-		uint32_t field_a,
-		uint32_t field_b,
-		uint8_t  field_c,
+		uint32_t loot_list_key,
+		uint32_t unused_u32,
+		uint8_t  unused_u8,
 		const std::vector<std::pair<uint16_t, std::string>>& members
 	)
 	{
 		Writer writer;
 
 		writer.write_u16(SubLootModeList);
-		writer.write_u32(field_a);
-		writer.write_u32(field_b);
-		writer.write_u8(field_c);
+		writer.write_u32(loot_list_key);
+		writer.write_u32(unused_u32);
+		writer.write_u8(unused_u8);
 		writer.write_u16(static_cast<uint16_t>(members.size()));
 
 		for (const auto& member: members) {
@@ -1022,8 +1033,8 @@ namespace AdvLoot {
 	// why BuildChoiceUpdatePacket is not reusable here).
 	EQApplicationPacket* BuildAskResponsePacket(
 		uint32_t ask_key,
-		uint32_t field_b,
-		uint64_t field_c,
+		uint32_t pad_u32,
+		uint64_t pad_u64,
 		const std::vector<std::pair<uint32_t, std::string>>& responses
 	)
 	{
@@ -1031,8 +1042,8 @@ namespace AdvLoot {
 
 		writer.write_u16(SubBulkRows);
 		writer.write_u32(ask_key);
-		writer.write_u32(field_b);
-		writer.write_u64(field_c);
+		writer.write_u32(pad_u32);
+		writer.write_u64(pad_u64);
 		writer.write_u16(static_cast<uint16_t>(responses.size()));
 
 		for (const auto& response : responses) {
@@ -1053,6 +1064,29 @@ namespace AdvLoot {
 		writer.write_u16(SubSingleTransfer);
 		writer.write_u64(key);
 		writer.write_string(name, 64);
+
+		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
+		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
+		return app;
+	}
+
+	// subcmd 0x06 - reader FUN_140086d70: u8 announce, u64 money, u8 personal, u32 bonus. See the header for
+	// which of the client's four money lines each flag pair produces. The client reads every field behind a
+	// bounds check, so a short packet just leaves the rest at zero.
+	EQApplicationPacket* BuildChatNotifyPacket(
+		uint8_t  announce,
+		uint64_t money_total,
+		uint8_t  personal,
+		uint32_t bonus
+	)
+	{
+		Writer writer;
+
+		writer.write_u16(SubChatNotify);
+		writer.write_u8(announce);
+		writer.write_u64(money_total);
+		writer.write_u8(personal);
+		writer.write_u32(bonus);
 
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
 		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
@@ -1083,6 +1117,36 @@ namespace AdvLoot {
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
 		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
 		return app;
+	}
+
+	// Re-derive the mode of every Advanced Loot corpse any of `viewers` has rows on, and re-render each corpse
+	// exactly once. RenderAll() already reaches every viewer of a corpse, so running the per-client version for
+	// each member of a group would send the same 0x03 to the same players several times over.
+	void RefreshCorpsesFor(const std::vector<Client *> &viewers)
+	{
+		std::vector<Corpse *> corpses;
+
+		for (Client *c: viewers) {
+			if (!c || !c->advloot_enabled) {
+				continue;
+			}
+
+			for (uint16_t corpse_id: c->advloot_corpses) {
+				Corpse *corpse = entity_list.GetCorpseByID(corpse_id);
+				if (!corpse || !corpse->GetAdvLootSession()) {
+					continue;
+				}
+
+				if (std::find(corpses.begin(), corpses.end(), corpse) == corpses.end()) {
+					corpses.push_back(corpse);
+				}
+			}
+		}
+
+		for (Corpse *corpse: corpses) {
+			corpse->AdvLootSession().RefreshAuthority();
+			corpse->AdvLootSession().RenderAll();
+		}
 	}
 
 }
@@ -1194,7 +1258,7 @@ uint32_t Client::AdvLootFilterBits(uint32_t item_id) const
 // Subcmd 0x03 is also the corpse delivery channel: one group record for the corpse, with the corpse
 // items as nested records. CAdvancedLootWnd::AddCorpse only creates a row when a per-list quantity is
 // non-zero, so the caller must fill quantity (shared) and personal.
-void Client::SendAdvLootCorpse(const AdvLoot::CorpseGroup& corpse_group)
+void Client::SendAdvLootGroup(const AdvLoot::CorpseGroup& corpse_group)
 {
 	if (corpse_group.items.empty()) {
 		return;
@@ -1209,10 +1273,11 @@ void Client::SendAdvLootCorpse(const AdvLoot::CorpseGroup& corpse_group)
 	delete app;
 }
 
-// Rebuild the window from what is actually left on the tracked corpses. This is the only server-side path
-// that clears rows in both panes (FUN_140153970 -> window vtable +0x3b0), so it is how a looted solo row
-// is made to disappear. A corpse with nothing left is dropped from the window rather than resent.
-void Client::SendAdvLootCorpseRebuild()
+// Re-render every corpse this client has rows for, as one subcmd 0x03. This is the only server-side path
+// that clears rows in both panes (FUN_140153970 -> window vtable +0x3b0), and every group record in it comes
+// from AdvLoot::Session::BuildGroupFor, so what the window shows is always what the session thinks it should
+// show.
+void Client::AdvLootRender()
 {
 	if (!advloot_enabled) {
 		return;
@@ -1227,12 +1292,18 @@ void Client::SendAdvLootCorpseRebuild()
 			continue;
 		}
 
+		AdvLoot::Session* session = corpse->GetAdvLootSession();
+		if (!session) {
+			corpse->ClearAdvLootPendingRowsFor(CharacterID());
+			continue;
+		}
+
 		if (!corpse->HasAdvLootItems()) {
 			corpse->ClearAdvLootPendingRowsFor(CharacterID());
 			continue;
 		}
 
-		AdvLoot::CorpseGroup group = corpse->BuildAdvLootGroup(this);
+		const AdvLoot::CorpseGroup group = session->RenderGroupFor(this);
 		if (group.items.empty()) {
 			continue;
 		}
@@ -1252,11 +1323,89 @@ void Client::SendAdvLootCorpseRebuild()
 
 	QueuePacket(app);
 	delete app;
+
+	// Rule R2, and after the rebuild for the same reason Session::Render does it: this 0x03 cleared the ask
+	// table for every corpse in it at once, so the asks that are still outstanding follow it, one corpse at a
+	// time and in the same order the group records were listed.
+	for (uint16_t corpse_id: alive) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (corpse && corpse->GetAdvLootSession()) {
+			corpse->AdvLootSession().ReissueAsks(this);
+		}
+	}
+}
+
+// Step 8. This client is leaving the zone, disconnecting, or being destroyed. The corpse outlives the client,
+// so its View has to be dropped explicitly: without this a logged-out looter keeps their personal pool, and
+// because Resolve() only checks whether the winner is online they could still win a row nobody can collect.
+void Client::ForgetAdvLootViewers()
+{
+	for (uint16_t corpse_id: advloot_corpses) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (corpse) {
+			corpse->ForgetAdvLootViewer(CharacterID());
+		}
+	}
+
+	advloot_corpses.clear();
+	advloot_last_corpse_id = 0;
+}
+
+// Step 8. The looter died. They leave every ask still running on their AdvLoot corpses - a dead player cannot
+// collect a row they won - but their awards survive, so a wipe does not hand an item the master looter already
+// gave them back to the pool. Their rows are cleared because FUN_1400a9cc0 refuses them anyway (eqstr 11318).
+void Client::AdvLootViewerDied()
+{
+	for (uint16_t corpse_id: advloot_corpses) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (corpse) {
+			corpse->AdvLootViewerDied(CharacterID());
+		}
+	}
+}
+
+// Step 8. The client's construct changed. AuthorityFor() already reads the raid or group live, so the server
+// has been applying the new rule since the previous packet; what this fixes is what the window shows. The mode
+// and the Master Looter marker travel in the 0x03 group record, so re-derive them and re-render every viewer
+// of each corpse this client has rows on - the other members' authority changed too, not just this one's.
+void Client::RefreshAdvLootAuthority()
+{
+	AdvLoot::RefreshCorpsesFor({this});
+}
+
+// The one refusal every gated Advanced Loot decision uses. eqstr_us.txt 643 is the client's own wording for
+// a decision it would have refused locally, so the server says the same thing rather than inventing one.
+void Client::RefuseAdvLootAction(const char* what, Corpse* corpse, uint32_t ask_key, uint32_t item_id, uint32_t loot_details_key)
+{
+	const uint32_t authority = corpse
+		? corpse->AdvLootSession().AuthorityFor(this)
+		: AdvLoot::AuthorityNone;
+
+	LogLootFilters(
+		"[{}] {} item [{}] corpse [{}] refused - authority [{}], mode [{}], ask_key [{}]",
+		GetCleanName(),
+		what,
+		item_id,
+		corpse ? corpse->GetID() : 0,
+		AdvLoot::AuthorityName(authority),
+		corpse ? corpse->AdvLootSession().ModeName() : "none",
+		ask_key
+	);
+
+	MessageString(Chat::White, AdvLoot::StringId::CannotActNow);
+
+	// CAdvancedLootWnd__DoSharedAdvLootAction set record+0x6C before it sent the request. Without this the
+	// row stays locked until the corpse unlock timer expires and every later click errors with eqstr 643.
+	EQApplicationPacket* unlock = AdvLoot::BuildRowUnlockPacket(ask_key, item_id, loot_details_key);
+	if (unlock) {
+		QueuePacket(unlock);
+		safe_delete(unlock);
+	}
 }
 
 // subcmd 0x0C with flag 0 (FUN_140154a90 -> FUN_1400a8350): restate the need/greed/never choice on a
 // row the client has already drawn. It cannot create a row - only subcmd 0x03 does that - so this is only
-// useful after the corpse has been pushed by SendAdvLootCorpse / SendAdvLootCorpseRebuild.
+// useful after the corpse has been pushed by AdvLoot::Session::Render or Client::AdvLootRender.
 void Client::SendAdvLootChoice(uint32_t item_id, uint32_t choice, const std::string& name)
 {
 	if (!advloot_enabled) {
@@ -1302,25 +1451,124 @@ void Client::SendAdvLootRowRemoved(uint32_t item_id, const std::string& name)
 // that carries it: FUN_1400a82a0 copies record+0x60 into the block's first u32 and FUN_140154830 sends the
 // block on 0x3175. Without this the server cannot resolve a 0x360e / 0x0D request, because that request
 // carries nothing but the id.
+//
+// The id belongs to a corpse cycle - the client drops all of them on the next subcmd 0x03 rebuild - so it is
+// stored in that corpse's AdvLoot::Session under this character's View and dies with the corpse.
 void Client::RememberAdvLootAskGroup(uint32_t ask_key, uint32_t corpse_key, uint32_t item_id)
 {
 	if (!ask_key) {
 		return;
 	}
 
-	AdvLootAskGroup& group = advloot_ask_groups[ask_key];
-	if (group.corpse_key != corpse_key || group.item_id != item_id) {
+	Corpse* corpse = corpse_key ? entity_list.GetCorpseByID(static_cast<uint16_t>(corpse_key)) : nullptr;
+	if (!corpse) {
+		corpse = AdvLootCorpse();
+	}
+	if (!corpse) {
+		corpse = entity_list.GetCorpseByOwner(this);
+	}
+
+	if (!corpse) {
 		LogLootFilters(
-			"[{}] ask group [{}] -> corpse [{}] item [{}]",
+			"[{}] ask group [{}] for corpse [{}] item [{}] dropped - no live corpse",
 			GetCleanName(),
 			ask_key,
 			corpse_key,
 			item_id
 		);
+		return;
 	}
 
-	group.corpse_key = corpse_key;
-	group.item_id    = item_id;
+	corpse->AdvLootSession().RememberAskKey(CharacterID(), ask_key, corpse->GetID(), item_id);
+}
+
+// The reverse of RememberAdvLootAskGroup: the ask key a row currently answers to, or 0 when the row has
+// never had an ask installed. 0 is the value the client itself puts in the field for such a row - it sends
+// record+0x60, which FUN_1400a0480 only ever writes when an ask record is installed - so 0 is a correct
+// reply, not a missing one.
+uint32_t Client::FindAdvLootAskKey(uint32_t corpse_key, uint32_t item_id) const
+{
+	for (uint16_t corpse_id : advloot_corpses) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (!corpse) {
+			continue;
+		}
+
+		const AdvLoot::Session* session = corpse->GetAdvLootSession();
+		if (!session) {
+			continue;
+		}
+
+		const uint32_t ask_key = session->FindAskKey(CharacterID(), corpse_key, item_id);
+		if (ask_key) {
+			return ask_key;
+		}
+	}
+
+	if (Corpse* corpse = AdvLootCorpse()) {
+		if (const AdvLoot::Session* session = corpse->GetAdvLootSession()) {
+			return session->FindAskKey(CharacterID(), corpse_key, item_id);
+		}
+	}
+
+	return 0;
+}
+
+// Look an ask key the client allocated up in the AdvLoot::Session views this character owns. This is what a
+// 0x360e / 0x0D or 0x360e / 0x0F request is resolved with, because those carry nothing but the id.
+bool Client::FindAdvLootAskGroup(uint32_t ask_key, uint32_t *corpse_key, uint32_t *item_id) const
+{
+	if (!ask_key) {
+		return false;
+	}
+
+	std::vector<uint16_t> candidates = advloot_corpses;
+	if (Corpse* last = AdvLootCorpse()) {
+		candidates.push_back(last->GetID());
+	}
+
+	for (uint16_t corpse_id : candidates) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (!corpse) {
+			continue;
+		}
+
+		const AdvLoot::Session* session = corpse->GetAdvLootSession();
+		if (!session) {
+			continue;
+		}
+
+		AdvLoot::AskGroup group;
+		if (session->FindAskGroup(CharacterID(), ask_key, &group)) {
+			if (corpse_key) {
+				*corpse_key = group.corpse_key;
+			}
+			if (item_id) {
+				*item_id = group.item_id;
+			}
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// The corpse this client most recently had rows for. Resolved through entity_list every time, so a corpse
+// that decayed between two packets cannot be dereferenced.
+Corpse* Client::AdvLootCorpse() const
+{
+	Corpse* corpse = advloot_last_corpse_id ? entity_list.GetCorpseByID(advloot_last_corpse_id) : nullptr;
+	if (corpse) {
+		return corpse;
+	}
+
+	for (uint16_t corpse_id : advloot_corpses) {
+		if ((corpse = entity_list.GetCorpseByID(corpse_id))) {
+			return corpse;
+		}
+	}
+
+	return nullptr;
 }
 
 // Answer a 0x360e / 0x0D request with subcmd 0x0D. FUN_14009f6b0 only reaches FUN_1401a3000 for a corpse
@@ -1367,44 +1615,54 @@ void Client::SendAdvLootAskResponses(uint32_t ask_key, uint32_t corpse_key, uint
 	delete app;
 }
 
-// Resolve the group key a subcmd 0x0A / 0x0E / 0x12 packet carries.
+// Resolve the key a subcmd 0x0A / 0x0B / 0x0E / 0x12 packet carries into a corpse.
 //
-// The client is not consistent about what this key is. On the send side CAdvancedLootWnd__DoSharedAdvLootAction
-// writes record+0x60 (the client's own ask-group id) into the field, and FUN_140154570 writes the ask-group
-// record's key into the 0x0A equivalent. On the receive side the dispatcher hashes the same field into the
-// corpse hash at manager+0 / manager+8 and compares it against node+0x51c8, which is the corpse entity id the
-// server pushed with subcmd 0x03. Both readings have to work, so try them in order and fall back to the corpse
-// this client last opened, exactly like the 0x08 handler does.
-Corpse* Client::ResolveAdvLootGroup(uint32_t group_key, uint32_t item_id_hint, uint32_t *out_item_id)
+// Which key it is depends on the sub-command, and the codec now names them separately:
+//   0x0A / 0x0B / 0x12 -> ItemUpdate::ask_key / the 0x0B ask key, i.e. the key of the client's ask-group
+//                        record. The server only ever learns it from 0x0B (advloot.md 10.6), so it is looked
+//                        up in the AdvLoot::Session views this client owns.
+//   0x0E               -> Transaction::corpse_key, which is the group record's hash key and the LootDetails
+//                        entry key, i.e. the corpse entity id the server pushed with subcmd 0x03.
+// Both readings have to work from every call site, so try them in order and fall back to the corpse this
+// client last opened, exactly like the 0x08 handler does.
+Corpse* Client::ResolveAdvLootGroup(uint32_t key, uint32_t item_id_hint, uint32_t *out_item_id)
 {
 	if (out_item_id) {
 		*out_item_id = item_id_hint;
 	}
 
-	uint32_t corpse_key = 0;
+	// First reading: the key is one of this client's ask keys. Ask keys live in the corpse's session, so
+	// search the corpses this client has rows for.
+	for (uint16_t corpse_id : advloot_corpses) {
+		Corpse* candidate = entity_list.GetCorpseByID(corpse_id);
+		if (!candidate) {
+			continue;
+		}
 
-	auto it = advloot_ask_groups.find(group_key);
-	if (it != advloot_ask_groups.end()) {
-		corpse_key = it->second.corpse_key;
-		if (it->second.item_id) {
-			if (out_item_id) {
-				*out_item_id = it->second.item_id;
+		const AdvLoot::Session* session = candidate->GetAdvLootSession();
+		if (!session) {
+			continue;
+		}
+
+		AdvLoot::AskGroup group;
+		if (session->FindAskGroup(CharacterID(), key, &group)) {
+			if (out_item_id && group.item_id) {
+				*out_item_id = group.item_id;
 			}
+			return candidate;
 		}
 	}
 
-	Corpse* corpse = corpse_key ? entity_list.GetCorpseByID(static_cast<uint16_t>(corpse_key)) : nullptr;
+	// Second reading: the key is simply the corpse entity id, which is what the client's own receive path
+	// assumes.
+	Corpse* corpse = key ? entity_list.GetCorpseByID(static_cast<uint16_t>(key)) : nullptr;
 
-	// The key may simply be the corpse entity id, which is what the client's own receive path assumes.
-	if (!corpse && group_key) {
-		corpse = entity_list.GetCorpseByID(static_cast<uint16_t>(group_key));
-		if (corpse) {
-			corpse_key = corpse->GetID();
-		}
+	if (!corpse) {
+		corpse = AdvLootCorpse();
 	}
 
 	if (!corpse) {
-		corpse = advloot_corpse ? advloot_corpse : entity_list.GetCorpseByOwner(this);
+		corpse = entity_list.GetCorpseByOwner(this);
 	}
 
 	if (!corpse) {
@@ -1568,6 +1826,10 @@ void command_advloot(Client *c, const Seperator *sep)
 
 		// Re-derive the mode list for everyone (decision 4).
 		c->SendAdvLootLootMode();
+
+		// SetMasterLooter() now runs RefreshAdvLootAuthority() over the whole construct, which re-derives each
+		// session's cached mode and re-renders every corpse its viewers share - so the gate, the window's mode
+		// list and the logs all follow the change from here.
 		return;
 	}
 
@@ -1647,7 +1909,7 @@ void command_advloot(Client *c, const Seperator *sep)
 		}
 
 		if (!corpse) {
-			corpse = c->advloot_corpse;
+			corpse = c->AdvLootCorpse();
 		}
 
 		// Last resort: the corpse this player most recently opened with a right-click. Right-clicking a
@@ -1674,12 +1936,12 @@ void command_advloot(Client *c, const Seperator *sep)
 				c->advloot_corpses.push_back(corpse->GetID());
 			}
 
-			c->advloot_corpse = corpse;
+			c->advloot_last_corpse_id = corpse->GetID();
 			corpse->SetAdvLootPendingRows(c->CharacterID(), static_cast<uint32_t>(quantity));
 
-			// 0x03 is the only packet that draws rows; it clears both panes first, so the whole corpse is
-			// re-pushed rather than the single new row.
-			c->SendAdvLootCorpseRebuild();
+			// 0x03 is the only packet that draws rows; it clears both panes first, so every corpse this
+			// client has rows for is re-pushed in one packet rather than just the one that changed.
+			c->AdvLootRender();
 
 			c->Message(
 				Chat::Yellow,

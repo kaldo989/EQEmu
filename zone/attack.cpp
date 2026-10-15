@@ -2194,6 +2194,11 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 		GoToDeath();
 	}
 
+	// Advanced Loot: this looter can no longer collect anything, so they leave every ask still running on the
+	// corpses they had rows on. Their awards are kept - a wipe should not re-open an item the master looter had
+	// already given them - but Resolve() must not pick them as a winner.
+	AdvLootViewerDied();
+
 	if (PlayerEventLogs::Instance()->IsEventEnabled(PlayerEvent::DEATH)) {
 		auto e = PlayerEvent::DeathEvent{
 			.killer_id = killer_mob ? static_cast<uint32>(killer_mob->GetID()) : static_cast<uint32>(0),

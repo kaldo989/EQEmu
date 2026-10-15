@@ -20,10 +20,13 @@
 
 #include "common/loot.h"
 #include "common/repositories/character_corpses_repository.h"
+#include "zone/advloot_session.h"
 #include "zone/client.h"
 #include "zone/mob.h"
 
 #include <map>
+#include <memory>
+#include <vector>
 
 class EQApplicationPacket;
 class Group;
@@ -232,11 +235,21 @@ public:
 	// plus that client's group or raid. Anyone outside the list gets locked rows.
 	void SetKillCreditLooters(Client *killer);
 	bool IsKillCreditLooter(uint32 character_id) const;
-	void SendAdvLootCorpseRows();
 
-	// Build the group record for one viewer from the corpse's current loot list. Used for the kill-time
-	// delivery and for the post-transaction rebuild, so the window always reflects what is actually left.
-	AdvLoot::CorpseGroup BuildAdvLootGroup(Client* c);
+	// The kill-credit list itself. AdvLoot::Session derives its mode and its loot authority from it.
+	std::vector<uint32_t> GetKillCreditLooters() const
+	{
+		std::vector<uint32_t> looters;
+
+		for (int looter: m_allowed_looters) {
+			if (looter) {
+				looters.push_back(static_cast<uint32_t>(looter));
+			}
+		}
+
+		return looters;
+	}
+	void SendAdvLootCorpseRows();
 
 	// True while the corpse still has something to show. Once the items and the cash are gone the corpse
 	// is dropped from the window instead of leaving a stale row behind.
@@ -247,12 +260,27 @@ public:
 	// running both paths on the same corpse would take an item twice and pay the corpse cash twice.
 	// The lockout is released when every row for that client is resolved, or when the corpse unlock
 	// timer (NPC/CorpseUnlockTimer) expires and the corpse becomes public to everyone.
+	//
+	// These are forwarders onto the corpse's AdvLoot::Session. The state lives there (docs/advlootdesignV2
+	// section 4); Corpse keeps loot storage, the render path and the delivery path.
+	AdvLoot::Session& AdvLootSession();
+	AdvLoot::Session* GetAdvLootSession() const { return m_advloot_session.get(); }
+
 	void SetAdvLootPendingRows(uint32_t character_id, uint32_t count);
 	void ConsumeAdvLootPendingRow(uint32_t character_id);
 	uint32_t GetAdvLootPendingRows(uint32_t character_id) const;
 	bool HasPendingAdvLootRows(uint32_t character_id) const;
 	void ClearAdvLootPendingRows();
 	void ClearAdvLootPendingRowsFor(uint32_t character_id);
+	void ForgetAdvLootViewer(uint32_t character_id);
+
+	// The corpse stopped being an Advanced Loot corpse - it unlocked, decayed, was resurrected or moved to the
+	// graveyard. Windows close and anything awarded but not yet picked up returns to the shared pool.
+	void CloseAdvLootSession(const char *reason);
+
+	// A viewer died. They leave every in-flight ask on this corpse, but the units already awarded to them
+	// stay awarded.
+	void AdvLootViewerDied(uint32_t character_id);
 
 	// The AdvLoot window has no coin row, so the kill-time delivery has to settle the corpse cash
 	// itself: group/raid split when auto-split is on, otherwise split across the kill-credit looters.
@@ -264,7 +292,7 @@ public:
 	// still apply.
 	void AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity);
 
-	// Advanced Loot roll state owned by the server. One Roll per item on this corpse.
+	// Advanced Loot roll state, owned by the corpse's AdvLoot::Session. One Roll per item on this corpse.
 	// The client cannot report a player's Need/Greed choice over the wire (no sub-command carries it -
 	// 0x11 is the Ask/AutoRoll state only), so the choice is recorded from /advloot need|greed|never
 	// and pushed back to the window through subcmd 0x0b.
@@ -272,7 +300,7 @@ public:
 	// Every roll this corpse owns, keyed by item id. A Manage Loot ask-response request (0x360e / 0x0D)
 	// only carries the client's own ask-group id, so when that id has not been learned from a subcmd 0x0B
 	// the server has to pick the roll out of this map instead.
-	const std::map<uint32_t, AdvLoot::Roll>& GetAdvLootRolls() const { return m_advloot_rolls; }
+	const std::map<uint32_t, AdvLoot::Roll>& GetAdvLootRolls() const;
 	AdvLoot::Roll& RecordAdvLootChoice(Client *c, uint32_t item_id, uint32_t choice);
 	// Create the roll for an item without recording a participant. Subcmd 0x0a is how the client tells us it
 	// has moved a row into Ask / Ask auto Roll / Free Grab, and at that point the server may not have any
@@ -299,6 +327,8 @@ public:
 	void LeaveAdvLootRollOnCorpse(AdvLoot::Roll& roll, Client *who);
 
 private:
+	std::unique_ptr<AdvLoot::Session> m_advloot_session;   // rows, ask windows and per-viewer state
+
 	void AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
 		const char* arg1, const char* arg2 = nullptr, const char* arg3 = nullptr,
 		const char* arg4 = nullptr, const char* arg5 = nullptr);
@@ -377,9 +407,6 @@ private:
 	Timer                    m_loot_cooldown_timer;
 	Timer                    m_check_owner_online_timer;
 	Timer                    m_check_rezzable_timer;
-	std::map<uint32_t, uint32_t> m_advloot_pending_rows;   // character id -> unresolved AdvLoot rows
-	std::map<uint32_t, AdvLoot::Roll> m_advloot_rolls;     // item id -> roll
-	uint32_t m_advloot_opt_in_counter = 0;                 // monotonic, the tie-break order
 	uint8                    m_killed_by_type;
 	bool                     m_is_rezzable;
 	EQ::TintProfile          m_item_tint;

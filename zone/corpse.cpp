@@ -1019,13 +1019,19 @@ bool Corpse::Process()
 			allowed_looter = 0;
 		}
 		// The corpse is public now, so the kill-credit AdvLoot lockout is gone and the legacy
-		// right-click path is open again for everyone.
+		// right-click path is open again for everyone. Closing the session is what eqstr 11315 already told
+		// the players would happen: anything that was awarded but not picked up is available to everyone again.
 		ClearAdvLootPendingRows();
+		CloseAdvLootSession("corpse unlocked - kill-credit lockout over");
 		m_corpse_delay_timer.Disable();
 		return true;
 	}
 
 	if (m_corpse_graveyard_timer.Check()) {
+		// The corpse object survives a graveyard move, so its session has to be ended explicitly or a player
+		// who rezzes their own body finds rows for loot that is no longer reachable.
+		CloseAdvLootSession("player corpse moved to graveyard");
+
 		if (MovePlayerCorpseToGraveyard()) {
 			m_corpse_graveyard_timer.Disable();
 			return false;
@@ -1054,11 +1060,14 @@ bool Corpse::Process()
 	}
 
 	if (m_corpse_rezzable_timer.Check()) {
+		CloseAdvLootSession("player corpse resurrected");
 		CompleteResurrection(true);
 	}
 
 	/* This is when a corpse hits decay timer and does checks*/
 	if (m_corpse_decay_timer.Check()) {
+		CloseAdvLootSession("corpse decayed");
+
 		/* NPC */
 		if (IsNPCCorpse()) {
 			m_corpse_decay_timer.Disable();
@@ -1208,16 +1217,10 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 
 		// The legacy window stays closed (it would pay the item and the corpse cash a second time), but
 		// the right-click is still the player's attempt to open this corpse - so answer it with the
-		// AdvLoot window instead of a bare error. Subcmd 0x03 is the only packet that draws rows
-		// (CAdvancedLootWnd::AddCorpse, FUN_14009e310 -> FUN_14009e460), and it walks m_item_list, so
-		// this is also what makes an item injected by /advloot additem appear here.
-		// See docs/advloot.md 8.1.10.
-		c->advloot_corpse = this;
-		if (std::find(c->advloot_corpses.begin(), c->advloot_corpses.end(), GetID()) == c->advloot_corpses.end()) {
-			c->advloot_corpses.push_back(GetID());
-		}
-		c->SendAdvLootCorpseRebuild();
-		c->MessageString(Chat::Yellow, AdvLoot::StringId::AdvLootCorpse);
+		// AdvLoot window instead of a bare error. Everything the corpse does about the refusal now lives in
+		// the session: Render() is the only place a subcmd 0x03 group record is built, and it is also the
+		// only place a corpse gets registered on the client, so the guard here is a query and one call.
+		AdvLootSession().ExplainRowsTo(c);
 
 		SendLootReqErrorPacket(c, LootResponse::NotAtThisTime);
 		return;
@@ -1476,56 +1479,11 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 	// Advanced Loot: subcmd 0x03 is the corpse delivery channel. CAdvancedLootWnd::AddCorpse builds
 	// loot list rows from the nested item records of each group record. Rows are normally created at
 	// kill time by Corpse::SendAdvLootCorpseRows(); this covers the right-click path for players who
-	// were not in the zone at the kill or who joined afterwards.
+	// were not in the zone at the kill or who joined afterwards. The group record itself is built in
+	// exactly one place - AdvLoot::Session::BuildGroupFor, reached through Render().
 	if (c->advloot_enabled) {
-		AdvLoot::CorpseGroup group;
-		group.corpse_key      = GetID();
-		group.npc_name         = corpse_name;
-		group.expiration       = GetDecayTime() / 1000;   // seconds - FUN_14014f5f0 packs value * 1000 + clock
-		group.present_at_kill  = IsKillCreditLooter(c->CharacterID()) ? 1 : 0;
-		const bool solo = !c->HasGroup() && !c->HasRaid();
-
-		for (const auto& i : m_item_list) {
-			const auto* item = database.GetItem(i->item_id);
-			if (!item) {
-				continue;
-			}
-
-			AdvLoot::Filter filter;
-			filter.item_id         = item->ID;
-			filter.icon            = item->Icon;
-			filter.name            = item->Name;
-			filter.filter_bits     = c->AdvLootFilterBits(item->ID);
-			const uint32_t qty = i->charges ? i->charges : 1;
-			// Same rule as SendAdvLootCorpseRows: solo -> personal pool (Shared pane is hidden), group/raid
-			// -> shared pool.
-			if (solo) {
-				filter.quantity = 0;
-				filter.personal = qty;
-			} else {
-				filter.quantity = qty;
-				filter.personal = 0;
-			}
-			filter.expiration      = group.expiration;
-			filter.present_at_kill = group.present_at_kill;
-			filter.corpse_key      = group.corpse_key;
-
-			group.items.push_back(filter);
-		}
-
-		if (!group.items.empty()) {
-			LogLootFilters(
-				"[{}] sending AdvLoot corpse [{}] with [{}] item(s)",
-				c->GetCleanName(),
-				GetID(),
-				group.items.size()
-			);
-			SetAdvLootPendingRows(c->CharacterID(), static_cast<uint32_t>(group.items.size()));
-			c->advloot_corpse = this;
-			c->SendAdvLootCorpse(group);
-		}
+		AdvLootSession().Render(c);
 	}
-
 	// Disgrace: Client seems to require that we send the packet back...
 	// With Advanced Loot on the AdvLoot window is the loot UI, and the echoed OP_LootRequest is what
 	// makes the client open the legacy loot window. Skip the echo for AdvLoot clients so only the
@@ -2363,81 +2321,63 @@ bool Corpse::IsKillCreditLooter(uint32 character_id) const
 // Builds one subcmd 0x03 group record for this corpse. CAdvancedLootWnd::AddCorpse turns the nested
 // item records into loot list rows, so this is what fills the Advanced Loot window without the
 // player having to right-click the corpse.
+// Kill-time entry point. The rows themselves are rendered by AdvLoot::Session::RenderAll - the only place a
+// subcmd 0x03 loot group is produced - so all this adds is the corpse cash, which the AdvLoot window has no
+// row for.
 void Corpse::SendAdvLootCorpseRows()
 {
 	if (m_is_player_corpse) {
 		return;
 	}
 
-	std::vector<Client *> looters;
+	AdvLoot::Session &session = AdvLootSession();
 
-	for (const auto &entry: entity_list.GetClientList()) {
-		Client *c = entry.second;
-		if (!c || !c->advloot_enabled) {
-			continue;
-		}
-		looters.push_back(c);
-	}
+	// Mode and loot authority are derived from the kill-credit list, so they have to be settled before the
+	// first row is rendered: the render decides which pool each unit goes into, and the authority decides
+	// who may act on it afterwards.
+	session.Open();
+
+	const std::vector<Client *> looters = session.RenderAll();
 
 	if (looters.empty()) {
 		return;
 	}
 
-	// One group record per client: the group record is the corpse itself and every item on the corpse
-	// is a nested item record. filter_bits and the loot-rights flag are per-viewer, so the record is
-	// rebuilt per client rather than broadcast. The group record's string is the NPC name the window
-	// shows in its NPC Name column - it must not be an item name.
-	for (Client *c: looters) {
-		AdvLoot::CorpseGroup group = BuildAdvLootGroup(c);
+	DistributeAdvLootCash(looters);
+}
 
-		if (group.items.empty()) {
-			continue;
-		}
-
-		LogLootFilters(
-			"[{}] advloot corpse [{}] [{}] item(s) [{}], kill credit [{}], group name [{}], expiration [{}]s",
-			c->GetCleanName(),
-			GetID(),
-			group.items.size(),
-			group.present_at_kill ? "unlocked" : "locked",
-			group.present_at_kill ? "yes" : "no",
-			group.npc_name,
-			group.expiration
-		);
-
-		SetAdvLootPendingRows(c->CharacterID(), static_cast<uint32_t>(group.items.size()));
-		c->advloot_corpse = this;
-		if (std::find(c->advloot_corpses.begin(), c->advloot_corpses.end(), GetID()) == c->advloot_corpses.end()) {
-			c->advloot_corpses.push_back(GetID());
-		}
-		c->SendAdvLootCorpse(group);
+// The corpse's Advanced Loot state, created on first use so a corpse nobody looted with Advanced Loot on
+// pays for nothing.
+AdvLoot::Session& Corpse::AdvLootSession()
+{
+	if (!m_advloot_session) {
+		m_advloot_session = std::make_unique<AdvLoot::Session>(this);
 	}
 
-	// The AdvLoot window has no coin row, so the kill-time delivery has to settle the corpse cash here.
-	DistributeAdvLootCash(looters);
+	return *m_advloot_session;
+}
+
+const std::map<uint32_t, AdvLoot::Roll>& Corpse::GetAdvLootRolls() const
+{
+	static const std::map<uint32_t, AdvLoot::Roll> k_no_rolls;
+	return m_advloot_session ? m_advloot_session->Rolls() : k_no_rolls;
 }
 
 void Corpse::SetAdvLootPendingRows(uint32_t character_id, uint32_t count)
 {
-	m_advloot_pending_rows[character_id] = count;
+	AdvLootSession().SetPendingRows(character_id, count);
 }
 
 void Corpse::ConsumeAdvLootPendingRow(uint32_t character_id)
 {
-	auto it = m_advloot_pending_rows.find(character_id);
-	if (it == m_advloot_pending_rows.end()) {
-		return;
-	}
-
-	if (it->second > 0) {
-		--it->second;
+	if (m_advloot_session) {
+		m_advloot_session->ConsumePendingRow(character_id);
 	}
 }
 
 uint32_t Corpse::GetAdvLootPendingRows(uint32_t character_id) const
 {
-	auto it = m_advloot_pending_rows.find(character_id);
-	return it == m_advloot_pending_rows.end() ? 0 : it->second;
+	return m_advloot_session ? m_advloot_session->PendingRows(character_id) : 0;
 }
 
 bool Corpse::HasPendingAdvLootRows(uint32_t character_id) const
@@ -2447,69 +2387,38 @@ bool Corpse::HasPendingAdvLootRows(uint32_t character_id) const
 
 void Corpse::ClearAdvLootPendingRows()
 {
-	m_advloot_pending_rows.clear();
+	if (m_advloot_session) {
+		m_advloot_session->ClearPendingRows();
+	}
 }
 
 void Corpse::ClearAdvLootPendingRowsFor(uint32_t character_id)
 {
-	m_advloot_pending_rows.erase(character_id);
+	if (m_advloot_session) {
+		m_advloot_session->ClearPendingRowsFor(character_id);
+	}
 }
 
-// The group record for one viewer, rebuilt from the corpse's current loot list. filter_bits and the
-// loot-rights flag are per-viewer, so this cannot be broadcast.
-AdvLoot::CorpseGroup Corpse::BuildAdvLootGroup(Client* c)
+void Corpse::ForgetAdvLootViewer(uint32_t character_id)
 {
-	AdvLoot::CorpseGroup group;
-
-	group.corpse_key      = GetID();
-	group.npc_name         = corpse_name;
-	group.expiration       = GetDecayTime() / 1000;   // seconds - FUN_14014f5f0 packs value * 1000 + clock
-	group.present_at_kill  = IsKillCreditLooter(c->CharacterID()) ? 1 : 0;
-
-	// FUN_1400a5d10 keeps ADLW_CLLWnd hidden unless the player is in a group or a raid, so in solo the
-	// Personal Loot pane is the only pane the player can see. The Shared list object still exists
-	// (window +0x320 / store +0x3E8), it is just not drawn.
-	const bool solo = !c->HasGroup() && !c->HasRaid();
-
-	for (const auto &i: m_item_list) {
-		const auto *item = database.GetItem(i->item_id);
-		if (!item) {
-			continue;
-		}
-
-		AdvLoot::Filter filter;
-		filter.item_id         = item->ID;
-		filter.filter_bits     = c->AdvLootFilterBits(item->ID);
-		filter.icon            = item->Icon;
-		filter.name            = item->Name;
-		const uint32_t qty = i->charges ? i->charges : 1;
-
-		// AddCorpse (FUN_14009e310) puts a row in the Personal Loot List when +0x14 is non-zero and in the
-		// Shared Loot list when +0x0C is non-zero.
-		//
-		// Solo: personal pool, because the Shared pane is hidden. No client path decrements or removes a
-		// personal row from a server packet (FUN_1400a42f0 only walks the Shared list, FUN_1400a4eb0 only
-		// adds), so a solo row is only correct after a subcmd 0x03 rebuild - which is what
-		// AdvLootTransaction does.
-		//
-		// Group/raid: shared pool, because that is the pool the transaction resolves and the one that has
-		// to be synchronised across clients.
-		if (solo) {
-			filter.quantity = 0;
-			filter.personal = qty;
-		} else {
-			filter.quantity = qty;
-			filter.personal = 0;
-		}
-
-		filter.expiration      = group.expiration;
-		filter.present_at_kill = group.present_at_kill;
-		filter.corpse_key      = group.corpse_key;
-
-		group.items.push_back(filter);
+	if (m_advloot_session) {
+		m_advloot_session->ForgetViewer(character_id);
 	}
+}
 
-	return group;
+void Corpse::CloseAdvLootSession(const char *reason)
+{
+	if (m_advloot_session) {
+		m_advloot_session->Close(reason);
+	}
+}
+
+void Corpse::AdvLootViewerDied(uint32_t character_id)
+{
+	if (m_advloot_session) {
+		m_advloot_session->DropFromArmedRolls(character_id, "looter died");
+		m_advloot_session->ClearPendingRowsFor(character_id);
+	}
 }
 
 // Coin is not part of the AdvLoot row model - the window has no coin row - so the kill-time delivery
@@ -2549,6 +2458,31 @@ void Corpse::DistributeAdvLootCash(const std::vector<Client *> &looters)
 		safe_delete(outapp);
 	};
 
+	// The client's own corpse-money lines are OP_AdvLoot subcmd 0x06 (FUN_140152cb0), which formats the
+	// amount itself and picks 11322 / 12071 / 12072 from the two flag bytes. It takes the amount as a single
+	// total in EQ's canonical unit - the same platinum * 1000 + gold * 100 + silver * 10 + copper that
+	// Client::AddMoneyToPP(uint64) decomposes - and prints nothing at all when that total is zero.
+	// Before this, an AdvLoot corpse split was silent outside Group::SplitMoney.
+	const uint64 corpse_total =
+		static_cast<uint64>(GetPlatinum()) * 1000 +
+		static_cast<uint64>(GetGold()) * 100 +
+		static_cast<uint64>(GetSilver()) * 10 +
+		static_cast<uint64>(GetCopper());
+
+	auto send_notify = [corpse_total](Client *c, uint8_t announce, uint8_t personal) {
+		if (!c || !corpse_total) {
+			return;
+		}
+
+		EQApplicationPacket *outapp = AdvLoot::BuildChatNotifyPacket(announce, corpse_total, personal);
+		if (!outapp) {
+			return;
+		}
+
+		c->QueuePacket(outapp);
+		safe_delete(outapp);
+	};
+
 	Group *cgroup  = nullptr;
 	Client *splitter = nullptr;
 	for (Client *c: paid) {
@@ -2564,6 +2498,18 @@ void Corpse::DistributeAdvLootCash(const std::vector<Client *> &looters)
 			send_money(c, 0, 0, 0, 0);
 		}
 		cgroup->SplitMoney(GetCopper(), GetSilver(), GetGold(), GetPlatinum(), splitter);
+
+		// SplitMoney already prints 12071 ("You receive %1 as your split.") to each member with the exact
+		// amount it handed out, so only the announcement is added here: 11322 is the line that says the
+		// corpse's money was shared at all, and nothing else in EQEmu has ever sent it. It goes to everyone
+		// SplitMoney actually paid, which is the whole group, not just the kill-credit looters.
+		if (RuleB(Loot, AdvLootChatNotify)) {
+			for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
+				if (cgroup->members[i] && cgroup->members[i]->IsClient()) {
+					send_notify(cgroup->members[i]->CastToClient(), 1, 0);
+				}
+			}
+		}
 	}
 	else {
 		uint32 count = static_cast<uint32>(paid.size());
@@ -2575,6 +2521,23 @@ void Corpse::DistributeAdvLootCash(const std::vector<Client *> &looters)
 
 			send_money(c, copper, silver, gold, platinum);
 			c->AddMoneyToPP(copper, silver, gold, platinum);
+
+			// Ungrouped looters and raid members land here - SplitMoney never runs for them, so there was no
+			// line at all. 12071 is the client's own wording for a share and, unlike 12072, it does not depend
+			// on the AdvLoot window being open in managed mode.
+			if (RuleB(Loot, AdvLootChatNotify)) {
+				const uint64 share =
+					static_cast<uint64>(platinum) * 1000 +
+					static_cast<uint64>(gold) * 100 +
+					static_cast<uint64>(silver) * 10 +
+					copper;
+
+				EQApplicationPacket *outapp = AdvLoot::BuildChatNotifyPacket(1, share, 1);
+				if (outapp) {
+					c->QueuePacket(outapp);
+					safe_delete(outapp);
+				}
+			}
 		}
 	}
 
@@ -2671,401 +2634,74 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 	// already moved the unit out of the shared pool), so release the lockout either way.
 	ConsumeAdvLootPendingRow(c->CharacterID());
 
-	// In solo nothing on the client can decrement or remove a Personal Loot row, so the window has to be
-	// rebuilt from what is actually left on the corpse. If the corpse is now empty (items and cash gone)
-	// the rebuild drops it from the window instead of leaving a stale row.
-	if (!c->HasGroup() && !c->HasRaid()) {
-		c->SendAdvLootCorpseRebuild();
+	// Solo rows live in the Personal Loot pool, and the subcmd 0x09 result above is what erases them:
+	// FUN_140151810 drops the corpse item entry when the reported quantity equals the entry's personal pool
+	// (+0x14) and its shared pool (+0x0C) is empty, then drops the whole corpse record when no entries are
+	// left. That is the live-parity path and it needs no re-render. AdvLootSoloRebuild keeps the old forced
+	// re-render available until the erase path is confirmed on a live client - see advlootdesignV2 Step 3.
+	if (RuleB(Loot, AdvLootSoloRebuild) && !c->HasGroup() && !c->HasRaid()) {
+		c->AdvLootRender();
 	}
 }
 
+// The roll state machine lives in AdvLoot::Session (zone/advloot_session.cpp). These are the corpse-side
+// entry points; they exist so Corpse stays the object the packet handlers and the loot path talk to.
 AdvLoot::Roll* Corpse::GetAdvLootRoll(uint32_t item_id)
 {
-	auto it = m_advloot_rolls.find(item_id);
-	return it == m_advloot_rolls.end() ? nullptr : &it->second;
-}
-
-void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll)
-{
-	ArmAdvLootRoll(roll, static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)));
-}
-
-// Arm the window with a caller-supplied window instead of the rule value. Subcmd 0x0a carries the seconds
-// the initiating client has left on its own countdown (FUN_140085c80 writes record+0x18 - clock), so the
-// server expires at the same moment the client's row does. A zero or absurd value falls back to the rule.
-void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds)
-{
-	const uint32_t rule_seconds = static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds));
-
-	if (seconds == 0 || seconds > rule_seconds) {
-		seconds = rule_seconds;
-	}
-
-	roll.armed = true;
-	roll.ask_timer.SetTimer(seconds * 1000);
-
-	LogLootFilters(
-		"[{}] advloot roll armed item [{}] corpse [{}] window [{}]s (rule [{}]s)",
-		roll.item_name,
-		roll.item_id,
-		GetID(),
-		seconds,
-		rule_seconds
-	);
-}
-
-// Chat line to every participant on the row. The client's own AdvLoot window shows the same state, so
-// using the string ids from eqstr_us.txt 11300-11323 keeps the wording identical to the client.
-void Corpse::AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
-	const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5)
-{
-	for (const auto& participant: roll.participants) {
-		Client* client = entity_list.GetClientByCharID(participant.character_id);
-		if (!client) {
-			continue;
-		}
-		client->MessageString(Chat::Yellow, string_id, arg1, arg2, arg3, arg4, arg5);
-	}
+	return m_advloot_session ? m_advloot_session->FindRoll(item_id) : nullptr;
 }
 
 AdvLoot::Roll& Corpse::EnsureAdvLootRoll(uint32_t item_id)
 {
-	auto it = m_advloot_rolls.find(item_id);
-	if (it != m_advloot_rolls.end()) {
-		return it->second;
-	}
-
-	AdvLoot::Roll roll;
-	roll.corpse_key = GetID();
-	roll.item_id    = item_id;
-
-	const auto* item = database.GetItem(item_id);
-	if (item) {
-		roll.item_name = item->Name;
-	}
-
-	it = m_advloot_rolls.insert(std::make_pair(item_id, roll)).first;
-
-	LogLootFilters("advloot roll created item [{}] corpse [{}]", item_id, GetID());
-
-	return it->second;
+	return AdvLootSession().EnsureRoll(item_id);
 }
 
-// Apply a Manage Loot ND / GD tick to the row without touching the ask window. The name comes straight off the
-// wire (FUN_1400a81b0 copies the ML_PlayerList row's text into the entry), so it is matched by name rather
-// than by the sender - the master looter is the one who sends it, not the one who was answered for.
 void Corpse::SetAdvLootResponse(uint32_t item_id, const std::string& name, uint32_t choice)
 {
-	if (name.empty()) {
-		return;
-	}
-
-	auto it = m_advloot_rolls.find(item_id);
-	if (it == m_advloot_rolls.end()) {
-		// A cleared answer for a row this corpse never had is noise; a real answer means the master looter
-		// answered before anyone opted in, so create the row.
-		if (choice == AdvLoot::ChoiceNone) {
-			return;
-		}
-		it = m_advloot_rolls.find(EnsureAdvLootRoll(item_id).item_id);
-	}
-
-	AdvLoot::Roll& roll = it->second;
-
-	for (auto& participant : roll.participants) {
-		if (participant.name == name) {
-			participant.choice = choice;
-			LogLootFilters(
-				"advloot response item [{}] corpse [{}] looter [{}] -> [{}]",
-				item_id,
-				GetID(),
-				name,
-				AdvLoot::ChoiceName(choice)
-			);
-			return;
-		}
-	}
-
-	if (choice == AdvLoot::ChoiceNone) {
-		return;
-	}
-
-	AdvLoot::Participant participant;
-	participant.name         = name;
-	participant.choice       = choice;
-	participant.opt_in_order = ++m_advloot_opt_in_counter;
-
-	if (Client* client = entity_list.GetClientByName(name.c_str())) {
-		participant.character_id = client->CharacterID();
-	}
-
-	roll.participants.push_back(participant);
-
-	LogLootFilters(
-		"advloot response item [{}] corpse [{}] looter [{}] added as [{}]",
-		item_id,
-		GetID(),
-		name,
-		AdvLoot::ChoiceName(choice)
-	);
+	AdvLootSession().SetResponse(item_id, name, choice);
 }
 
 AdvLoot::Roll& Corpse::RecordAdvLootChoice(Client* c, uint32_t item_id, uint32_t choice)
 {
-	AdvLoot::Roll& roll = EnsureAdvLootRoll(item_id);
+	return AdvLootSession().RecordChoice(c, item_id, choice);
+}
 
-	AdvLoot::Participant* participant = nullptr;
-	for (auto& p: roll.participants) {
-		if (p.character_id == c->CharacterID()) {
-			participant = &p;
-			break;
-		}
-	}
+void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll)
+{
+	AdvLootSession().Arm(roll);
+}
 
-	if (!participant) {
-		AdvLoot::Participant p;
-		p.character_id = c->CharacterID();
-		p.name         = c->GetCleanName();
-		p.choice       = choice;
-		p.opt_in_order = ++m_advloot_opt_in_counter;
-		roll.participants.push_back(p);
-		participant = &roll.participants.back();
-	} else {
-		participant->choice = choice;
-	}
-
-	// Solo never arms a timer - there is no competition, so the choice resolves immediately.
-	if (!c->HasGroup() && !c->HasRaid()) {
-		ResolveAdvLootRoll(roll);
-		return roll;
-	}
-
-	// No competition yet: the first participant on a row in a group is not a roll, so award it now.
-	// A roll only exists once a second Need/Greed participant appears on the same row.
-	if (roll.participants.size() == 1) {
-		ResolveAdvLootRoll(roll);
-		return roll;
-	}
-
-	// Decision 1: the master looter arms the window by moving the row to AskAutoRoll (subcmd 0x11
-	// state 2). The rule lets the first opt-in arm it when the master looter has not, so a group whose
-	// master looter never acts still resolves.
-	if (!roll.armed && RuleB(Loot, AdvLootAutoStartTimer)) {
-		ArmAdvLootRoll(roll);
-	}
-
-	return roll;
+void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds)
+{
+	AdvLootSession().Arm(roll, seconds);
 }
 
 void Corpse::ProcessAdvLootRolls()
 {
-	for (auto& entry: m_advloot_rolls) {
-		AdvLoot::Roll& roll = entry.second;
-		if (!roll.armed) {
-			continue;
-		}
-
-		if (roll.ask_timer.Check()) {
-			ResolveAdvLootRoll(roll);
-		}
+	if (m_advloot_session) {
+		m_advloot_session->Tick();
 	}
 }
 
 void Corpse::ResolveAdvLootRoll(AdvLoot::Roll& roll)
 {
-	std::vector<AdvLoot::Participant*> need;
-	std::vector<AdvLoot::Participant*> greed;
-
-	for (auto& p: roll.participants) {
-		if (p.choice == AdvLoot::ChoiceNeed) {
-			need.push_back(&p);
-		} else if (p.choice == AdvLoot::ChoiceGreed) {
-			greed.push_back(&p);
-		}
-	}
-
-	// Need tier beats Greed. With only Greed present, the highest roll wins.
-	std::vector<AdvLoot::Participant*>& tier = need.empty() ? greed : need;
-
-	roll.armed = false;
-	roll.ask_timer.Disable();
-
-	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
-	if (!quantity) {
-		quantity = 1;
-	}
-
-	char count_str[32];
-	char roll_str[32];
-
-	if (tier.empty()) {
-		// Nothing claimed: the item stays on the corpse and the row drops.
-		roll.state = AdvLoot::StateRemoved;
-
-		const char* count = ConvertArray(static_cast<int64>(quantity), count_str);
-
-		// The participants list is empty in this branch, so the line goes to the players who had rows on
-		// this corpse.
-		for (const auto& entry: m_advloot_pending_rows) {
-			Client* client = entity_list.GetClientByCharID(entry.first);
-			if (client) {
-				client->MessageString(Chat::Yellow, AdvLoot::StringId::NoOneInterested, count, roll.item_name.c_str());
-			}
-		}
-
-		LogLootFilters(
-			"advloot resolve item [{}] corpse [{}] - no Need or Greed participant, left on corpse",
-			roll.item_id,
-			GetID()
-		);
-
-		return;
-	}
-
-	// Rolls are drawn at resolution, one per participant.
-	for (auto* p: tier) {
-		p->roll = EQ::Random::Instance()->Int(1, 1000);
-	}
-
-	AdvLoot::Participant* winner = tier[0];
-	for (auto* p: tier) {
-		if (p->roll > winner->roll) {
-			winner = p;
-		} else if (p->roll == winner->roll && p->opt_in_order < winner->opt_in_order) {
-			// Decision 2: earliest opt-in wins a tie. No re-roll - the client stores one roll value per
-			// participant and has no packet path that clears it.
-			winner = p;
-		}
-	}
-
-	Client* winner_client = entity_list.GetClientByCharID(winner->character_id);
-	if (!winner_client) {
-		// Decision 4 edge case: a participant who disconnected before expiry is dropped. If the tier
-		// empties, the item is left on the corpse.
-		LogLootFilters(
-			"advloot winner [{}] for item [{}] is not online - item left on corpse",
-			winner->name,
-			roll.item_id
-		);
-		roll.state = AdvLoot::StateRemoved;
-		return;
-	}
-
-	roll.state = AdvLoot::StateAskCompleted;
-
-	if (tier.size() > 1) {
-		for (auto* p: tier) {
-			Client* client = entity_list.GetClientByCharID(p->character_id);
-			if (!client) {
-				continue;
-			}
-
-			char participant_roll[32];
-			client->MessageString(Chat::Yellow, AdvLoot::StringId::RolledOn,
-				p->name.c_str(),
-				ConvertArray(static_cast<int64>(p->roll), participant_roll),
-				roll.item_name.c_str());
-		}
-	}
-
-	AdvLootChatToRoll(roll, AdvLoot::StringId::WonRoll,
-		winner->name.c_str(),
-		need.empty() ? "Greed" : "Need",
-		ConvertArray(static_cast<int64>(tier.size()), count_str),
-		roll.item_name.c_str(),
-		ConvertArray(static_cast<int64>(winner->roll), roll_str));
-
-	LogLootFilters(
-		"advloot resolve item [{}] corpse [{}] tier [{}] winner [{}] roll [{}]",
-		roll.item_id,
-		GetID(),
-		need.empty() ? "Greed" : "Need",
-		winner->name,
-		winner->roll
-	);
-
-	// The client's CAdvancedLootWnd::DoAdvLootAction only fires when the assignee is non-zero, so the
-	// winner is shown by the state 4 packet with the assignee set. Send it before the delivery so the
-	// row and the chat line agree.
-	EQApplicationPacket* state_packet = AdvLoot::BuildStatePacket(roll.item_id, winner->character_id, AdvLoot::StateAskCompleted, 0);
-	if (state_packet) {
-		for (const auto& participant: roll.participants) {
-			Client* client = entity_list.GetClientByCharID(participant.character_id);
-			if (client) {
-				client->QueuePacket(state_packet);
-			}
-		}
-		delete state_packet;
-	}
-
-	AdvLootTransaction(winner_client, roll.item_id, quantity);
+	AdvLootSession().Resolve(roll);
 }
 
 void Corpse::AssignAdvLootRoll(AdvLoot::Roll& roll, Client* target)
 {
-	// Decision 3: assignment is an override that resolves immediately and cancels the timer.
-	roll.armed = false;
-	roll.ask_timer.Disable();
-	roll.state = AdvLoot::StateAskCompleted;
-
-	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
-	if (!quantity) {
-		quantity = 1;
-	}
-
-	char count_str[32];
-
-	AdvLootChatToRoll(roll, AdvLoot::StringId::GivenTo,
-		roll.item_name.c_str(),
-		ConvertArray(static_cast<int64>(quantity), count_str),
-		corpse_name,
-		target->GetCleanName());
-
-	LogLootFilters(
-		"advloot assignment item [{}] corpse [{}] to [{}] - timer cancelled",
-		roll.item_id,
-		GetID(),
-		target->GetCleanName()
-	);
-
-	AdvLootTransaction(target, roll.item_id, quantity);
+	AdvLootSession().Assign(roll, target);
 }
 
-// ML_LeaveOnCorpse: the master looter (or the player the row belongs to) has decided the item stays on the
-// corpse. Cancel any running ask, mark the row removed, tell the participants with the client's own wording
-// (eqstr 11313 "--%1 left %2 %3 on %4.--"), and drop the row from the window of everyone who had one.
 void Corpse::LeaveAdvLootRollOnCorpse(AdvLoot::Roll& roll, Client* who)
 {
-	roll.armed = false;
-	roll.ask_timer.Disable();
-	roll.state = AdvLoot::StateRemoved;
+	AdvLootSession().LeaveOnCorpse(roll, who);
+}
 
-	uint32 quantity = GetLootQuantityByItemID(roll.item_id);
-	if (!quantity) {
-		quantity = 1;
-	}
-
-	char count_str[32];
-
-	AdvLootChatToRoll(roll, AdvLoot::StringId::LeftOnCorpse,
-		who ? who->GetCleanName() : "",
-		ConvertArray(static_cast<int64>(quantity), count_str),
-		roll.item_name.c_str(),
-		corpse_name);
-
-	LogLootFilters(
-		"advloot leave on corpse item [{}] corpse [{}] by [{}] - [{}] unit(s) left, window cancelled",
-		roll.item_id,
-		GetID(),
-		who ? who->GetCleanName() : "?",
-		quantity
-	);
-
-	// The row is still on the corpse, so only the window representation changes: FUN_140154a90 with a
-	// non-zero flag removes the matching row without a full rebuild.
-	if (who) {
-		who->SendAdvLootRowRemoved(roll.item_id, roll.item_name);
-	}
+void Corpse::AdvLootChatToRoll(const AdvLoot::Roll& roll, uint32_t string_id,
+	const char* arg1, const char* arg2, const char* arg3, const char* arg4, const char* arg5)
+{
+	AdvLootSession().ChatToRoll(roll, string_id, arg1, arg2, arg3, arg4, arg5);
 }
 
 void Corpse::LoadPlayerCorpseDecayTime(uint32 corpse_db_id)

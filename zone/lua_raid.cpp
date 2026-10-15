@@ -114,6 +114,9 @@ bool Lua_Raid::IsGroupLeader(const char *name) {
 	return self->IsGroupLeader(name);
 }
 
+// Both overloads report the is_group_leader flag. The Client* overload used to report plain raid membership
+// (which is what IsRaidMember is for); scripts that passed a Client and got the old answer need to switch to
+// IsRaidMember if that is what they wanted.
 bool Lua_Raid::IsGroupLeader(Lua_Client c) {
 	Lua_Safe_Call_Bool();
 	return self->IsGroupLeader(c);

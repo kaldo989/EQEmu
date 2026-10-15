@@ -18,6 +18,7 @@
 #include "groups.h"
 
 #include "common/eqemu_logsys.h"
+#include "zone/advloot.h"
 #include "common/events/player_event_logs.h"
 #include "common/repositories/character_expedition_lockouts_repository.h"
 #include "common/repositories/group_id_repository.h"
@@ -355,6 +356,9 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 	if (new_member && new_member->IsClient()) {
 		new_member->CastToClient()->JoinGroupXTargets(this);
 	}
+
+	// A member joined: everyone's Advanced Loot authority may have changed with them.
+	RefreshAdvLootAuthority();
 
 	safe_delete(outapp);
 
@@ -807,6 +811,10 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 		Bot::UpdateGroupCastingRoles(this);
 	}
 
+	// A member left: the group may have just lost its master looter, or dropped under the size where the
+	// server treats the corpse as ungrouped at all.
+	RefreshAdvLootAuthority();
+
 	return true;
 }
 
@@ -917,6 +925,10 @@ void Group::DisbandGroup(bool joinraid) {
 		Bot::UpdateGroupCastingRoles(this, true);
 	}
 
+	// The members are detached from the group as we go, so collect them here: RefreshAdvLootAuthority() at the
+	// end of this function would find an empty group.
+	std::vector<Client *> disbanded;
+
 	auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupUpdate_Struct));
 
 	GroupUpdate_Struct* gu = (GroupUpdate_Struct*) outapp->pBuffer;
@@ -946,6 +958,8 @@ void Group::DisbandGroup(bool joinraid) {
 			SendMarkedNPCsToMember(members[i]->CastToClient(), true);
 			if (!joinraid)
 				members[i]->CastToClient()->LeaveGroupXTargets(this);
+
+			disbanded.push_back(members[i]->CastToClient());
 		}
 
 		if (members[i]->IsMerc())
@@ -985,6 +999,10 @@ void Group::DisbandGroup(bool joinraid) {
 	SetLeader(nullptr);
 	safe_delete(outapp);
 	entity_list.RemoveGroup(GetID());
+
+	// Every one of those players is now ungrouped, which is a different Advanced Loot authority: an
+	// ungrouped looter is their own master looter.
+	AdvLoot::RefreshCorpsesFor(disbanded);
 }
 
 void Group::GetMemberList(std::list<Mob*>& member_list, bool clear_list)
@@ -2755,4 +2773,19 @@ Client* Group::GetMasterLooter()
 void Group::SetMasterLooter(Client* c)
 {
 	master_looter_name = c ? c->GetCleanName() : "";
+
+	// Advanced Loot gates every decision sub-command on who the master looter is, and the window shows that
+	// name in its 0x03 mode list. Both change here.
+	RefreshAdvLootAuthority();
+}
+
+// Step 8: the group's composition or master looter changed. Re-derive the mode of every Advanced Loot corpse
+// any member has rows on and re-render each one once - AuthorityFor() reads the group live so the server's
+// gate is already correct, but what the window shows is carried by the 0x03 group record.
+void Group::RefreshAdvLootAuthority()
+{
+	std::list<Client *> clients;
+	GetClientList(clients, true);
+
+	AdvLoot::RefreshCorpsesFor(std::vector<Client *>(clients.begin(), clients.end()));
 }
