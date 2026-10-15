@@ -79,9 +79,11 @@ compile_flags.txt
 /.mcp.json.backup
 /.pi-tmp/
 /.pi-tmp*
+/.serena/
 /__pycache__/
 /_confbak/
 /_d*.txt
+/compile_commands.json
 /savedChanges.patch
 /*.log
 
