@@ -4347,22 +4347,42 @@ void Client::Handle_OP_BuffRemoveRequest(const EQApplicationPacket *app)
 	BuffRemoveRequest_Struct *brrs = (BuffRemoveRequest_Struct*)app->pBuffer;
 
 	Mob *m = nullptr;
+	bool b_casted_by_us = false;   // the buff being removed was cast by this client
 
-	if (brrs->EntityID == GetID()) {
-		m = this;
+	// Laurion/SoD also send this from the Target_BuffWindow, where a left click on any icon is a
+	// "click it off" request (CTargetWnd::WndNotification -> PcZoneClient::RemoveBuffEffect).
+	// Allow it when the buff on our current target was cast by us - the classic "clear my own DD so
+	// I can recast it".  Caster identity comes from the buff record itself (Buffs_Struct::casterid),
+	// not from the name, so it survives a rename.  Checked first, and deliberately not for ourselves:
+	// removing a buff from your own body keeps the stricter beneficial-only rule below.
+	if (RuleB(Spells, AllowTargetBuffRemove)) {
+		Mob *t = GetTarget();
+		if (t && t != this && t->GetID() == brrs->EntityID && brrs->SlotID < (uint32)t->GetMaxTotalSlots()) {
+			const Buffs_Struct *t_buffs = t->GetBuffs();
+			if (t_buffs[brrs->SlotID].spellid && t_buffs[brrs->SlotID].casterid == GetID()) {
+				m = t;
+				b_casted_by_us = true;
+			}
+		}
 	}
-	else if (brrs->EntityID == GetPetID()) {
-		m = GetPet();
-	}
-	else if (GetGM())
-	{
-		m = entity_list.GetMobID(brrs->EntityID);
-	}
-	else {
-		if (RuleB(Bots, Enabled)) {
-			Mob *bot_test = entity_list.GetMob(brrs->EntityID);
-			if (bot_test && bot_test->IsBot() && bot_test->GetOwner() == this) {
-				m = bot_test;
+
+	if (!m) {
+		if (brrs->EntityID == GetID()) {
+			m = this;
+		}
+		else if (brrs->EntityID == GetPetID()) {
+			m = GetPet();
+		}
+		else if (GetGM())
+		{
+			m = entity_list.GetMobID(brrs->EntityID);
+		}
+		else {
+			if (RuleB(Bots, Enabled)) {
+				Mob *bot_test = entity_list.GetMob(brrs->EntityID);
+				if (bot_test && bot_test->IsBot() && bot_test->GetOwner() == this) {
+					m = bot_test;
+				}
 			}
 		}
 	}
@@ -4370,12 +4390,15 @@ void Client::Handle_OP_BuffRemoveRequest(const EQApplicationPacket *app)
 	if (!m)
 		return;
 
-	if (brrs->SlotID > (uint32)m->GetMaxTotalSlots())
+	// slots are [0, GetMaxTotalSlots()); the old '>' let slot == GetMaxTotalSlots() through and read
+	// and fade one slot past the end of the buff array.
+	if (brrs->SlotID >= (uint32)m->GetMaxTotalSlots())
 		return;
 
 	uint16 SpellID = m->GetSpellIDFromSlot(brrs->SlotID);
 
-	if (SpellID && (GetGM() || ((IsBeneficialSpell(SpellID) || IsEffectInSpell(SpellID, SpellEffect::BindSight)) && !spells[SpellID].no_remove))) {
+	if (SpellID && (GetGM() || (b_casted_by_us && !spells[SpellID].no_remove) ||
+		((IsBeneficialSpell(SpellID) || IsEffectInSpell(SpellID, SpellEffect::BindSight)) && !spells[SpellID].no_remove))) {
 		m->BuffFadeBySlot(brrs->SlotID, true);
 	}
 }

@@ -371,6 +371,50 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	// Target_BuffWindow feed. Laurion client: recv handler 0x1401d879a ->
+	// CTargetWnd::RefreshTargetBuffs (0x1404eb150). Wire layout is the same as OP_BuffCreate above;
+	// see docs/targetwnd.md. Sent by Mob::SendBuffsToClient() via Handle_OP_TargetMouse.
+	ENCODE(OP_TargetBuffs)
+	{
+		SETUP_VAR_ENCODE(BuffIcon_Struct);
+
+		// Recompute from the caster strings instead of trusting emu->name_lengths so a caller that
+		// leaves it at 0 cannot produce a short packet.
+		uint32 name_lengths = 0;
+		for (int i = 0; i < emu->count; ++i)
+			name_lengths += static_cast<uint32>(strlen(emu->entries[i].caster)) + 1; // + nullterm
+
+		uint32 sz = 13 + (16 * emu->count) + name_lengths;
+		__packet->size = sz;
+		__packet->pBuffer = new unsigned char[sz];
+		memset(__packet->pBuffer, 0, sz);
+
+		__packet->WriteUInt32(emu->entity_id);		// client skips these 4 bytes, but they must be present
+		__packet->WriteUInt32(emu->tic_timer);		// sub-tick remainder in ms, added to every duration
+		__packet->WriteUInt8(emu->all_buffs);		// 1 = full list (client clears the gaps), 0 = incremental
+		__packet->WriteUInt16(emu->count);
+
+		for (int i = 0; i < emu->count; ++i)
+		{
+			// No ServerToLaurionBuffSlot() remap here: the target window indexes its own 400 slot array
+			// directly and only accepts slots 0-41 for a player target, 0-399 for an NPC/PC target.
+			__packet->WriteUInt32(emu->entries[i].buff_slot);
+			__packet->WriteUInt32(emu->entries[i].spell_id);
+			__packet->WriteUInt32(emu->entries[i].tics_remaining);	// <0 = permanent, 0 = clear the slot
+			__packet->WriteUInt32(emu->entries[i].num_hits);		// parsed, ignored by the target window
+			__packet->WriteString(emu->entries[i].caster);
+		}
+
+		// Trailing byte #1 -> CTargetWnd::Type (0x34c): 1 self, 4 group member, 5 PC, 7 NPC.
+		// Trailing byte #2 -> target spawn + 0x215 (the same 0/1 flag CharacterZoneClient::HitBySpell writes).
+		// Note this is the opposite order from OP_BuffCreate above, which is harmless there because the
+		// self packet always carries type == 0.
+		__packet->WriteUInt8(emu->type);
+		__packet->WriteUInt8(0);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_CancelTrade)
 	{
 		ENCODE_LENGTH_EXACT(CancelTrade_Struct);

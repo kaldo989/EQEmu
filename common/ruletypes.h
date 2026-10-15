@@ -490,6 +490,7 @@ RULE_BOOL(Spells, NPC_UseFocusFromItems, false, "Allow NPC to use most item deri
 RULE_BOOL(Spells, UseAdditiveFocusFromWornSlot, false, "Allows an additive focus effect to be calculated from worn slot. Does not apply limits checks. Can only have one additive focus rule be true.")
 RULE_BOOL(Spells, UseAdditiveFocusFromWornSlotWithLimits, false, "Allows an additive focus effect to be calculated from worn slot. Applies normal limit checks. Can only have one additive focus rule be true.")
 RULE_BOOL(Spells, AlwaysSendTargetsBuffs, false, "Ignore Leadership Alternate Abilities level if true")
+RULE_BOOL(Spells, AllowTargetBuffRemove, true, "Allow a player to click off a buff they cast on their current target (Laurion/SoD Target_BuffWindow left-click sends OP_BuffRemoveRequest)")
 RULE_BOOL(Spells, FlatItemExtraSpellAmt, false, "Allow SpellDmg stat to affect all spells, regardless of cast time/cooldown/etc")
 RULE_BOOL(Spells, IgnoreSpellDmgLvlRestriction, false, "Ignore the 5 level spread on applying SpellDmg")
 RULE_BOOL(Spells, ItemExtraSpellAmtCalcAsPercent, false, "Apply the Item stats Spell Dmg and Heal Amount as Percentage-based modifiers instead of flat additions")
