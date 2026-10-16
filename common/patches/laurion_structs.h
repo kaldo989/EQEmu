@@ -1052,6 +1052,30 @@ namespace Laurion {
 			/*0156*/
 		};
 
+		// Opcode 0x1f25 (OP_GroupCancelInvite) - the group invite response, BOTH direction.
+		// Send sites: FUN_140257290 (the invitee declines: prints eqstr 12289 "You cancel the invitation
+		// to join %1's group.", subcommand 3, then clears InvitedToGroup) and FUN_1402827f0 (the invite
+		// handler auto-declines with 1 / 4 / 5 when it will not accept the invite).
+		// Receive handler FUN_140282be0 reads the subcommand byte at +152 and the name at +64 and prints
+		// eqstr 12264 / 12265 / 12266 / 5086 / 5088 about that name - i.e. the inviter sees the decline.
+		// The client writes the subcommand only at +152 (as a u32 with the value in the low byte); the
+		// dword at +128 has its low byte explicitly zeroed by both senders, and +144 holds a constant 0x100.
+		// EQEmu's GroupCancel_Struct is 129 bytes with the toggle at +128, so the subcommand has to move
+		// between +152 and +128 in both directions. Reverse notes: docs/group-opcodes-laurion.md
+		struct GroupCancelInvite_Struct {
+			/*0000*/ char   name1[64];		// the inviter
+			/*0064*/ char   name2[64];		// the invitee - the %1 the receiver prints
+			/*0128*/ uint32 unknown0128;	// low byte explicitly zeroed by the client senders
+			/*0132*/ uint32 unknown0132;
+			/*0136*/ uint32 unknown0136;
+			/*0140*/ uint32 unknown0140;
+			/*0144*/ uint32 unknown0144;	// observed 0x100 in the low u16
+			/*0148*/ uint32 unknown0148;
+			/*0152*/ uint32 subcommand;	// 1 already invited, 2 already grouped, 3 declined,
+									// 4 raid, 5 raid group leader - read as a byte by FUN_140282be0
+			/*0156*/
+		};
+
 		// Opcode 0x7e71 (OP_GroupInvitePrompt), server -> client. Handler FUN_1403aa570 reads only the
 		// u64 at payload+0x18 and resolves the inviter through PlayerManagerClient::GetPlayerFromHashKey
 		// (vtable slot 3), then shows the fellowship invite popup. There is no size gate, so 32 bytes is

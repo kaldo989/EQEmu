@@ -3951,6 +3951,28 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_GroupCancelInvite) // 0x1f25 - group invite response / declined invite
+	{
+		// EQEmu carries this as GroupCancel_Struct (129): name1, name2, toggle at +128. Laurion uses 156
+		// bytes and puts the subcommand at +152, which is the only field its receive handler reads:
+		// FUN_140282be0 switches on the byte at payload+152 (1 "%1 is currently considering joining another
+		// group.", 2 "%1 is already in another group.", 3 "%1 rejects your offer to join the group.",
+		// 4 raid variant, 5 raid group leader variant) and formats it with the name at payload+64.
+		// Both client senders write the subcommand only at +152 and explicitly zero the low byte of the
+		// dword at +128, and both leave a constant 0x100 in the u16 at +144, so mirror that.
+		// Without this encoder the inviter's client gets a 129 byte packet, reads +152 outside the payload,
+		// and prints nothing.
+		ENCODE_LENGTH_EXACT(GroupCancel_Struct);
+		SETUP_DIRECT_ENCODE(GroupCancel_Struct, structs::GroupCancelInvite_Struct);
+
+		memcpy(eq->name1, emu->name1, sizeof(eq->name1));
+		memcpy(eq->name2, emu->name2, sizeof(eq->name2));
+		eq->subcommand = emu->toggle;
+		eq->unknown0144 = 0x100;
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_KeyRingSlots) // 0x7d5b - key ring slot allowance
 	{
 		// FUN_1401fb9d0 copies the five u16 straight into pinstLocalPC->BaseKeyRingSlots[0..4]
@@ -4523,6 +4545,25 @@ namespace Laurion
 		for (int i = 0; i < 100; ++i) {
 			IN(skills[i]);
 		}
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GroupCancelInvite)
+	{
+		// The client sends this from two places: FUN_140257290 when the invitee declines (subcommand 3,
+		// after printing eqstr 12289 "You cancel the invitation to join %1's group.") and FUN_1402827f0 when
+		// an invite arrives that the client will not accept (1 already invited, 4 in a raid, 5 raid group
+		// leader). name1 = inviter, name2 = invitee, subcommand at +152.
+		// Handle_OP_GroupCancelInvite requires exactly sizeof(GroupCancel_Struct) = 129 and forwards the
+		// packet to the inviter, so normalise 156 -> 129 here and let ENCODE(OP_GroupCancelInvite) rebuild
+		// the Laurion shape on the way out to the inviter's client.
+		DECODE_LENGTH_EXACT(structs::GroupCancelInvite_Struct);
+		SETUP_DIRECT_DECODE(GroupCancel_Struct, structs::GroupCancelInvite_Struct);
+
+		memcpy(emu->name1, eq->name1, sizeof(emu->name1));
+		memcpy(emu->name2, eq->name2, sizeof(emu->name2));
+		emu->toggle = (uint8)eq->subcommand;
 
 		FINISH_DIRECT_DECODE();
 	}
