@@ -133,6 +133,10 @@ void LoadServerConfig()
 #endif
 
 	server.options.AllowTokenLogin(server.config.GetVariableBool("security", "allow_token_login", false));
+
+	server.options.SetLoginHandshakeTimeoutSeconds(
+		server.config.GetVariableInt("client_configuration", "login_handshake_timeout_seconds", 30)
+	);
 }
 
 void start_web_server()
@@ -249,6 +253,10 @@ int main(int argc, char **argv)
 	);
 	LogInfo("[Config] [Security] GetEncryptionMode [{}]", server.options.GetEncryptionMode());
 	LogInfo("[Config] [Security] IsTokenLoginAllowed [{}]", server.options.IsTokenLoginAllowed());
+	LogInfo(
+		"[Config] [ClientConfiguration] LoginHandshakeTimeoutSeconds [{}]",
+		server.options.GetLoginHandshakeTimeoutSeconds()
+	);
 
 	Timer keepalive(INTERSERVER_TIMER); // does auto-reconnect
 

@@ -30,6 +30,8 @@ Client::Client(std::shared_ptr<EQStreamInterface> c, LSClientVersion v)
 	m_account_id              = 0;
 	m_selected_play_server_id = 0;
 	m_play_sequence_id        = 0;
+	m_session_ready_time      = std::chrono::steady_clock::now();
+	m_handshake_timeout_sent  = false;
 }
 
 bool Client::Process()
@@ -94,6 +96,24 @@ bool Client::Process()
 		app = m_connection->PopPacket();
 	}
 
+	if (
+		m_client_status == cs_waiting_for_login && !m_handshake_timeout_sent &&
+		std::chrono::duration_cast<std::chrono::seconds>(
+			std::chrono::steady_clock::now() - m_session_ready_time).count() > server.options.GetLoginHandshakeTimeoutSeconds()
+	) {
+		m_handshake_timeout_sent = true;
+
+		LogWarning(
+			"Handshake sent to client [{}] but no login followed within [{}] seconds, abandoning the session",
+			GetClientLoggingDescription(),
+			server.options.GetLoginHandshakeTimeoutSeconds()
+		);
+
+		SendHandshakeTimeout();
+
+		m_client_status = cs_failed_to_login;
+	}
+
 	return true;
 }
 
@@ -104,21 +124,56 @@ void Client::HandleSessionReady(const char *data, unsigned int size)
 		return;
 	}
 
-	if (size < sizeof(unsigned int)) {
+	if (size < sizeof(uint16_t) + sizeof(LoginBaseMessage)) {
 		LogError("Session ready was too small");
 		return;
 	}
 
 	m_client_status = cs_waiting_for_login;
 
+	// data starts at base message header (opcode not included)
+	LoginBaseMessage in_header{};
+	memcpy(&in_header, data, sizeof(LoginBaseMessage));
+
+	// The client keys its pending-request table by the sequence of the request it sent, and it
+	// only dispatches a reply when that reply's sequence still matches a live entry (any opcode
+	// outside 0x25-0x2c / 0x2f-0x30 is silently dropped when there is no match). The client sends
+	// OP_SystemFingerprint with a zero second timeout, so hardcoding the handshake sequence raced
+	// against that entry being reaped: when the race was lost the client never saw the handshake,
+	// never sent OP_Login, and sat on "Logging in to the server. Please Wait...." until its own
+	// ~60 second abort. Answer the OP_SessionReady with the sequence it actually used.
 	auto *outapp = new EQApplicationPacket(OP_ChatMessage, sizeof(LoginHandShakeReply));
 	auto buf     = reinterpret_cast<LoginHandShakeReply *>(outapp->pBuffer);
-	buf->base_header.sequence    = 0x02;
+	buf->base_header.sequence    = in_header.sequence;
 	buf->base_reply.success      = true;
 	buf->base_reply.error_str_id = 0x65; // 101 "No Error"
 
 	m_connection->QueuePacket(outapp);
 	delete outapp;
+
+	m_session_ready_time = std::chrono::steady_clock::now();
+}
+
+// The client only acts on the handshake reply if it can still match it to the request it sent, and
+// acting on it is the only thing that makes it send OP_Login. A reply it could not use leaves it
+// sitting on "Logging in to the server. Please Wait...." with nothing outstanding on either side -
+// the server has answered and been acked, the client is waiting on a request it never issues - until
+// the client's own ~60 second abort. Push a failure instead of waiting for that: OP_ChatMessage with
+// success = false makes the client call its own Disconnect, so it returns to the login window and can
+// be retried immediately. Sequence 0xFFFFFFFF is what makes the push reachable at all - the client
+// skips its pending-request lookup for any sequence at or above 0x00ffffff, which is the only way to
+// deliver a 0x17 to a client that has no matching request left. See docs/loginserver-handshake-larion.md.
+void Client::SendHandshakeTimeout()
+{
+	LoginHandShakeReply r{};
+	r.base_header.sequence     = 0xFFFFFFFF;
+	r.base_reply.success       = false;
+	r.base_reply.error_str_id  = 101; // No Error: the only 0x17 string id this server is known to resolve
+
+	EQApplicationPacket outapp(OP_ChatMessage, sizeof(r));
+	outapp.WriteData(&r, sizeof(r));
+
+	m_connection->QueuePacket(&outapp);
 }
 
 void Client::HandleLogin(const char *data, unsigned int size)

@@ -28,7 +28,8 @@ public:
 		m_encryption_mode(14),
 		m_reject_duplicate_servers(false),
 		m_allow_token_login(false),
-		m_auto_create_accounts(false) {}
+		m_auto_create_accounts(false),
+		m_login_handshake_timeout_seconds(30) {}
 
 	inline void AllowUnregistered(bool b) { m_allow_unregistered = b; }
 	inline void DisplayExpansions(bool b) { m_display_expansions = b; }
@@ -54,6 +55,8 @@ public:
 	inline void SetWorldDevTestServersListBottom(bool list_bottom) { m_world_dev_list_bottom = list_bottom; }
 	inline bool IsWorldSpecialCharacterStartListBottom() const { return m_special_char_list_bottom; }
 	inline void SetWorldSpecialCharacterStartListBottom(bool list_bottom) { m_special_char_list_bottom = list_bottom; }
+	inline void SetLoginHandshakeTimeoutSeconds(int seconds) { m_login_handshake_timeout_seconds = seconds; }
+	inline int GetLoginHandshakeTimeoutSeconds() const { return m_login_handshake_timeout_seconds; }
 
 private:
 	bool        m_allow_unregistered;
@@ -66,6 +69,7 @@ private:
 	bool        m_auto_create_accounts;
 	int         m_encryption_mode;
 	int         m_max_expansions_mask;
+	int         m_login_handshake_timeout_seconds;
 	std::string m_eqemu_loginserver_address;
 	std::string m_default_loginserver_name;
 };

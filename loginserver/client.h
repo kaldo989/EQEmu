@@ -24,6 +24,7 @@
 #include "common/repositories/login_accounts_repository.h"
 #include "loginserver/login_types.h"
 
+#include <chrono>
 #include <memory>
 
 class Client {
@@ -55,6 +56,9 @@ public:
 
 	void AttemptLoginAccountCreation(LoginAccountContext c);
 	void SendFailedLogin();
+	// Pushes an unsolicited handshake failure so a client that never follows the handshake with
+	// OP_Login stops waiting; see the comment in Client::Process.
+	void SendHandshakeTimeout();
 	bool VerifyAndUpdateLoginHash(LoginAccountContext c, const LoginAccountsRepository::LoginAccounts& a);
 	void DoSuccessfulLogin(LoginAccountsRepository::LoginAccounts& a);
 
@@ -72,6 +76,8 @@ private:
 	std::unique_ptr<EQ::Net::ReliableStreamConnectionManager> m_login_connection_manager;
 	std::shared_ptr<EQ::Net::ReliableStreamConnection>        m_login_connection;
 	LoginBaseMessage                                    m_login_base_message;
+	std::chrono::steady_clock::time_point               m_session_ready_time;
+	bool                                                m_handshake_timeout_sent;
 	std::string                                         m_stored_username;
 	std::string                                         m_stored_password;
 	static bool ProcessHealthCheck(std::string username) {
