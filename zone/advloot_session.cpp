@@ -61,7 +61,10 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 	group.corpse_key       = corpse->GetID();
 	group.npc_name         = corpse->GetOwnerName();
 	group.decay_expires_in = corpse->GetDecayTime() / 1000;   // seconds - FUN_14014f5f0 packs value * 1000 + clock
-	group.present_at_kill  = corpse->IsKillCreditLooter(c->CharacterID()) ? 1 : 0;
+	// Loot rights, not raw kill credit: CanPlayerLoot is "on the looter list, or the list is empty because the
+	// corpse has unlocked". Gating this on IsKillCreditLooter alone made every row flip to [locked] the moment
+	// NPC:CorpseUnlockTimer cleared m_allowed_looters - see AuthorityFor and docs/advlootpcap.md §10.2.
+	group.present_at_kill  = corpse->CanPlayerLoot(c->CharacterID()) ? 1 : 0;
 
 	const bool solo = !c->HasGroup() && !c->HasRaid();
 
@@ -78,6 +81,8 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 		entry.filter_bits     = c->AdvLootFilterBits(item->ID);
 		entry.icon            = item->Icon;
 		entry.name            = item->Name;
+		entry.stack_size      = item->StackSize > 1 ? static_cast<uint16_t>(item->StackSize) : 1;
+		entry.no_drop         = item->NoDrop == 0 ? 1 : 0;   // +0x18 is 1 = no drop; ItemData::NoDrop is 0 = no drop
 
 		entry.personal_qty = PersonalQty(c->CharacterID(), item->ID);
 		entry.shared_qty   = solo ? 0 : SharedQty(item->ID);
@@ -152,7 +157,12 @@ void Session::Render(Client *c)
 		c->advloot_corpses.push_back(corpse_id);
 	}
 
-	c->SendAdvLootGroup(group);
+	// Not SendAdvLootGroup: FUN_140153970 clears the corpse hash and both panes on every 0x03 before it
+	// re-adds what the packet carries, so a one-group push deletes the rows of every other corpse this viewer
+	// is watching. 2026-10-16 capture, docs/advlootpcap.md §7.2: killing the second barrel wiped the first
+	// barrel's arrow and backpack rows off the window, and they only came back with the next re-render. Ask
+	// the client to re-render its whole live set instead, which is the only shape a 0x03 may take.
+	c->AdvLootRender();
 
 	// Rule R2: this 0x03 just wiped the viewer's ask table and reset their ask counter, so anything still
 	// outstanding on this corpse has to follow it. Order matters - the 0x0a records go after the rebuild.
@@ -173,15 +183,20 @@ void Session::ExplainRowsTo(Client *c)
 	c->MessageString(Chat::Yellow, AdvLoot::StringId::AdvLootCorpse);
 }
 
-// The kill-time push: every Advanced-Loot client in the zone, whether or not they had kill credit (the
-// non-credit ones get locked rows). Returns the clients it rendered to, which is also the set the corpse
-// cash is split across.
+// The kill-time push. Only the corpse's kill-credit looters get rows: a player who was not present at the
+// kill has no claim on it and must not see it until it unlocks and the legacy right-click opens. Rendering
+// the whole zone instead made an unaccepted group invite show the corpse as locked rows the moment the
+// inviter killed - "only time that an item should be sent is if you are IN the group at the time of the
+// kill" (2026-10-16, docs/advlootpcap.md §10.1). Group and raid membership at the moment of the kill is
+// exactly what the kill-credit list records.
+//
+// Returns the clients it rendered to, which is also the set the corpse cash is split across.
 std::vector<Client *> Session::RenderAll()
 {
 	std::vector<Client *> looters;
 
-	for (const auto &entry : entity_list.GetClientList()) {
-		Client *c = entry.second;
+	for (uint32_t character_id : corpse->GetKillCreditLooters()) {
+		Client *c = entity_list.GetClientByCharID(character_id);
 		if (!c || !c->advloot_enabled) {
 			continue;
 		}
@@ -242,9 +257,11 @@ void Session::Open()
 
 		if (Group *group = c->GetGroup()) {
 			mode = AdvLoot::ModeGroup;
-			// GetMasterLooter() falls back to the leader, so an empty name is the only signal that nobody has
-			// been named and the rule is "every member may act".
-			authority = group->GetMasterLooterName().empty() ? AuthorityEveryone : AuthorityMasterLooter;
+			// A group always has a master looter: Group::GetMasterLooter() falls back to the group leader when
+			// nobody has been named. Treating an empty name as "every member may act" was the server's rule, but
+			// the client has no way to know it - its own master-looter flag comes from OP_MasterLooter alone - so
+			// the window showed every member as the master looter and let every member change settings.
+			authority = AuthorityMasterLooter;
 		}
 	}
 
@@ -270,9 +287,15 @@ uint32_t Session::AuthorityFor(Client *c) const
 		return AuthorityNone;
 	}
 
-	// No kill credit -> the group record's first byte was 0 for this viewer, their LootDetails entries read
-	// as Locked, and FUN_1400a9cc0 refuses the row outright (eqstr 11321).
-	if (!corpse->IsKillCreditLooter(c->CharacterID())) {
+	// No loot rights on this corpse -> the group record's first byte was 0 for this viewer, their LootDetails
+	// entries read as Locked, and FUN_1400a9cc0 refuses the row outright (eqstr 11321).
+	//
+	// Loot rights, not kill credit. Corpse::CanPlayerLoot is "on the looter list, or the list is empty because
+	// the unlock timer expired", and the 2026-10-16 16:18 group run shows why the narrower test is wrong: when
+	// NPC:CorpseUnlockTimer fired it cleared m_allowed_looters, every row on the corpse flipped from [unlocked]
+	// to [locked], authority became "locked", and a group that had just gained the right to loot a public corpse
+	// lost the ability to act on it at all. Settles design §11 Q10.
+	if (!corpse->CanPlayerLoot(c->CharacterID())) {
 		return AuthorityNone;
 	}
 
@@ -301,10 +324,7 @@ uint32_t Session::AuthorityFor(Client *c) const
 	}
 
 	if (Group *group = c->GetGroup()) {
-		if (group->GetMasterLooterName().empty()) {
-			return AuthorityEveryone;
-		}
-
+		// Same rule as Open(): the group leader is the master looter until /advloot mol names someone else.
 		return group->GetMasterLooter() == c ? AuthorityMasterLooter : AuthorityNone;
 	}
 
@@ -456,6 +476,53 @@ void Session::ClearAwards(uint32_t item_id)
 // lookup and LootCorpseItem with all of Corpse::GetItem's lore / no-trade / status checks - and the subcmd
 // 0x09 answer is built from the quantity this returns, because FUN_140151810 only erases the client's corpse
 // item entry when that quantity equals the entry's personal pool and its shared pool is empty.
+// The shared -> personal move. FUN_1400a42f0, the subcmd 0x0e handler, is the only client path that touches
+// entry+0x0C and entry+0x14, so a roll or an assignment that ends without it leaves the winner's units where
+// the client put them: still in the shared pool. The Personal Loot pane stays empty - which is what the
+// 2026-10-16 16:18 group run showed from the player's side - and FUN_140151810's erase gate
+// (quantity == entry+0x14 && entry+0x0C == 0) can never match, so the row outlives the loot. flag 0 plus the
+// winner's name is the combination that makes the client create the Personal Loot row (0x140151f11).
+//
+// Every viewer of this corpse gets it, not just the winner: the two pools are shared state and all windows
+// have to agree about how many units are left in the shared pane.
+void Session::MoveToPersonal(Client *winner, uint32_t item_id, uint16_t quantity, uint32_t ask_key)
+{
+	if (!winner || !quantity) {
+		return;
+	}
+
+	for (const auto &entry : views) {
+		Client *c = entity_list.GetClientByCharID(entry.first);
+		if (!c) {
+			continue;
+		}
+
+		EQApplicationPacket *app = AdvLoot::BuildTransactionPacket(
+			ask_key,
+			static_cast<uint32_t>(corpse->GetID()),
+			item_id,
+			quantity,
+			0,
+			winner->GetCleanName());
+
+		if (!app) {
+			continue;
+		}
+
+		c->QueuePacket(app);
+		safe_delete(app);
+	}
+
+	LogLootFilters(
+		"advloot move item [{}] corpse [{}] [{}] unit(s) shared -> personal for [{}] ask_key [{}]",
+		item_id,
+		corpse->GetID(),
+		quantity,
+		winner->GetCleanName(),
+		ask_key
+	);
+}
+
 Session::Delivery Session::Deliver(Client *c, uint32_t item_id, uint16_t requested_qty)
 {
 	Delivery out;
@@ -501,11 +568,6 @@ Session::Delivery Session::Deliver(Client *c, uint32_t item_id, uint16_t request
 	} else if (!corpse->CanPlayerLoot(c->CharacterID())) {
 		action = AdvLoot::ActionNotAllowed;      // AdvLootTransaction prints eqstr 11321
 		reason = "no loot rights";
-	} else if (corpse->IsBeingLooted() && !corpse->IsBeingLootedBy(c)) {
-		// Reported by the legacy loot-error packet; 0x09 has no "someone else is looting" code, so send the
-		// silent form, which still performs the cleanup.
-		action = AdvLoot::ActionNone;
-		reason = "being looted by someone else";
 	} else {
 		action = AdvLoot::ActionLooted;
 		reason = "looted";
@@ -515,12 +577,42 @@ Session::Delivery Session::Deliver(Client *c, uint32_t item_id, uint16_t request
 	out.reason    = reason;
 	out.delivered = action == AdvLoot::ActionLooted;
 
-	corpse->AdvLootTransaction(c, item_id, out.quantity);
+	// The corpse decides how many units actually left. A row covers every loot slot holding this item id, so
+	// a delivery can span several slots and can be refused part way through (no inventory space, a lore
+	// conflict, a quest block, a dynamic-zone lock). A 0x09 that reports more than the player received would
+	// erase the client's row and strand the rest of the pile, so retire only what moved and answer with the
+	// real number.
+	const uint16_t asked = out.quantity;
+	const uint16_t moved = corpse->AdvLootTransaction(c, item_id, asked);
+
+	if (out.delivered && moved < asked) {
+		out.quantity = moved;
+
+		if (!moved) {
+			out.action    = AdvLoot::ActionNotAllowed;
+			out.reason    = "the corpse refused the loot";
+			out.delivered = false;
+		} else {
+			LogLootFilters(
+				"[{}] deliver item [{}] corpse [{}] partial - asked [{}] moved [{}]",
+				c->GetCleanName(),
+				item_id,
+				corpse->GetID(),
+				asked,
+				moved
+			);
+		}
+	}
 
 	if (out.delivered) {
 		ConsumeAward(c->CharacterID(), item_id, out.quantity);
 	}
 
+	// out.reason, not reason: the local `reason` was decided before the transaction ran, and a transaction that
+	// moved nothing rewrites it to "the corpse refused the loot". Printing the pre-decision string made a
+	// zero-delivery log as a success - the 2026-10-16 16:52 run shows four consecutive
+	// `advloot transaction ... requested [1] delivered [0]` each followed by `deliver ... qty [0] ... -> [looted]`,
+	// which reads as if the item went through. docs/advlootpcap.md §11.4.
 	LogLootFilters(
 		"[{}] deliver item [{}] corpse [{}] qty [{}] personal [{}] shared [{}] -> [{}]",
 		c->GetCleanName(),
@@ -529,7 +621,7 @@ Session::Delivery Session::Deliver(Client *c, uint32_t item_id, uint16_t request
 		out.quantity,
 		personal,
 		SharedQty(item_id),
-		reason
+		out.reason
 	);
 
 	last_delivery = out;
@@ -572,27 +664,29 @@ Roll &Session::EnsureRoll(uint32_t item_id)
 
 void Session::Arm(Roll &roll)
 {
-	Arm(roll, static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)));
+	Arm(roll, static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)) * 1000u);
 }
 
-// Arm the window with a caller-supplied window instead of the rule value. Subcmd 0x0a carries the seconds
-// the initiating client has left on its own countdown (FUN_140085c80 writes record+0x18 - clock), so the
-// server expires at the same moment the client's row does. A zero or absurd value falls back to the rule.
+// Arm the window with a caller-supplied window instead of the rule value. Subcmd 0x0a carries the
+// milliseconds the initiating client has left on its own countdown (FUN_140085c80 writes record+0x18 - clock),
+// so the server expires at the same moment the client's row does. A zero or absurd value - including the
+// wrapped `2^32 - clock` a client with no deadline installed sends - falls back to the rule.
 //
 // The client's countdown is an absolute deadline: the receive case adds its own clock back and
-// CAdvancedLootWnd::DoAdvLootAction (FUN_1400aa1b0) stores the result at record+0x88. ask_deadline is the
-// server's copy of that, which is what ReissueAsks converts back into relative seconds.
-void Session::Arm(Roll &roll, uint32_t seconds)
+// CAdvancedLootWnd::DoAdvLootAction (FUN_1400aa1b0) stores the result at record+0x88, which is what draws the
+// time-left bar over the row's icon. ask_deadline is the server's copy of that, and ReissueAsks converts it
+// back into relative milliseconds.
+void Session::Arm(Roll &roll, uint32_t remaining_ms)
 {
-	const uint32_t rule_seconds = static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds));
+	const uint32_t rule_ms = static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)) * 1000u;
 
-	if (seconds == 0 || seconds > rule_seconds) {
-		seconds = rule_seconds;
+	if (remaining_ms == 0 || remaining_ms > rule_ms) {
+		remaining_ms = rule_ms;
 	}
 
 	roll.armed        = true;
-	roll.ask_deadline = Timer::GetCurrentTime() + seconds * 1000;
-	roll.ask_timer.SetTimer(seconds * 1000);
+	roll.ask_deadline = Timer::GetCurrentTime() + remaining_ms;
+	roll.ask_timer.SetTimer(remaining_ms);
 
 	// An ask the server started on its own - AdvLootAutoStartTimer arming at the first opt-in, with no 0x0a
 	// on the wire - has no client-allocated key, so there is nothing to re-issue later. Record the shape of
@@ -603,17 +697,94 @@ void Session::Arm(Roll &roll, uint32_t seconds)
 		roll.ask.flag  = 0;
 	}
 
-	roll.ask.seconds = seconds;
+	roll.ask.remaining_ms = remaining_ms;
 
 	LogLootFilters(
 		"[{}] advloot roll armed item [{}] corpse [{}] window [{}]s (rule [{}]s) ask_key [{}]{}",
 		roll.item_name,
 		roll.item_id,
 		corpse->GetID(),
-		seconds,
-		rule_seconds,
+		remaining_ms / 1000,
+		rule_ms / 1000,
 		roll.ask.ask_key,
 		roll.ask.ask_key ? "" : " (no client key recorded yet)"
+	);
+
+	// Arming the server's timer is not enough to make the countdown visible: the bar is drawn by the subcmd
+	// 0x11 receive path. At 0x140151fcb the client resolves the record by ask_key, writes
+	// record+0x18 = clock + remaining_ms, and then - whenever record+0x18 is non-zero - calls
+	// CAdvancedLootWnd__DoAdvLootAction(window, ask_key, record+0x18), which walks the shared pane, finds the
+	// row whose row+0x60 == ask_key, sets row+0x88 = the deadline and repaints it. The 0x0a receive path does
+	// call the same helper, but only when wnd+0x241 is set and the packet's flag byte is zero, so a 0x0a relay
+	// on its own is not enough: the 2026-10-16 23:11 run armed a 60 s window and relayed remaining_ms [60000],
+	// and neither window drew a bar. docs/advlootpcap.md §12.1.
+	//
+	// The 0x11 is not sent here. It is sent by the caller, after the 0x0a relay, because 0x11 cannot create the
+	// record it looks up: FUN_140153400, the only writer of manager+0x148[], runs in the 0x0a case, and the
+	// 0x11 case returns at 0x140151fff when the bucket is empty. Sending 0x11 first meant every viewer who had
+	// not started the ask themselves threw it away. See C33.
+}
+
+// The countdown and state packet. ask_key 0 is deliberately not sent: the client resolves 0x11 by walking
+// manager+0x148[ask_key % 0x14] for a record whose key matches, and no client ever allocates key 0, so a zero
+// key is a guaranteed miss. The 2026-10-17 16:08 capture shows Resolve sending exactly that -
+// `11 00 00 00 00 00 00 00 00 00 04 00 00 00 00` - after ClearAsk() had already wiped roll.ask, so the row
+// never moved to Ask Completed and the bar stayed up until the corpse unlocked.
+void Session::SendAskState(Roll &roll, uint32_t ask_key, uint32_t state, uint32_t remaining_ms)
+{
+	if (!ask_key) {
+		return;
+	}
+
+	EQApplicationPacket *app = AdvLoot::BuildSetStatePacket(ask_key, remaining_ms, state, 0);
+	if (!app) {
+		return;
+	}
+
+	for (const auto &entry : views) {
+		Client *viewer = entity_list.GetClientByCharID(entry.first);
+		if (viewer) {
+			viewer->QueuePacket(app);
+		}
+	}
+
+	safe_delete(app);
+}
+
+// The client's own roll award. Every viewer gets the same list; FUN_1400a7bd0 only moves units when the
+// highest-numbered name is the local player, so one broadcast does the right thing for the winner and for
+// everybody else, who just watch the row leave the Shared pane.
+void Session::SendRollResults(Roll &roll, uint32_t ask_key, const std::vector<Participant *> &tier)
+{
+	if (!ask_key || tier.empty()) {
+		return;
+	}
+
+	std::vector<std::pair<uint16_t, std::string>> results;
+	for (auto *p : tier) {
+		results.emplace_back(static_cast<uint16_t>(p->roll), p->name);
+	}
+
+	EQApplicationPacket *app = AdvLoot::BuildRollResultsPacket(ask_key, 0, 0, results);
+	if (!app) {
+		return;
+	}
+
+	for (const auto &entry : views) {
+		Client *viewer = entity_list.GetClientByCharID(entry.first);
+		if (viewer) {
+			viewer->QueuePacket(app);
+		}
+	}
+
+	safe_delete(app);
+
+	LogLootFilters(
+		"advloot roll results item [{}] corpse [{}] ask_key [{}] - [{}] dice sent",
+		roll.item_id,
+		corpse->GetID(),
+		ask_key,
+		results.size()
 	);
 }
 
@@ -624,6 +795,19 @@ void Session::ChatToRoll(const Roll &roll, uint32_t string_id,
 {
 	for (const auto &participant : roll.participants) {
 		Client *client = entity_list.GetClientByCharID(participant.character_id);
+		if (!client) {
+			continue;
+		}
+		client->MessageString(Chat::Yellow, string_id, arg1, arg2, arg3, arg4, arg5);
+	}
+}
+
+// Every viewer of the corpse, whether or not they bid on this item.
+void Session::ChatToViewers(const Roll &roll, uint32_t string_id,
+	const char *arg1, const char *arg2, const char *arg3, const char *arg4, const char *arg5)
+{
+	for (const auto &entry : views) {
+		Client *client = entity_list.GetClientByCharID(entry.first);
 		if (!client) {
 			continue;
 		}
@@ -723,6 +907,15 @@ Roll &Session::RecordChoice(Client *c, uint32_t item_id, uint32_t choice)
 		return roll;
 	}
 
+	// While an ask window is live, an answer is just an answer: record it and wait for the countdown. The
+	// client is drawing a time-left bar over the row and every member is expected to answer before it expires,
+	// so resolving on the first click would hand the item to whoever answered first and make the visible timer
+	// a lie. The timer's own expiry is what resolves an armed row.
+	if (roll.armed) {
+		RefreshAskState(roll);
+		return roll;
+	}
+
 	// No competition yet: the first participant on a row in a group is not a roll, so award it now.
 	// A roll only exists once a second Need/Greed participant appears on the same row.
 	if (roll.participants.size() == 1) {
@@ -776,7 +969,8 @@ void Session::Resolve(Roll &roll)
 	roll.ask_timer.Disable();
 
 	// The ask is over whichever branch this takes from here, and a stale record would put a finished
-	// countdown back on the window after the next 0x03 rebuild.
+	// countdown back on the window after the next 0x03 rebuild. Take the key first: ClearAsk wipes the record.
+	const uint32_t ask_key = roll.ask.ask_key;
 	ClearAsk(roll);
 
 	uint32 quantity = corpse->GetLootQuantityByItemID(roll.item_id);
@@ -842,22 +1036,32 @@ void Session::Resolve(Roll &roll)
 
 	roll.state = AdvLoot::StateAskCompleted;
 
-	if (tier.size() > 1) {
-		for (auto *p : tier) {
-			Client *client = entity_list.GetClientByCharID(p->character_id);
-			if (!client) {
-				continue;
-			}
+	// Each participant's roll goes to every viewer, not to the roller. The client has no path of its own
+	// that prints another player's roll: the 2026-10-17 10:38 run sent "Gunadie rolled a 659 on Water
+	// Flask." to Gunadie and "Joka rolled a 775 on Water Flask." to Joka, so each window saw only its own
+	// owner's dice and the loser could not see the number they had been beaten by.
+	//
+	// This is not skipped for a single bidder either. The 2026-10-17 16:08 run had Gunadie on Never and
+	// Joka on Greed, so the Greed tier held one looter, no roll line was printed anywhere, and the master
+	// looter who pressed Ask saw only "Joka won the Greed roll ... with a roll of 738" with no dice in
+	// front of it. The client's own 0x13 dice list prints one line per entry regardless of how many bid.
+	//
+	// 0x13 prints eqstr 11316 itself, with %3 taken from the row, so the server only falls back to its own
+	// chat line when there is no client record to hang the dice on (ask_key 0 - an ask the server started by
+	// itself, with no 0x0a on the wire).
+	const bool client_prints_dice = ask_key != 0;
 
+	if (!client_prints_dice) {
+		for (auto *p : tier) {
 			char participant_roll[32];
-			client->MessageString(Chat::Yellow, AdvLoot::StringId::RolledOn,
+			ChatToViewers(roll, AdvLoot::StringId::RolledOn,
 				p->name.c_str(),
 				ConvertArray(static_cast<int64>(p->roll), participant_roll),
 				roll.item_name.c_str());
 		}
 	}
 
-	ChatToRoll(roll, AdvLoot::StringId::WonRoll,
+	ChatToViewers(roll, AdvLoot::StringId::WonRoll,
 		winner->name.c_str(),
 		need.empty() ? "Greed" : "Need",
 		ConvertArray(static_cast<int64>(tier.size()), count_str),
@@ -873,22 +1077,39 @@ void Session::Resolve(Roll &roll)
 		winner->roll
 	);
 
-	// The client's CAdvancedLootWnd::DoAdvLootAction only fires when the assignee is non-zero, so the
-	// winner is shown by the state 4 packet with the assignee set. Send it before the delivery so the
-	// row and the chat line agree.
-	EQApplicationPacket *state_packet = AdvLoot::BuildStatePacket(roll.item_id, winner->character_id, AdvLoot::StateAskCompleted, 0);
-	if (state_packet) {
-		for (const auto &participant : roll.participants) {
-			Client *client = entity_list.GetClientByCharID(participant.character_id);
-			if (client) {
-				client->QueuePacket(state_packet);
-			}
-		}
-		delete state_packet;
+	// The row moves to state 4 Ask Completed. There is no countdown left, so remaining_ms is 0 - which is also
+	// what clears the bar. The client's DoAdvLootAction fires on flag == 0, not on an assignee field: 0x11 has
+	// no assignee at all (docs/advlootpcap.md §11.3). The key has to be the one captured above: ClearAsk() has
+	// already zeroed roll.ask, and a 0x11 keyed 0 matches no record in any client.
+	SendAskState(roll, ask_key, AdvLoot::StateAskCompleted, 0);
+
+	// 0x13 is what actually ends a roll on the window. FUN_1400a7bd0(window, ask_key, winner_is_local) walks
+	// the row's LootDetails entries into the Personal Loot store, runs the client's auto-loot pass, and removes
+	// the row from the Shared pane - for every viewer, with no master-looter gate.
+	//
+	// 0x0e cannot do that job. FUN_1400a42f0 skips a row outright when the viewer is the master looter and
+	// row+0x6C is clear, and a row only gets row+0x6C set by the client's own shared action - so a roll that
+	// finished on the timer, with nobody pressing Give, left the won item sitting in Gunadie's Shared pane at
+	// 2026-10-17 16:08 while the server had already moved both units into Joka's personal pool.
+	SendRollResults(roll, ask_key, tier);
+
+	// 0x0e stays as the fallback for a row no client holds an ask record for: it is the only packet that moves
+	// entry+0x0C / entry+0x14 without an ask key, and without it the winner's Personal Loot pane stays empty -
+	// which is what the 2026-10-16 16:18 group run showed from the player's side - and FUN_140151810's erase
+	// gate (quantity == entry+0x14 && entry+0x0C == 0) can never match, so the row outlives the loot.
+	if (!client_prints_dice) {
+		MoveToPersonal(winner_client, roll.item_id, static_cast<uint16_t>(quantity), ask_key);
 	}
 
+	// The roll ends at the personal pool - it does not loot the corpse. `0x08` is the claim, `0x09` is its
+	// answer, and `FUN_140151810` erases the row when `quantity == entry+0x14 && entry+0x0C == 0`. Delivering
+	// here consumed the award before the client ever clicked: the 2026-10-16 23:12 run moved Bone Chips into
+	// Joka's Personal Loot pane and looted it in the same breath, so the row was never erased, Joka's own four
+	// clicks came back as `nothing in the requester's personal pool`, and the client printed eqstr 3562
+	// "You are not allowed to loot the item: Bone Chips." The client loots a personal row by itself when
+	// Apply Filters is on (`FUN_14009f790`), which is the flow the Personal Loot pane exists for.
+	// docs/advlootpcap.md §12.3.
 	Award(winner_client, roll.item_id, static_cast<uint16_t>(quantity));
-	Deliver(winner_client, roll.item_id, static_cast<uint16_t>(quantity));
 }
 
 void Session::Assign(Roll &roll, Client *target)
@@ -897,6 +1118,7 @@ void Session::Assign(Roll &roll, Client *target)
 	roll.armed = false;
 	roll.ask_timer.Disable();
 	roll.state = AdvLoot::StateAskCompleted;
+	const uint32_t ask_key = roll.ask.ask_key;
 	ClearAsk(roll);
 
 	uint32 quantity = corpse->GetLootQuantityByItemID(roll.item_id);
@@ -919,8 +1141,14 @@ void Session::Assign(Roll &roll, Client *target)
 		target->GetCleanName()
 	);
 
+	// Same as Resolve: close the ask on the window before moving the units, or the row keeps a live countdown
+	// over an item that has already been given away.
+	SendAskState(roll, ask_key, AdvLoot::StateAskCompleted, 0);
+
+	MoveToPersonal(target, roll.item_id, static_cast<uint16_t>(quantity), ask_key);
+
+	// Same rule as Resolve: the master looter's Give ends at the personal pool, the client claims it with 0x08.
 	Award(target, roll.item_id, static_cast<uint16_t>(quantity));
-	Deliver(target, roll.item_id, static_cast<uint16_t>(quantity));
 }
 
 // ML_LeaveOnCorpse: the master looter (or the player the row belongs to) has decided the item stays on the
@@ -1201,19 +1429,29 @@ void Session::RecordAsk(Roll &roll, const ItemUpdate &update)
 	roll.ask     = update;
 	roll.has_ask = update.ask_key != 0;
 
-	if (roll.ask.seconds) {
-		roll.ask_deadline = Timer::GetCurrentTime() + roll.ask.seconds * 1000;
+	if (roll.ask.remaining_ms) {
+		roll.ask_deadline = Timer::GetCurrentTime() + roll.ask.remaining_ms;
 	}
 
 	LogLootFilters(
-		"advloot ask recorded item [{}] corpse [{}] ask_key [{}] state [{}] seconds [{}] entries [{}]",
+		"advloot ask recorded item [{}] corpse [{}] ask_key [{}] state [{}] remaining_ms [{}] entries [{}]",
 		roll.item_id,
 		corpse->GetID(),
 		update.ask_key,
 		AdvLoot::StateName(update.state),
-		update.seconds,
+		update.remaining_ms,
 		update.entries.size()
 	);
+
+	if (update.item_id && static_cast<uint32_t>(update.item_id) != roll.item_id) {
+		LogLootFilters(
+			"advloot ask item mismatch corpse [{}] ask_key [{}] record names [{}] row is [{}]",
+			corpse->GetID(),
+			update.ask_key,
+			update.item_id,
+			roll.item_id
+		);
+	}
 }
 
 // The ask is over: the row resolved, was assigned, or was left on the corpse. There is nothing left to
@@ -1256,11 +1494,11 @@ void Session::ReissueAsks(Client *c)
 		if (ask.state == AdvLoot::StateAskCompleted || ask.state == AdvLoot::StateFixedAskCompleted) {
 			// Completed but not yet resolved: the record still has to exist for the Manage Loot window and for
 			// 0x12, but there is no countdown left to run.
-			ask.seconds = 0;
+			ask.remaining_ms = 0;
 		}
 		else if (roll.ask_deadline > now) {
-			// Round up so the client never shows a shorter countdown than the server is still waiting for.
-			ask.seconds = (roll.ask_deadline - now + 999) / 1000;
+			// Already milliseconds, and the client adds its own clock back - no conversion needed.
+			ask.remaining_ms = roll.ask_deadline - now;
 		}
 		else {
 			// The window has run out; Tick() resolves the row on this same clock.
@@ -1279,7 +1517,7 @@ void Session::ReissueAsks(Client *c)
 			corpse->GetID(),
 			ask.ask_key,
 			AdvLoot::StateName(ask.state),
-			ask.seconds
+			ask.remaining_ms / 1000
 		);
 
 		c->QueuePacket(app);
@@ -1297,10 +1535,19 @@ void Session::RefreshAskState(Roll &roll)
 		return;
 	}
 
+	// "All answered" means every looter who can see the row, not every looter who has answered so far.
+	// participants only ever grows when someone answers, so the old test was satisfied by the first answer:
+	// the 2026-10-16 23:11 run logged `ask completed ... [1] participant(s) all answered` four seconds into a
+	// 60 second window, while Joka had not answered yet and was added thirteen seconds later. Flipping the row
+	// to Ask Completed that early does two visible things - it sends 0x11 with remaining_ms 0, which removes the
+	// countdown bar, and it puts the row into the state the client refuses to reopen (eqstr 11319). docs/
+	// advlootpcap.md §12.4.
+	if (roll.participants.size() < views.size()) {
+		return;
+	}
+
 	for (const auto &p : roll.participants) {
-		// Never is an answer - the looter declined. Only an unanswered row is incomplete, and eqstr 11319
-		// ("The ask has already completed. Your selection has been changed from %1 back to %2.") shows the
-		// client refuses to reopen one either, so this only ever advances.
+		// Never is an answer - the looter declined. Only an unanswered row is incomplete.
 		if (p.choice == AdvLoot::ChoiceNone) {
 			return;
 		}
@@ -1314,26 +1561,24 @@ void Session::RefreshAskState(Roll &roll)
 	roll.ask.state = AdvLoot::StateAskCompleted;
 
 	LogLootFilters(
-		"advloot ask completed item [{}] corpse [{}] ask_key [{}] - [{}] participant(s) all answered",
+		"advloot ask completed item [{}] corpse [{}] ask_key [{}] - [{}] of [{}] looter(s) answered",
 		roll.item_id,
 		corpse->GetID(),
 		roll.ask.ask_key,
-		roll.participants.size()
+		roll.participants.size(),
+		views.size()
 	);
 
-	EQApplicationPacket *app = AdvLoot::BuildStatePacket(roll.item_id, 0, AdvLoot::StateAskCompleted, 0);
-	if (!app) {
-		return;
-	}
+	// The window is still running: the client needs state 4 to lock the row and to make its Roll button
+	// sendable, but a remaining_ms of 0 would compute record+0x18 == clock and draw an empty bar. Send what is
+	// actually left. docs/advlootdesignV2.md C31.
+	const uint32_t remaining_ms = roll.ask_deadline > Timer::GetCurrentTime()
+		? static_cast<uint32_t>(roll.ask_deadline - Timer::GetCurrentTime())
+		: 0u;
 
-	for (const auto &p : roll.participants) {
-		Client *client = entity_list.GetClientByCharID(p.character_id);
-		if (client) {
-			client->QueuePacket(app);
-		}
-	}
-
-	delete app;
+	// Every viewer of the corpse, not just the ones who answered: a looter who has not answered yet still has
+	// a row on screen that has to stop counting down.
+	SendAskState(roll, roll.ask.ask_key, AdvLoot::StateAskCompleted, remaining_ms);
 }
 
 } // namespace AdvLoot

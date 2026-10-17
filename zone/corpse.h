@@ -221,10 +221,25 @@ public:
 	uint32 CountItem(uint32 item_id);
 	uint32 GetItemIDBySlot(uint16 loot_slot);
 	uint16 GetFirstLootSlotByItemID(uint32 item_id);
+	// Units of this item still on the corpse. The same item id can occupy more than one loot slot - a loot
+	// drop that rolled it twice, or a stack that was split when the corpse was built - so this sums every
+	// matching entry rather than reporting the first one. Anything that then acts on a single slot (the
+	// AdvLoot transaction) has to walk the entries itself or it strands the later slots.
 	uint32 GetLootQuantityByItemID(uint32 item_id);
 	std::vector<int> GetLootList();
 	inline const LootItems &GetLootItems() { return m_item_list; }
-	void LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback = true);
+	// LootItem::lootslot is assigned in exactly one place today: MakeLootRequestPackets(), which runs when a
+	// client opens the corpse through OP_LootRequest. Corpse::AddLoot() never sets it, so on a corpse nobody
+	// has opened it is indeterminate, and MakeLootRequestPackets() also leaves any entry it cannot show at
+	// 0xFFFF. Both GetItem(lootslot) and RemoveItem(lootslot) return the FIRST entry that matches, so two
+	// entries sharing a value make a slot lookup resolve to the wrong item. Give every entry a distinct value,
+	// touching only the ambiguous ones so a client that currently holds the corpse open keeps the mapping it
+	// was already sent. See the 2026-10-17 10:38 run in docs/advlootpcap.md §15.2.
+	int NormalizeLootSlots();
+	// respect_cooldown is the 10 ms m_loot_cooldown_timer gate that rate-limits client OP_LootItem spam. An
+	// AdvLoot delivery that spans several loot slots is one server-side action, so only its first slot is
+	// held to the timer.
+	void LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback = true, bool respect_cooldown = true);
 	void EndLoot(Client *c, const EQApplicationPacket *app);
 	void MakeLootRequestPackets(Client *c, const EQApplicationPacket *app);
 	void AllowPlayerLoot(Mob *them, uint8 slot);
@@ -290,7 +305,11 @@ public:
 	// there is no looting session established. This sets the looting state from the kill-credit list
 	// and then reuses LootCorpseItem so all the existing checks (lore, cooldown, lock, bag limits)
 	// still apply.
-	void AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity);
+	//
+	// One AdvLoot row covers every loot slot holding this item id, so a delivery can span several slots and
+	// a single stack can be split when the request is smaller than the stack. Returns the units that
+	// actually left the corpse: the caller must only retire awards it really paid for.
+	uint16_t AdvLootTransaction(Client *c, uint32 item_id, uint16_t quantity);
 
 	// Advanced Loot roll state, owned by the corpse's AdvLoot::Session. One Roll per item on this corpse.
 	// The client cannot report a player's Need/Greed choice over the wire (no sub-command carries it -
@@ -314,10 +333,11 @@ public:
 	// which is not what ticking a box means.
 	void SetAdvLootResponse(uint32_t item_id, const std::string &name, uint32_t choice);
 	void ArmAdvLootRoll(AdvLoot::Roll& roll);
-	// Arm the window with a deadline the client supplied instead of the rule value. Subcmd 0x0a carries the
-	// remaining seconds (FUN_140085c80 writes record+0x18 - clock), and the client renders its countdown from
-	// that, so the server has to expire at the same moment or the two disagree.
-	void ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds);
+	// Arm the window with a deadline the client supplied instead of the rule value. Subcmd 0x0a and 0x11 both
+	// carry the remaining **milliseconds** (FUN_140085c80 and FUN_140085ec0 write record+0x18 - clock), and the
+	// client renders its countdown bar from that, so the server has to expire at the same moment or the two
+	// disagree.
+	void ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t remaining_ms);
 	void ProcessAdvLootRolls();
 	void ResolveAdvLootRoll(AdvLoot::Roll& roll);
 	void AssignAdvLootRoll(AdvLoot::Roll& roll, Client *target);

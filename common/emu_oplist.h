@@ -390,6 +390,7 @@ N(OP_ManaChange),
 N(OP_ManaUpdate),
 N(OP_MarkNPC),
 N(OP_MarkRaidNPC),
+N(OP_MasterLooter),	// SoF x64: 0x3a60 - who the group or raid master looter is (see patch_Laurion.conf)
 N(OP_MarketplaceClose),
 N(OP_MarketplaceOpen),
 N(OP_MarketplacePurchase),

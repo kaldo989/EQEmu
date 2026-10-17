@@ -1091,14 +1091,18 @@ public:
 
 	void LoadAdvLootFilters();
 	void LoadAdvLootSettings();
+	// The name a subcmd 0x03 record must carry. FUN_140153970 compares it with the local player's name and
+	// re-derives the client's "I am the master looter" flag from the result on every push, so this has to be the
+	// actual master looter and never the viewer's own name in a group or raid.
+	std::string AdvLootMasterLooterName();
+	// The mode a subcmd 0x03 record must carry, derived the same way the subcmd 0x13 loot-mode list derives it.
+	uint32_t AdvLootModeForViewer();
 	void SendAdvLootFilterSet();
 	uint32_t AdvLootFilterBits(uint32_t item_id) const;
-	// Send one corpse's group record to this client. Only AdvLoot::Session::Render calls it - a group record
-	// is built in exactly one place so the two panes cannot drift apart.
-	void SendAdvLootGroup(const AdvLoot::CorpseGroup& corpse_group);
-	// Re-render every corpse this client has rows for, as ONE subcmd 0x03. FUN_140153970 clears the corpse
-	// hash, the ask table and both panes before re-adding, so a partial render would wipe the other corpses'
-	// rows. A corpse with nothing left is dropped from the window instead of resent.
+	// Re-render every corpse this client has rows for, as ONE subcmd 0x03, and the only path allowed to send a
+	// 0x03 loot-group push. FUN_140153970 clears the corpse hash, the ask table and both panes before
+	// re-adding, so a partial render wipes the other corpses' rows. A corpse with nothing left is dropped from
+	// the window instead of resent.
 	void AdvLootRender();
 	// Step 8 cleanup. This client is leaving the zone, disconnecting, or being destroyed: drop its View from
 	// every corpse it had rows on, which returns anything it was awarded but never picked up to that corpse's
@@ -1123,9 +1127,9 @@ public:
 	void SendAdvLootChoice(uint32_t item_id, uint32_t choice, const std::string& name);
 	// subcmd 0x0C with flag non-zero - FUN_140154a90 -> FUN_1400a1340: drop a row from the window.
 	void SendAdvLootRowRemoved(uint32_t item_id, const std::string& name);
-	// subcmd 0x13 - the master looter announcement. The client prints the loot mode name for the member
-	// whose name matches the local player, so the mode is derived per viewer (decision 4).
-	void SendAdvLootLootMode();
+	// advloot_mode is a derived log value (decision 4): raid beats group beats solo, and the master looter
+	// reads molo. It no longer goes on the wire - subcmd 0x13 is the dice-result announcement, not a mode list.
+	void RefreshAdvLootMode();
 	void SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t icon, const std::string& name);
 	// subcmd 0x0B (FUN_140154830) is the only packet that carries the client's own ask-group id; record it
 	// against the corpse the request is about so a later 0x360e / 0x0D can be resolved to a corpse and item.

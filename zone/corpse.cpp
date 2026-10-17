@@ -39,6 +39,7 @@
 #include "zone/string_ids.h"
 
 #include <algorithm>
+#include <set>
 #include "zone/worldserver.h"
 
 #include <iostream>
@@ -837,6 +838,11 @@ void Corpse::AddItem(
 	auto i = new LootItem;
 
 	i->item_id             = itemnum;
+	// lootslot is not a loot-table field and Corpse::AddLoot() has no slot to give: it is the client-side
+	// corpse window slot, assigned later by MakeLootRequestPackets(). Leaving it uninitialized used to mean an
+	// AdvLoot corpse carried whatever the allocator happened to leave there, and GetItem()/RemoveItem() both
+	// match the first entry with a given lootslot. Mark it invalid so NormalizeLootSlots() owns the assignment.
+	i->lootslot            = EQ::invslot::SLOT_INVALID;
 	i->charges             = charges;
 	i->equip_slot          = slot;
 	i->aug_1               = aug1;
@@ -1499,7 +1505,7 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 	}
 }
 
-void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback)
+void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allow_cursor_fallback, bool respect_cooldown)
 {
 	if (!c) {
 		return;
@@ -1525,7 +1531,10 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allo
 		return;
 	}
 
-	if (!m_loot_cooldown_timer.Check()) {
+	// respect_cooldown is false for the second and later slots of one AdvLoot delivery: this timer exists to
+	// rate-limit client OP_LootItem spam, and a multi-slot AdvLoot row is a single server-side action, not
+	// a burst of client requests.
+	if (respect_cooldown && !m_loot_cooldown_timer.Check()) {
 		c->QueuePacket(app);
 		SendEndLootErrorPacket(c);
 		// unlock corpse for others
@@ -2077,13 +2086,20 @@ uint16 Corpse::GetFirstLootSlotByItemID(uint32 item_id)
 
 uint32 Corpse::GetLootQuantityByItemID(uint32 item_id)
 {
+	// Sum every matching loot entry. A corpse can hold the same item id in several slots - a loot drop that
+	// rolled it twice, or a stack that was split when the corpse was built - and reporting only the first
+	// entry hides the rest from the AdvLoot pools: the row is built from this number, so anything past the
+	// first slot has no row, is forced out of the shared pool by the solo render, and cannot be looted until
+	// the corpse unlocks.
+	uint32 quantity = 0;
+
 	for (auto i: m_item_list) {
-		if (i->item_id == item_id) {
-			return i->charges ? i->charges : 1;
+		if (i && i->item_id == item_id) {
+			quantity += i->charges ? i->charges : 1;
 		}
 	}
 
-	return 0;
+	return quantity;
 }
 
 bool Corpse::Summon(Client *c, bool spell, bool CheckDistance)
@@ -2263,9 +2279,26 @@ void Corpse::UpdateEquipmentLight()
 
 void Corpse::AddLooter(Mob *who)
 {
+	// Lua_Corpse::AddLooter and Perl_Corpse_AddLooter hand any Mob straight to this, and the loot-rights list
+	// is keyed by character id, so a non-client has nothing to contribute here.
+	if (!who || !who->IsClient()) {
+		return;
+	}
+
+	const int character_id = static_cast<int>(who->CastToClient()->CharacterID());
+
+	// The damage-looter path and SetKillCreditLooters both add the killer. Without this check a solo player
+	// occupies two slots, so GetKillCreditLooters().size() overcounts and the session log prints
+	// "kill credit [2]" for a kill nobody else was present at.
+	for (int looter: m_allowed_looters) {
+		if (looter == character_id) {
+			return;
+		}
+	}
+
 	for (int &looter: m_allowed_looters) {
 		if (looter == 0) {
-			looter = who->CastToClient()->CharacterID();
+			looter = character_id;
 			break;
 		}
 	}
@@ -2548,55 +2581,113 @@ void Corpse::DistributeAdvLootCash(const std::vector<Client *> &looters)
 // AdvLoot subcmd 0x08 is the transaction request from the green loot button. The client sends it
 // without a legacy OP_LootRequest, so no looting session exists yet - establish one from the
 // kill-credit list and then reuse LootCorpseItem so the existing checks still apply.
-void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
+//
+// One AdvLoot row covers every loot slot that holds this item id, because Corpse::GetLootQuantityByItemID
+// sums them and the row is built from that total. A delivery therefore has to be able to empty several
+// slots, and to split one stack when the request is smaller than the stack. Returns the units that
+// actually left the corpse so the session only retires awards it really paid for.
+int Corpse::NormalizeLootSlots()
 {
-	if (!c) {
-		return;
+	std::set<uint16_t> taken;
+	std::vector<LootItem *> ambiguous;
+
+	for (auto *entry: m_item_list) {
+		if (!entry) {
+			continue;
+		}
+
+		// 0xFFFF is EQEmu's "no corpse slot" marker: MakeLootRequestPackets() sets it on anything the client
+		// version cannot show, and RemoveItem(0xFFFF) returns without removing anything.
+		if (entry->lootslot == EQ::invslot::SLOT_INVALID || !taken.insert(entry->lootslot).second) {
+			ambiguous.push_back(entry);
+		}
+	}
+
+	if (ambiguous.empty()) {
+		return 0;
+	}
+
+	int reassigned = 0;
+	uint16_t candidate = 1;
+
+	for (auto *entry: ambiguous) {
+		while (taken.count(candidate)) {
+			++candidate;
+		}
+
+		entry->lootslot = candidate;
+		taken.insert(candidate);
+		++candidate;
+		++reassigned;
+	}
+
+	return reassigned;
+}
+
+uint16_t Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint16_t quantity)
+{
+	if (!c || !quantity) {
+		return 0;
 	}
 
 	if (m_being_looted_by_entity_id != 0xFFFFFFFF && m_being_looted_by_entity_id != c->GetID()) {
-		SendLootReqErrorPacket(c, LootResponse::SomeoneElse);
-		return;
+		// An Advanced Loot delivery is not a loot window. Several members take items from the same corpse one
+		// after another, and every delivery below re-asserts m_being_looted_by_entity_id for its own taker, so
+		// the holder is almost always the previous AdvLoot delivery rather than a player holding the corpse
+		// open. The 2026-10-16 23:12 run resolved two rolls two seconds apart on corpse 26: Joka's delivery
+		// left the corpse claimed by Joka, and Gunadie's was refused with "being looted by someone else" even
+		// though nobody had the corpse open - three further clicks from Gunadie were refused the same way.
+		// The legacy gate protects a loot window only one player can hold; here it claims the corpse.
+		LogLootFilters(
+			"advloot delivery item [{}] corpse [{}] taking the corpse from entity [{}]",
+			item_id,
+			GetID(),
+			m_being_looted_by_entity_id
+		);
 	}
 
 	if (!CanPlayerLoot(c->CharacterID())) {
 		// eqstr_us.txt string 11321: "These item(s) are locked because you were not present when the
 		// enemy died. To loot them you will first need to right-click that enemy's corpse to unlock."
 		c->MessageString(Chat::White, 11321);
-		return;
+		return 0;
 	}
 
 	// GetFirstLootSlotByItemID() returns 0 for a miss, and slot 0 is a real loot slot, so resolve the
-	// slot from the loot list directly here - otherwise a stale AdvLoot row loots whatever happens to sit
-	// at slot 0.
-	uint16 slot = 0xFFFF;
+	// slots from the loot list directly here - otherwise a stale AdvLoot row loots whatever happens to sit
+	// at slot 0. The list is walked once up front because looting mutates it and a split appends a
+	// remainder entry.
+	//
+	// Normalizing first is not optional. An AdvLoot delivery never runs MakeLootRequestPackets(), which is the
+	// only place lootslot is assigned, so the values here are whatever Corpse::AddLoot() left behind - and it
+	// did not initialize the field at all. The 2026-10-17 10:38 run on corpse 12 had Small Bag at lootslot 1
+	// and two Water Flask entries at lootslot 35376, with a second entry also answering to lootslot 1: Joka's
+	// first claim of Small Bag resolved through GetItem(1) to the other entry, failed the item_id check, and
+	// the whole delivery came back as `requested [1] delivered [0]` -> eqstr 3562 "You are not allowed to loot
+	// the item: Small Bag." Ten seconds later, after the Water Flask entries had been looted out from under
+	// it, the identical claim succeeded. docs/advlootpcap.md §15.2.
+	const int reassigned = NormalizeLootSlots();
+	if (reassigned) {
+		LogLootFilters(
+			"advloot corpse [{}] reassigned lootslot on [{}] loot entr{} - lootslot is only assigned by a loot request",
+			GetID(),
+			reassigned,
+			reassigned == 1 ? "y" : "ies"
+		);
+	}
+
+	std::vector<uint16_t> slots;
 	for (const auto* loot_item: GetLootItems()) {
 		if (loot_item && loot_item->item_id == item_id) {
-			slot = loot_item->lootslot;
-			break;
+			slots.push_back(loot_item->lootslot);
 		}
 	}
 
-	if (slot == 0xFFFF) {
-		return;
+	if (slots.empty()) {
+		return 0;
 	}
 
-	m_being_looted_by_entity_id = c->GetID();
 	m_loot_request_type = c->GetGM() ? LootRequestType::GMAllowed : LootRequestType::AllowedPVE;
-
-	// LootCorpseItem reads the legacy LootingItem_Struct. lootee/looter/slot_id sit at the same
-	// offsets in the Laurion struct, so build the legacy layout directly and skip the decoder.
-	LootingItem_Struct lootitem = {};
-	lootitem.lootee    = GetID();
-	lootitem.looter    = c->GetID();
-	lootitem.slot_id   = slot;
-	// The AdvLoot loot button always means "put it in my bags", not "put it on the cursor", so
-	// auto_loot must be 1 regardless of the quantity. LootCorpseItem only routes to inventory when
-	// auto_loot > 0 (corpse.cpp L1741).
-	lootitem.auto_loot = 1;
-
-	EQApplicationPacket app(OP_LootItem, sizeof(LootingItem_Struct));
-	memcpy(app.pBuffer, &lootitem, sizeof(LootingItem_Struct));
 
 	// Diagnostic for the Laurion/RoF2 slot overlap: EQEmu's canonical slot space is RoF2 based (general
 	// 23-32, cursor 33) and Laurion's two extra general slots ride on canonical 34/35. Free-slot
@@ -2616,19 +2707,103 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 	}
 
 	LogLootFilters(
-		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}] cursor queue [{}]",
+		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}] slot count [{}] cursor queue [{}]",
 		c->GetCleanName(),
 		item_id,
-		slot,
+		slots.front(),
 		quantity,
 		GetID(),
+		slots.size(),
 		c->GetInv().CursorSize()
 	);
 
-	// allow_cursor_fallback = false: the AdvLoot button is "put it in my bags", and the cursor queue is the
-	// thing that desyncs against the Laurion client (the client renders one cursor item, the server queue
-	// holds many).
-	LootCorpseItem(c, &app, false);
+	uint16_t delivered = 0;
+
+	for (uint16_t slot: slots) {
+		if (delivered >= quantity) {
+			break;
+		}
+
+		LootItem* entry = GetItem(slot);
+		if (!entry || entry->item_id != item_id) {
+			continue;
+		}
+
+		const uint16_t have  = entry->charges ? entry->charges : 1;
+		const uint16_t want  = static_cast<uint16_t>(quantity - delivered);
+		const uint16_t taken = want < have ? want : have;
+
+		// A stack that overshoots the request is split in place: the taken part keeps the slot, and the
+		// remainder is appended behind it with the same metadata. GetItem() and RemoveItem() both take the
+		// first entry for a slot, so the taken part is the one LootCorpseItem resolves and deletes. Player
+		// corpses persist their loot as (corpse_db_id, equip_slot, item_id), which cannot express a partial
+		// stack, so those are only ever looted whole.
+		LootItem* remainder = nullptr;
+		if (taken < have && !IsPlayerCorpse()) {
+			remainder = new LootItem(*entry);
+			remainder->charges = static_cast<uint16_t>(have - taken);
+			entry->charges     = taken;
+			m_item_list.push_back(remainder);
+
+			LogLootFilters(
+				"[{}] advloot split slot [{}] item [{}] corpse [{}] - [{}] taken, [{}] left",
+				c->GetCleanName(),
+				slot,
+				item_id,
+				GetID(),
+				taken,
+				have - taken
+			);
+		}
+
+		const uint32_t before = GetLootQuantityByItemID(item_id);
+
+		// LootCorpseItem reads the legacy LootingItem_Struct. lootee/looter/slot_id sit at the same
+		// offsets in the Laurion struct, so build the legacy layout directly and skip the decoder.
+		LootingItem_Struct lootitem = {};
+		lootitem.lootee    = GetID();
+		lootitem.looter    = c->GetID();
+		lootitem.slot_id   = slot;
+		// The AdvLoot loot button always means "put it in my bags", not "put it on the cursor", so
+		// auto_loot must be 1 regardless of the quantity. LootCorpseItem only routes to inventory when
+		// auto_loot > 0 (corpse.cpp L1741).
+		lootitem.auto_loot = 1;
+
+		EQApplicationPacket app(OP_LootItem, sizeof(LootingItem_Struct));
+		memcpy(app.pBuffer, &lootitem, sizeof(LootingItem_Struct));
+
+		// allow_cursor_fallback = false: the AdvLoot button is "put it in my bags", and the cursor queue is the
+		// thing that desyncs against the Laurion client (the client renders one cursor item, the server queue
+		// holds many). Only the first slot respects the loot cooldown.
+		m_being_looted_by_entity_id = c->GetID();
+		LootCorpseItem(c, &app, false, delivered == 0);
+
+		// LootCorpseItem returns early on a lore conflict, a full bag, a quest block or a dynamic-zone lock
+		// without touching the loot list, so measure the corpse rather than trusting the call. Comparing the
+		// slot is not enough: after a split the remainder still owns that slot.
+		const uint32_t after = GetLootQuantityByItemID(item_id);
+		if (after >= before) {
+			// Nothing left the corpse. Put a failed split back together so the stack is whole again, then
+			// stop: the pools, the client's row and the corpse cannot be allowed to drift apart.
+			if (remainder) {
+				entry->charges = have;
+				m_item_list.remove(remainder);
+				safe_delete(remainder);
+			}
+			break;
+		}
+
+		delivered += static_cast<uint16_t>(before - after);
+	}
+
+	LogLootFilters(
+		"[{}] advloot transaction item [{}] corpse [{}] requested [{}] delivered [{}]",
+		c->GetCleanName(),
+		item_id,
+		GetID(),
+		quantity,
+		delivered
+	);
 
 	// The row is resolved from the client's point of view whether the loot succeeded or not (the client
 	// already moved the unit out of the shared pool), so release the lockout either way.
@@ -2637,11 +2812,14 @@ void Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint32 quantity)
 	// Solo rows live in the Personal Loot pool, and the subcmd 0x09 result above is what erases them:
 	// FUN_140151810 drops the corpse item entry when the reported quantity equals the entry's personal pool
 	// (+0x14) and its shared pool (+0x0C) is empty, then drops the whole corpse record when no entries are
-	// left. That is the live-parity path and it needs no re-render. AdvLootSoloRebuild keeps the old forced
-	// re-render available until the erase path is confirmed on a live client - see advlootdesignV2 Step 3.
+	// left. That is the live-parity path and it needs no re-render - the 2026-10-16 capture in
+	// docs/advlootpcap.md shows a solo loot answered with 0x09 and no following 0x03. AdvLootSoloRebuild
+	// keeps the old forced re-render available as an escape hatch.
 	if (RuleB(Loot, AdvLootSoloRebuild) && !c->HasGroup() && !c->HasRaid()) {
 		c->AdvLootRender();
 	}
+
+	return delivered;
 }
 
 // The roll state machine lives in AdvLoot::Session (zone/advloot_session.cpp). These are the corpse-side
@@ -2671,9 +2849,9 @@ void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll)
 	AdvLootSession().Arm(roll);
 }
 
-void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t seconds)
+void Corpse::ArmAdvLootRoll(AdvLoot::Roll& roll, uint32_t remaining_ms)
 {
-	AdvLootSession().Arm(roll, seconds);
+	AdvLootSession().Arm(roll, remaining_ms);
 }
 
 void Corpse::ProcessAdvLootRolls()

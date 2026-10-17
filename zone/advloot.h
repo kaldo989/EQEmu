@@ -29,6 +29,8 @@
 #include <vector>
 
 class EQApplicationPacket;
+class Group;
+class Raid;
 
 namespace AdvLoot {
 
@@ -109,7 +111,11 @@ namespace AdvLoot {
 		// Sent by ML_RollButton (and only when the row is in state 4 or 7). {u32 ask_key}; FUN_140150240 returns
 		// false unless the ask group record's record+0x40 is already 4 Ask Completed, and the caller then
 		// clears record+0x6C again.
-		SubLootModeList       = 0x13, // S->C only, FUN_140154200 / reader FUN_140086fa0
+		//
+		// NOT a loot-mode list. See the builder below: FUN_140154200 reads {u16 number, string name} pairs as
+		// dice results, prints eqstr 11316 "%1 rolled a %2 on %3." per pair, and hands the row to whoever rolled
+		// highest. Sending loot modes in it makes the client announce fake rolls.
+		SubRollResults        = 0x13, // S->C only, FUN_140154200 / reader FUN_140086fa0
 		SubChatMessage        = 0x14, // S->C only, FUN_140152510 / reader FUN_140086e90
 	};
 
@@ -372,12 +378,23 @@ namespace AdvLoot {
 	//   u64 item_id                     +0x00           item_id
 	//   u32 icon                        +0x08           icon
 	//   u32 shared pool quantity        +0x0C           shared_qty
-	//   u32 managed flag (always 1)     +0x10           -
+	//   u32 max stack (items.stacksize) +0x10           stack_size
 	//   u32 personal pool quantity      +0x14           personal_qty
-	//   u8  flag                        +0x18           -
-	//   u32 value                       +0x1C           -
+	//   u8  no drop (items.nodrop == 0)  +0x18           no_drop
+	//   u32 combo id                    +0x1C           -
 	//   string name                     +0x28           name
 	//   u32 block length + raw link     +0x20           -
+	//
+	// Wire order is reader/writer order, not offset order: FUN_1400839b0 and FUN_140085440 both touch
+	// +0x1C before +0x14, and WriteItemRecord matches them byte for byte.
+	//
+	// FUN_14009c0a0 copies the descriptor fields into the row: row+0x50 MaxStack = entry+0x10,
+	// row+0x4C bStackable = (1 < entry+0x10), row+0x54 = entry+0x18, row+0x58 ComboID = entry+0x1C.
+	// FUN_14009e460 gates its row-merge loop on the same `1 < entry+0x10`, so a 1 at +0x10 means the client
+	// treats every AdvLoot row as a single non-stackable unit and never merges two corpses' drops of the
+	// same item. See docs/advlootdesignV2.md C16. There is no evidence for a "managed flag" at +0x10 - the
+	// managed-mode gates are manager+0x241 and wnd+0x18. ComboID stays 0 because this schema has no combo
+	// column and nothing reads row+0x58.
 	//
 	// The group-record fields that travel with it (present_at_kill, corpse_key, decay_expires_in) are
 	// written by WriteGroupRecord around the nested records, not inside them.
@@ -397,6 +414,21 @@ namespace AdvLoot {
 		std::string name;
 		uint32_t   shared_qty = 0;      // +0x0C - units on the corpse, unassigned
 		uint32_t   personal_qty = 0;    // +0x14 - units already awarded to this viewer
+
+		// Nested item record +0x10. FUN_14009c0a0: row+0x50 MaxStack, and row+0x4C bStackable = (1 < this).
+		// FUN_14009e460 gates its whole row-merge loop on the same `1 < entry+0x10`, so a 1 here makes every
+		// AdvLoot row look like a single non-stackable unit and two corpses' drops of the same item never
+		// merge into one row. From items.stacksize, clamped to at least 1 so MaxStack is never 0.
+		uint16_t   stack_size = 1;
+
+		// Nested item record +0x18. FUN_14009c0a0 stores it at row+0x54, which MacroQuest names NoDrop.
+		// On THIS record the plain reading is the right one: 1 = no drop, 0 = droppable - the opposite of
+		// ItemData::NoDrop, where 0 = no drop. Proven on a live client 2026-10-16 (docs/advlootpcap.md §7.1):
+		// sending items.nodrop verbatim put 1 here for Water Flask, CLASS 1 Wood Point Arrow and Backpack -
+		// all ordinary droppable items with nodrop = 1 - and the client printed the "you are about to loot a
+		// no drop item" warning for every one of them. Before the fix the field was hardcoded 0 and nothing
+		// ever warned. So invert EQEmu's convention when filling it: no_drop = (item->NoDrop == 0).
+		uint8_t    no_drop = 0;
 
 		// Group record wire field 3 -> record +4. FUN_14014f5f0 computes `value * 1000 + clock`, so this
 		// is an expiration in SECONDS, not a quantity. Writing a quantity here made the corpse row expire
@@ -418,24 +450,43 @@ namespace AdvLoot {
 	};
 
 	// A parsed subcmd 0x0A record. Reader FUN_1400871e0, serializer FUN_140085c80 - both walk the fields in
-	// this order, which the send side proves: it copies the nested-entry count into record+0x10 and then
-	// serialises record+0x10 as a single u64, so the count is the low half of that u64 and is also written
-	// again as its own u32 straight after the seconds field.
+	// this order, and both were re-read byte by byte on 2026-10-16 because the capture contradicted the
+	// assumption written down here before:
 	//
-	// In-memory target offsets (record = the ask-group record, node+8 of the hash at manager+0x148):
-	//   +0x00 ask_key   +0x10 count   +0x14 field_14   +0x18 expiry clock   +0x20 flag
-	//   +0x30 nested-entry array   +0x38 array size   +0x40 state
+	//   wire order            in-memory record offset
+	//   u32  ask_key          +0x00
+	//   u64  item id          +0x08   <- NOT a packed {count, field_14} pair
+	//   u32  state            +0x40
+	//   u8   flag             +0x20
+	//   u32  seconds          +0x18 - FUN_140564f50()   (the serializer subtracts the client clock)
+	//   u32  count            +0x10   (the serializer refreshes it from the array size at +0x38 first)
+	//   count x {u32, u32}    array at +0x60, stride 8
 	//
-	// The seconds field is relative: the serializer writes `record+0x18 - clock` and the receive case adds
-	// the client's own clock back (0x140151d38: `MOV ECX, [*(0x140e35f70)+0x16c]` / `ADD RDX, RCX`) before
-	// handing it to CAdvancedLootWnd__DoAdvLootAction, which stores it at row+0x88 as the countdown deadline.
-	// That settles the record+0x88 question from section 8: it is the ask deadline, not a LootDetails capacity.
+	// The u64 is one 8-byte field holding the **item id the ask is about**. The 2026-10-16 16:18 capture
+	// proves it directly: four asks on corpse 187 carried 13073 for ask_key 2 and 13064 for ask_key 3, the
+	// same pairing the server had derived from the row (`ask group [2] -> corpse [187] item [13073]`).
+	// Reading it as a packed count made the server reserve 13073 entries and, worse, left it with no idea
+	// which item the ask was for - see docs/advlootpcap.md §10.
+	//
+	// The window field is relative **milliseconds**, not seconds. Both serializers do the same thing:
+	// FUN_140085c80 (0x0a) and FUN_140085ec0 (0x11) write `record+0x18 - FUN_140564f50()`, and the receive cases
+	// add the client's own clock back (0x140151d38 for 0x0a, 0x14015206c for 0x11) before
+	// CAdvancedLootWnd__DoAdvLootAction (FUN_1400aa1b0) stores the absolute deadline at row+0x88. That deadline
+	// is what draws the countdown bar over the row's icon.
+	//
+	// Two consequences the server has to respect:
+	//   - When the initiating client has no deadline installed (record+0x18 == 0) the subtraction wraps, so the
+	//     wire carries `2^32 - clock`: 0xF5BE73BE and 0xF5BD8D94 on two asks 58.92 s apart (a difference of
+	//     58922 ms), and 0xCFFAEC4B on the 2026-10-16 16:54 run, which is a machine clock of 805811125 ms.
+	//     That is a wrapped clock, not a window - Session::Arm clamps anything above the rule.
+	//   - A window the server wants to show has to be sent as ms. Sending the rule value 60 gives the client a
+	//     60 millisecond deadline, so the bar never appears.
 	struct ItemUpdate {
-		uint32_t ask_key  = 0;   // FUN_1400aa1b0 matches this against record+0x60 of every corpse row
-		uint32_t field_14 = 0;   // high half of the u64 that follows the key
-		uint32_t state    = 0;   // State; written to record+0x40 before serialising
-		uint8_t  flag     = 0;   // the client only calls DoAdvLootAction when this is 0 (0x140151d5b)
-		uint32_t seconds  = 0;   // remaining ask window
+		uint32_t ask_key      = 0;   // FUN_1400aa1b0 matches this against record+0x60 of every corpse row
+		uint64_t item_id      = 0;   // record+0x08 - the item this ask is about
+		uint32_t state        = 0;   // State; written to record+0x40 before serialising
+		uint8_t  flag         = 0;   // the client only calls DoAdvLootAction when this is 0 (0x140151d5b)
+		uint32_t remaining_ms = 0;   // record+0x18 - client clock, in milliseconds
 		std::vector<std::pair<uint32_t, uint32_t>> entries;   // {LootDetails key, quantity}
 	};
 
@@ -541,17 +592,12 @@ namespace AdvLoot {
 		EQ::versions::ClientVersion client_version
 	);
 
-	// subcmd 0x03 corpse delivery: one group record (the corpse) with the corpse items nested inside.
-	EQApplicationPacket* BuildCorpseGroupPacket(
-		uint32_t mode,
-		const std::string& name,
-		const CorpseGroup& group,
-		EQ::versions::ClientVersion client_version
-	);
-
-	// The rebuild form of subcmd 0x03: several group records in one packet. FUN_140153970 clears the filter
-	// hash and both panes (window vtable +0x3b0) before re-adding, so this is the only server-side way to
-	// make a row disappear. Sending zero group records is how an empty corpse is dropped from the window.
+	// The rebuild form of subcmd 0x03 corpse delivery: one or more group records, each one corpse with that
+	// corpse's items nested inside, the group name being the NPC name (the window's NPC Name column). FUN_140153970
+	// clears the filter hash and both panes (window vtable +0x3b0) before re-adding, so this is the only
+	// server-side way to make a row disappear - and a push that carries only one corpse deletes the rows of every
+	// other corpse this client is watching. Always pass the viewer's whole live set, which is what
+	// Client::AdvLootRender does. Sending zero group records is how an empty corpse is dropped from the window.
 	EQApplicationPacket* BuildCorpseGroupsPacket(
 		uint32_t mode,
 		const std::string& name,
@@ -587,6 +633,18 @@ namespace AdvLoot {
 	// client show up as a running countdown in everybody else's window.
 	EQApplicationPacket* BuildItemUpdatePacket(const ItemUpdate& update);
 
+	// subcmd 0x0B with a looter's answer named: {u32 ask_key, u32 corpse_key, u64 item_id, u16 count=1,
+	// u32 ClientChoiceAction, string name}. The client's own row-dropdown sender leaves the name empty ("this
+	// is my answer"); only the Manage Loot player list fills one in. A server relay must name the looter or no
+	// other window ever learns the answer. See docs/advlootpcap.md §11.
+	EQApplicationPacket* BuildRowUpdatePacket(
+		uint32_t ask_key,
+		uint32_t corpse_key,
+		uint64_t item_id,
+		uint32_t action,
+		const std::string& name
+	);
+
 	// Convenience wrapper: push one item's need/greed/never choice into the client's window.
 	EQApplicationPacket* BuildChoicePacket(uint64_t item_id, uint32_t choice, const std::string& name);
 
@@ -594,7 +652,17 @@ namespace AdvLoot {
 	EQApplicationPacket* BuildRowRemovePacket(uint64_t item_id, const std::string& name);
 
 	// subcmd 0x11: item_id, assignee, state, flag.
-	EQApplicationPacket* BuildStatePacket(uint32_t item_id, uint32_t assignee, uint32_t state, uint8_t flag);
+	// subcmd 0x11 - move a row's ask record to a new state. FUN_14014fca0 is the sender, FUN_140087390 the
+	// reader, and the wire is {u32 ask_key, u32 remaining_ms, u32 state, u8 flag} - 13 bytes after the
+	// sub-command. The client looks the record up by ask_key in manager+0x148[ask_key % 0x14], sets
+	// record+0x18 = clock + remaining_ms, record+0x40 = state, and then calls FUN_1400aa1b0 whenever
+	// record+0x18 is non-zero: that call is what draws the countdown over the row's icon. State 3 (Stop)
+	// sends remaining_ms = 0, which is what removes the bar.
+	//
+	// The old signature took an item id first. The 2026-10-16 16:54 capture shows 2 where 13073 (0x3311) would
+	// have been, which is the ask key - so every 0x11 the server handled was addressed to a row that did not
+	// exist. docs/advlootpcap.md §11.3.
+	EQApplicationPacket* BuildSetStatePacket(uint32_t ask_key, uint32_t remaining_ms, uint32_t state, uint8_t flag);
 
 	// subcmd 0x09 - reader FUN_140086e00: u16 action, u32 quantity, u32 transaction_id, u8 flag.
 	//
@@ -708,20 +776,33 @@ namespace AdvLoot {
 		std::vector<Participant> participants;
 	};
 
-	// subcmd 0x13 - FUN_140086fa0: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
-	// The client compares each name with the local name and prints the loot mode from the string
-	// table at 0x14086b440 (invalid/solo/molo/group/raid). This is the master looter announcement.
+	// subcmd 0x13 - FUN_140086fa0: u32, u32, u8, u16 count, count x (u16 roll, string name[64]).
 	//
-	// FUN_140154200 is the whole handler. The first u32 is the only one it acts on: it goes to
-	// FUN_1400a2a40(window, &tmp, key) and then FUN_1400a7bd0(window, key, name_matched_local_player), so it
-	// is the loot-list key the mode list belongs to - 0 for a zone-wide announcement that is not tied to a
-	// corpse. The second u32 lands in the parsed record's header and the u8 at record+0x5CC; neither is read
-	// by anything in the handler, so both are sent as 0.
-	EQApplicationPacket* BuildLootModePacket(
-		uint32_t loot_list_key,
+	// This is the dice-result announcement, not a loot-mode list. FUN_140154200:
+	//   - reads the pairs into a vector with stride 0x48: entry+0 u16 number, entry+2 name[0x40]
+	//   - keeps the index of the entry with the LARGEST number
+	//   - per entry prints eqstr 11316 "%1 rolled a %2 on %3." with %1 = name, %2 = the number formatted
+	//     with "%u" from DAT_14086b440, %3 = FUN_1400a2a40(window, key) which walks the shared item store
+	//     (window+0x3e8, stride 0x98) for row+0x60 == key and returns that row's item name
+	//   - finally calls FUN_1400a7bd0(window, key, largest_entry_name == local_player), which finds the same
+	//     row by row+0x60 and, when the winner is the local player, moves the row's LootDetails entries into
+	//     the personal store (window+0x3f0, FUN_1400a4eb0) and runs FUN_14009f790(window, 1, 0) - the
+	//     client's own auto-loot pass
+	//
+	// The first u32 is therefore the ASK KEY of the row the rolls belong to (matched against row+0x60 by both
+	// FUN_1400a2a40 and FUN_1400a7bd0). The second u32 lands at record+0x000 and the u8 at record+0x5CC; the
+	// handler reads neither.
+	//
+	// The invalid/solo/molo/group/raid table at 0x14086b448 is not used here. Its only consumer is
+	// FUN_1401516f0, a debug handler for subcmd 4 of another opcode that prints
+	// "Player %s:%u is in %s construct(%d) with master looter %s:%u". There is no loot-mode packet on this
+	// opcode at all: the client learns the master looter from OP_MasterLooter (0x3a60) and from the name field
+	// of the subcmd 0x03 record.
+	EQApplicationPacket* BuildRollResultsPacket(
+		uint32_t ask_key,
 		uint32_t unused_u32,
 		uint8_t  unused_u8,
-		const std::vector<std::pair<uint16_t, std::string>>& members
+		const std::vector<std::pair<uint16_t, std::string>>& results
 	);
 
 	// subcmd 0x0D - the answer to a 0x360e / 0x0D request. Reader FUN_140086ab0, handler case 0x140151f43.
@@ -796,6 +877,28 @@ namespace AdvLoot {
 
 	// Same for OP_AdvLootManage (0x360e), whose three sub-commands reuse the 0x3175 numbering.
 	std::string DescribeManagePayload(const uint8_t* payload, uint32_t size);
+
+	// OP_MasterLooter (0x3a60) - reader FUN_140087430: u32, then a NUL-terminated name.
+	//
+	// This is the only thing that tells the client who the master looter is. Its handler FUN_140151bf0 does
+	// three things: store the u32 at manager+0x1f0 and the name at manager+0x1f4; compare that name with the
+	// local player's own name and set manager+0x241 to the result; and call
+	// CAdvancedLootWnd::UpdateMasterLooter(name, is_me), which is what fills the window's
+	// ADLW_CalculatedMasterLooter label.
+	//
+	// manager+0x241 is therefore the client's "I am the master looter" flag, and it gates the countdown bar
+	// (0x140151d52), FUN_14014fca0 (the 0x11 sender), FUN_140150240 (the 0x12 Roll button),
+	// CAdvancedLootWnd__DoSharedAdvLootAction, FUN_1400a4b50, FUN_1400a5330, FUN_1400aaf80 and the 0x360e
+	// subcmd 13 path. With nothing on the wire the client falls back to FUN_1401500a0, which copies the LOCAL
+	// player's name into manager+0x1f4 and compares it with itself - so every member of a group is their own
+	// master looter, which is what the 2026-10-16 23:30 run showed from the players' side.
+	EQApplicationPacket* BuildMasterLooterPacket(uint32_t mode, const std::string& name);
+
+	// Tell every member of a group or raid who their master looter is. Called from the same hooks that
+	// re-derive each Advanced Loot corpse's mode, so a leadership change, a join, a leave and a
+	// /advloot mol all reach the windows that show it.
+	void BroadcastMasterLooter(Group *group);
+	void BroadcastMasterLooter(Raid *raid);
 
 	// Step 8. Re-derive the mode of every Advanced Loot corpse any of `viewers` has rows on and re-render each
 	// corpse exactly once. Shared by Client::RefreshAdvLootAuthority and the Group / Raid membership hooks.

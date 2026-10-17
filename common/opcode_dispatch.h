@@ -317,6 +317,7 @@ OUTz(OP_FinishTrade);		//follows OP_TradeAcceptClick
 OUTz(OP_GMEndTrainingResponse);	//follows OP_GMTraining
 OUTz(OP_LootComplete);		//follows OP_LootItem
 OUTr(OP_AdvLoot);		//Advanced Loot sub-command replies
+OUTr(OP_MasterLooter);	//SoF x64 0x3a60: u32 + NUL-terminated master looter name
 OUTz(OP_WorldObjectsSent);
 OUTz(OP_FinishWindow);
 OUTz(OP_FinishWindow2);

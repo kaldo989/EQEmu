@@ -3192,7 +3192,7 @@ void Raid::SetMasterLooter(Client* c)
 
 // Step 8: the raid's composition, its loot rule or its master looter changed. Re-derive the mode of every
 // Advanced Loot corpse any member has rows on and re-render each one once. AuthorityFor() reads the raid live
-// so the server's gate is already correct; what needs the re-render is the mode list the window shows.
+// so the server's gate is already correct; what needs the re-render is the name every 0x03 record carries.
 void Raid::RefreshAdvLootAuthority()
 {
 	std::vector<Client *> clients;
@@ -3202,6 +3202,8 @@ void Raid::RefreshAdvLootAuthority()
 			clients.push_back(members[i].member);
 		}
 	}
+
+	AdvLoot::BroadcastMasterLooter(this);
 
 	AdvLoot::RefreshCorpsesFor(clients);
 }

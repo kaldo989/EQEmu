@@ -1423,9 +1423,9 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	LoadAdvLootSettings();
 	LoadAdvLootFilters();
 	SendAdvLootFilterSet();
-	// The name gate is opened by the filter set reply above; the loot mode is the master looter
-	// announcement (decision 4), so it follows it.
-	SendAdvLootLootMode();
+	// The filter set reply above carries the master looter's name, which is what the client's 0x03 handler
+	// re-derives its "am I the master looter" flag from. advloot_mode is only a log value now.
+	RefreshAdvLootMode();
 
 	// this pattern is strange
 	// this is remnants of the old way of doing things
@@ -10957,10 +10957,9 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				return;
 			}
 
-			// 0x08 is a claim on the requester's personal pool, not on the corpse (C1). The quantity the
-			// 0x0e reply and the 0x09 answer carry has to be that pool, because FUN_140151810 only erases the
-			// client's copy of the corpse item entry when the reported quantity equals entry+0x14 and its
-			// shared pool entry+0x0C is empty.
+			// 0x08 is a claim on the requester's personal pool, not on the corpse (C1). The quantity the 0x09
+			// answer carries has to be that pool, because FUN_140151810 only erases the client's copy of the corpse
+			// item entry when the reported quantity equals entry+0x14 and its shared pool entry+0x0C is empty.
 			uint16_t answer_action   = AdvLoot::ActionNone;
 			uint16_t answer_quantity = 0;
 
@@ -11017,54 +11016,51 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 
 			// Subcmd 0x0e wire order (FUN_140086cb0, and the writer CAdvancedLootWnd__DoSharedAdvLootAction):
 			//   u32 ask_key, u32 corpse_key, u64 item_id, u16 quantity, u8 flag, string name
-			// FUN_1400a42f0 only clears CLootInProgress (row +0x6C) and only creates the Personal Loot row when
-			// ask_key == row +0x60 and corpse_key == the LootDetails entry key, and it skips the row outright
-			// when the row has no CLootInProgress set and the personal-row flag is on. row +0x60 is 0 until an
-			// ask is installed by FUN_1400a0480.
+			// What this request owes the client is cleanup, not a second move.
 			//
-			// The 0x08 request carries a quantity where 0x0e carries an ask key, so the ask key has to come from
-			// the server's own record of the row: FindAdvLootAskKey returns the key this (corpse, item) is
-			// currently addressed by, or 0 - which is exactly what the client itself sends for a row that has
-			// never had an ask, and makes FUN_1400a42f0 skip the row instead of moving units a second time.
-			// The reply is still worth sending: it is the only exact-match form that releases a row left stuck
-			// in CLootInProgress by an earlier unanswered 0x0e, and the clicker would otherwise error with
-			// eqstr 643 on the next click.
+			// The 0x09 below is the only packet that touches a Personal row: FUN_140151810 calls FUN_1400a8960,
+			// which clears record+0x6D, and it is the only thing that undoes what FUN_140154cd0 allocated (the
+			// pending-transaction record at manager+0x38 and the in-flight counter DAT_140eb0c04). A 0x08 sets
+			// record+0x6D and never record+0x6C - only CAdvancedLootWnd__DoSharedAdvLootAction, the Give and Roll
+			// buttons, sets that - so the 0x09 alone settles the row this click came from.
+			//
+			// A row left in flight by an *earlier* shared action still has to be released or the next click errors
+			// with eqstr 643, and the packet for that is 0x10: FUN_14009e1e0 walks the visible rows, skips anything
+			// with record+0x6C == 0, and clears the flag on the first row matching either the ask key or
+			// (item id + LootDetails key). It moves nothing, so it is a guaranteed no-op when nothing is in flight
+			// - which is every solo loot.
+			//
+			// Answering 0x08 with a 0x0e instead was the bug. FUN_1400a42f0 does entry+0x14 += quantity and
+			// entry+0x0C -= quantity on the shared row. In solo that row is not drawn at all and the packet is
+			// skipped outright - the name gate sets uVar9 to 1 and FUN_1400a42f0 skips rows whose record+0x6C is
+			// already clear - which is why the 2026-10-16 solo capture showed no damage. In a group a shared row
+			// genuinely can be in flight, and there the 0x0e moves the same units a second time and inflates
+			// entry+0x14. The 0x09 that immediately follows erases the client's corpse item entry only when
+			// quantity == entry+0x14 and entry+0x0C == 0, so the row would then stick with units the client thinks
+			// it owns and the server has already handed over.
 			uint32_t row_ask_key = FindAdvLootAskKey(corpse_key, static_cast<uint32_t>(item_id));
 			if (!row_ask_key) {
 				row_ask_key = FindAdvLootAskKey(static_cast<uint32_t>(corpse->GetID()), static_cast<uint32_t>(item_id));
 			}
 
-			EQApplicationPacket* out = AdvLoot::BuildTransactionPacket(
-				row_ask_key,
-				corpse_key,
-				item_id,
-				answer_quantity,
-				0,
-				GetCleanName()
-			);
-			if (!out) {
-				return;
+			// FUN_14009c0a0 fills a LootDetails entry's +0x00 from the group record's key, so the entry the click
+			// came from is addressed by the corpse key the client itself sent in the 0x08.
+			const uint32_t loot_details_key = corpse_key ? corpse_key : static_cast<uint32_t>(corpse->GetID());
+
+			EQApplicationPacket* unlock = AdvLoot::BuildRowUnlockPacket(row_ask_key, item_id, loot_details_key);
+			if (unlock) {
+				LogLootFilters(
+					"row unlock item [{}] corpse [{}] ask_key [{}] loot_details_key [{}] request qty [{}] flag [{}]",
+					item_id,
+					corpse->GetID(),
+					row_ask_key,
+					loot_details_key,
+					request_quantity,
+					flag
+				);
+				QueuePacket(unlock);
+				safe_delete(unlock);
 			}
-
-			LogLootFilters(
-				"transaction reply item [{}] quantity [{}] corpse [{}] ask_key [{}] request qty [{}] flag [{}]",
-				item_id,
-				answer_quantity,
-				corpse_key,
-				row_ask_key,
-				request_quantity,
-				flag
-			);
-
-			QueuePacket(out);
-
-			if (Raid* raid = GetRaid()) {
-				raid->QueueClients(this, out, true);
-			} else if (Group* group = GetGroup()) {
-				group->QueueClients(this, out, true);
-			}
-
-			safe_delete(out);
 
 			// Subcmd 0x09 (FUN_140151810) is the answer to this request, and it is the only thing that releases
 			// what FUN_140154cd0 allocated: it looks the transaction id up in the client's pending-transaction
@@ -11102,52 +11098,88 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 		}
 
 		case AdvLoot::SubSetState: {
-			uint32_t item_id  = reader.read_u32();
-			uint32_t assignee = reader.read_u32();
-			uint32_t state    = reader.read_u32();
-			uint8_t  flag     = reader.read_u8();
+			// FUN_14014fca0 -> FUN_140085ec0, reader FUN_140087390. Wire, 13 bytes after the sub-command:
+			//   u32 ask_key        the client's own ask-group id
+			//   u32 remaining_ms   record+0x18 - clock: the window left, in milliseconds
+			//   u32 state          the eAdvLootState the row is moving to
+			//   u8  flag           always 0 on this path
+			//
+			// The receive case at 0x140151fcb looks the record up by ask_key in manager+0x148[ask_key % 0x14],
+			// sets record+0x18 = clock + remaining_ms and record+0x40 = state, refreshes the window, and then
+			// calls FUN_1400aa1b0 whenever record+0x18 is non-zero - that call is what draws the countdown bar
+			// over the row's icon. State 3 (Stop) sends remaining_ms = 0, which is what removes it.
+			//
+			// This handler used to read the fields as {item_id, assignee, state, flag}. The 2026-10-16 16:54
+			// capture carried 2 where 13073 (0x3311) would have been - the ask key - so every 0x11 was matched
+			// against a roll that did not exist and the arm / stop branch never ran. docs/advlootpcap.md §11.3.
+			uint32_t ask_key      = reader.read_u32();
+			uint32_t remaining_ms = reader.read_u32();
+			uint32_t state        = reader.read_u32();
+			uint8_t  flag         = reader.read_u8();
 
 			if (reader.truncated) {
 				return;
 			}
 
+			uint32_t corpse_key = 0;
+			uint32_t item_id    = 0;
+			Corpse  *corpse     = nullptr;
+
+			if (FindAdvLootAskGroup(ask_key, &corpse_key, &item_id)) {
+				corpse = entity_list.GetCorpseByID(corpse_key);
+			}
+
+			if (!corpse) {
+				corpse = AdvLootCorpse() ? AdvLootCorpse() : entity_list.GetCorpseByOwner(this);
+			}
+
+			AdvLoot::Roll *roll = (corpse && item_id) ? corpse->GetAdvLootRoll(item_id) : nullptr;
+
 			// Decision 1: state 2 (AskAutoRoll) is the master looter arming the per-item window. State 3
 			// (Stop) cancels it, and Stop -> Ask re-arms on the next opt-in.
-			if (state == AdvLoot::StateAskAutoRoll || state == AdvLoot::StateStop) {
-				Corpse* corpse = AdvLootCorpse() ? AdvLootCorpse() : entity_list.GetCorpseByOwner(this);
-				if (corpse) {
-					AdvLoot::Roll* roll = corpse->GetAdvLootRoll(item_id);
-					if (roll) {
-						// ML_AutoRoll (state 2) and the Stop button (state 3) are authority actions. A plain
-						// opt-in sends state 1 and is not gated.
-						if (!corpse->AdvLootSession().MayAct(this)) {
-							RefuseAdvLootAction("state change", corpse, 0, item_id, corpse->GetID());
-							return;
-						}
-						if (state == AdvLoot::StateAskAutoRoll) {
-							corpse->ArmAdvLootRoll(*roll);
-						} else {
-							roll->armed = false;
-							roll->ask_timer.Disable();
-							roll->state = state;
-							LogLootFilters("[{}] stop cancelled the roll window on item [{}]", GetCleanName(), item_id);
-						}
-					}
+			if (roll && (state == AdvLoot::StateAskAutoRoll || state == AdvLoot::StateStop)) {
+				// ML_AutoRoll (state 2) and the Stop button (state 3) are authority actions. A plain
+				// opt-in sends state 1 and is not gated.
+				if (!corpse->AdvLootSession().MayAct(this)) {
+					RefuseAdvLootAction("state change", corpse, ask_key, item_id, corpse->GetID());
+					return;
+				}
+
+				if (state == AdvLoot::StateAskAutoRoll) {
+					corpse->ArmAdvLootRoll(*roll, remaining_ms);
+				} else {
+					roll->armed            = false;
+					roll->ask_timer.Disable();
+					roll->state            = state;
+					roll->ask.remaining_ms = 0;
+					LogLootFilters("[{}] stop cancelled the roll window on item [{}]", GetCleanName(), item_id);
 				}
 			}
 
-			EQApplicationPacket* out = AdvLoot::BuildStatePacket(item_id, assignee, state, flag);
+			// Relay the window the server actually holds. A row with no armed server timer gets remaining_ms 0,
+			// which is the client's "no bar" value - better than forwarding a wrapped clock that would draw a
+			// countdown 40 days long.
+			EQApplicationPacket* out = AdvLoot::BuildSetStatePacket(
+				ask_key,
+				(roll && roll->armed) ? roll->ask.remaining_ms : 0,
+				state,
+				flag
+			);
 			if (!out) {
 				return;
 			}
 
-			// Mirror the change to the rest of the construct so the other windows stay in sync.
+			// Mirror the change to the rest of the construct, the sender included: the client that pressed the
+			// button installed its own record+0x18 from a value it did not have, so it needs the server's window
+			// back before it can draw the countdown.
 			if (Raid* raid = GetRaid()) {
 				raid->QueueClients(this, out, true);
+				QueuePacket(out);
 			} else if (Group* group = GetGroup()) {
 				group->QueueClients(this, out, true);
+				QueuePacket(out);
 			} else {
-				entity_list.QueueClients(this, out, true);
+				QueuePacket(out);
 			}
 
 			delete out;
@@ -11238,24 +11270,68 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 					name
 				);
 
-				// FUN_1400a81b0 is the only sender that fills the name in, and it does so from the ML_PlayerList
-				// row the master looter just ticked: 3 = Need column, 2 = Greed column, 0 = unticked. That makes
-				// 0x0b the server's capture path for a looter's answer, which is what a later ML_RollButton
-				// (subcmd 0x12) then rolls between. The empty-name form from FUN_1400a82a0 carries no answer and
-				// is left as the ask-key carrier only.
-				if (!name.empty() && corpse && resolved_item_id) {
-					// Ticking another looter's ND or GD box is the master looter overriding their choice, which
-					// is what eqstr 11320 announces. A looter's own answer carries no name.
+				// FUN_1400a81b0 is the sender that fills the name in, and it does so from the ML_PlayerList row
+				// the master looter just ticked: 3 = Need column, 2 = Greed column, 0 = unticked. An EMPTY name is
+				// not "no answer": it comes from FUN_1400a82a0, the sender behind a row's own Need / Greed / Never
+				// dropdown, and it means "this is the sender's answer". Treating it as a bare ask-key carrier is
+				// what broke the 2026-10-16 16:52 run - both players set Greed, the server recorded nothing, and the
+				// roll resolved as "no Need or Greed participant, left on corpse" while the players watched a
+				// countdown expire. docs/advlootpcap.md §11.
+				const bool        own_answer = name.empty();
+				const std::string responder  = own_answer ? GetCleanName() : name;
+
+				if (!corpse || !resolved_item_id) {
+					continue;
+				}
+
+				if (!own_answer) {
+					// Ticking another looter's ND or GD box is the master looter overriding their choice, which is
+					// what eqstr 11320 announces. A looter's own answer needs no authority.
 					if (!corpse->AdvLootSession().MayAct(this)) {
 						RefuseAdvLootAction("choice override", corpse, ask_key, resolved_item_id, 0);
 						return;
 					}
+				}
 
-					corpse->SetAdvLootResponse(
-						resolved_item_id,
-						name,
-						AdvLoot::ClientActionToChoice(action)
-					);
+				corpse->SetAdvLootResponse(
+					resolved_item_id,
+					responder,
+					AdvLoot::ClientActionToChoice(action)
+				);
+
+				// Nobody else can learn a row-dropdown answer any other way: it arrived unnamed, and the client
+				// only paints a looter's choice when a 0x0b names them. Relay the named form to every other viewer
+				// of this corpse so all windows agree before the roll runs.
+				if (own_answer) {
+					AdvLoot::Session *session = corpse->GetAdvLootSession();
+					if (!session) {
+						continue;
+					}
+
+					const std::vector<uint32_t> viewers = session->ViewerIDs();
+					for (uint32_t viewer_id : viewers) {
+						if (viewer_id == CharacterID()) {
+							continue;
+						}
+
+						Client *other = entity_list.GetClientByCharID(viewer_id);
+						if (!other) {
+							continue;
+						}
+
+						EQApplicationPacket *relay = AdvLoot::BuildRowUpdatePacket(
+							ask_key,
+							static_cast<uint32_t>(corpse->GetID()),
+							resolved_item_id,
+							action,
+							responder);
+						if (!relay) {
+							continue;
+						}
+
+						other->QueuePacket(relay);
+						safe_delete(relay);
+					}
 				}
 			}
 			return;
@@ -11279,14 +11355,36 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				return;
 			}
 
-			uint32_t item_id = 0;
-			Corpse*  corpse  = ResolveAdvLootGroup(update.ask_key, 0, &item_id);
+			// The record names the item itself and names the corpses it covers, so the first ask in a zone is
+			// resolvable without any earlier packet. Before 2026-10-16 the u64 after the key was read as a packed
+			// {count, field_14}, so the server had no item id and ResolveAdvLootGroup had nothing remembered to
+			// look up - every initiating 0x0a logged "no item resolved" and the ask never created a roll, never
+			// armed, never resolved and never delivered. See docs/advlootpcap.md §10.
+			uint32_t item_id = static_cast<uint32_t>(update.item_id);
+			Corpse*  corpse  = nullptr;
+
+			// The entry keys are LootDetails keys, and FUN_14009c0a0 fills a LootDetails entry's key from the
+			// group record's hash key - for a corpse group that is the corpse spawn id. This is the mapping the
+			// client actually provides, and it is safer than the ask key: ask keys are small integers allocated
+			// per client (2 and 3 in this capture) and can collide with corpse spawn ids.
+			for (const auto &entry : update.entries) {
+				Corpse *candidate = entity_list.GetCorpseByID(static_cast<uint16_t>(entry.first));
+				if (candidate && (!item_id || candidate->GetLootQuantityByItemID(item_id) > 0)) {
+					corpse = candidate;
+					break;
+				}
+			}
+
+			if (!corpse) {
+				corpse = ResolveAdvLootGroup(update.ask_key, item_id, &item_id);
+			}
 
 			if (!corpse || !item_id) {
 				LogLootFilters(
-					"[{}] item update ask_key [{}] state [{}] - [{}]",
+					"[{}] item update ask_key [{}] item [{}] state [{}] - [{}]",
 					GetCleanName(),
 					update.ask_key,
+					item_id,
 					AdvLoot::StateName(update.state),
 					corpse ? "no item resolved" : "no corpse tracked"
 				);
@@ -11317,7 +11415,7 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 					// The client owns the countdown: FUN_140085c80 writes record+0x18 - clock, the receive case
 					// adds its own clock back and DoAdvLootAction stores the result at record+0x88. Arm the
 					// server's timer for the same window so the two expire together instead of drifting.
-					corpse->ArmAdvLootRoll(roll, update.seconds);
+					corpse->ArmAdvLootRoll(roll, update.remaining_ms);
 					break;
 				}
 
@@ -11354,9 +11452,44 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 					break;
 			}
 
-			// Mirror the record onto the rest of the construct. Without it the other members' rows never leave
-			// state 0 and the Ask looks like it never happened.
-			SendAdvLootItemUpdate(update);
+			// Mirror the record onto the rest of the construct - but with the window the server actually armed,
+			// not the value the initiating client sent. FUN_140085c80 writes `record+0x18 - clock`, and when that
+			// client has no deadline installed the subtraction wraps to 2^32 - clock: the 2026-10-16 16:52 run
+			// relayed seconds = 4120453437, which is a clock counting down, not a 60 second ask window. Every
+			// other member's countdown bar is drawn from record+0x88, which this packet's seconds becomes, so a
+			// wrapped value means no bar at all. Arm() has already written the clamped window into roll.ask.
+			AdvLoot::ItemUpdate relay = roll.ask;
+			relay.ask_key      = update.ask_key;
+			relay.item_id      = item_id;
+			relay.state        = roll.state ? roll.state : update.state;
+			relay.remaining_ms = roll.armed ? roll.ask.remaining_ms : 0;
+			SendAdvLootItemUpdate(relay);
+
+			// 0x0a first, then 0x11, in that order and never the other way round.
+			//
+			// FUN_140153400 is the only writer of the filter-hash table manager+0x148[], and it runs in the 0x0a
+			// case. The 0x11 case looks its ask key up in that same table and returns at 0x140151fff when the
+			// bucket is empty: it can update a record, it cannot create one. Arm() used to send the 0x11 from
+			// inside the state switch, before this relay went out, so every viewer who had not started the ask
+			// themselves discarded it - the 2026-10-17 16:08 capture shows `0x11` and `0x0a` back to back in the
+			// same datagram with the 0x11 first, and Joka, who never pressed Ask, got no countdown and no state.
+			//
+			// The 0x0a also carries the deadline that the 0x11 would otherwise have installed: FUN_140153400
+			// copies record+0x18 = clock + seconds straight from the packet when it creates the record, and
+			// FUN_1400a0480 then binds that record to the row whose row+0x60 is still 0 and writes row+0x88.
+			// That binding is what makes the later 0x0e find the row at all, because FUN_1400a42f0 matches on
+			// row+0x60 == ask_key.
+			if (roll.armed) {
+				corpse->AdvLootSession().SendAskState(roll, update.ask_key, relay.state, roll.ask.remaining_ms);
+
+				// Answers that arrived before anybody pressed Ask are still answers. The 2026-10-17 16:08 run had
+				// Gunadie on Never at 16:06:39 and Joka on Greed at 16:07:43, both before the ask was armed at
+				// 16:07:56, so RefreshAskState - which used to run only from SetResponse and RecordChoice - never
+				// ran at all. No row ever reached state 4: nothing locked, both members could re-pick Need /
+				// Greed / Never freely for the whole window, and the master looter's client refused to send 0x12
+				// because FUN_140150240 requires state 4. The roll only happened because the 60 s timer expired.
+				corpse->AdvLootSession().RefreshAskState(roll);
+			}
 			return;
 		}
 

@@ -58,7 +58,7 @@ namespace AdvLoot {
 			case SubRowUpdate10:   return "RowUpdate10";
 			case SubSetState:      return "SetState";
 			case SubItemAction:    return "ItemAction";
-			case SubLootModeList:  return "LootModeList";
+			case SubRollResults:    return "RollResults";
 			case SubChatMessage:   return "ChatMessage";
 			default:               return "UNKNOWN";
 		}
@@ -285,14 +285,13 @@ namespace AdvLoot {
 				ReadItemUpdate(reader, update);
 
 				out += fmt::format(
-					" ask_key={} count={} field_14={} state={} flag={} seconds={}",
+					" ask_key={} item_id={} state={} ({}) remaining_ms={} count={}",
 					update.ask_key,
-					update.entries.size(),
-					update.field_14,
+					update.item_id,
 					update.state,
-					StateName(update.state),
-					update.flag,
-					update.seconds
+					AdvLoot::StateName(update.state),
+					update.remaining_ms,
+					update.entries.size()
 				);
 
 				for (const auto& entry : update.entries) {
@@ -363,17 +362,17 @@ namespace AdvLoot {
 			}
 
 			case SubSetState: {
-				// FUN_140087390 - verified from both the send side (FUN_14014fca0) and
-				// the receive side (FUN_140151c60 default case)
-				uint32_t item_id  = reader.read_u32();
-				uint32_t assignee = reader.read_u32();
-				uint32_t state    = reader.read_u32();
-				uint8_t  flag     = reader.read_u8();
+				// FUN_140087390, confirmed against the send side FUN_14014fca0 -> FUN_140085ec0 and the receive
+				// side at 0x140151fcb: {u32 ask_key, u32 remaining_ms, u32 state, u8 flag}.
+				uint32_t ask_key      = reader.read_u32();
+				uint32_t remaining_ms = reader.read_u32();
+				uint32_t state        = reader.read_u32();
+				uint8_t  flag         = reader.read_u8();
 
 				out += fmt::format(
-					" item_id={} assignee={} state={}({}) flag={}",
-					item_id,
-					assignee,
+					" ask_key={} remaining_ms={} state={}({}) flag={}",
+					ask_key,
+					remaining_ms,
 					state,
 					StateName(state),
 					flag
@@ -505,23 +504,22 @@ namespace AdvLoot {
 				break;
 			}
 
-			case SubLootModeList: {
-				// FUN_140086fa0. FUN_140154200 compares each name against the clean local name and
-				// prints the loot mode from the string table at 0x14086b440 (invalid/solo/molo/group/raid).
-				// This is the master looter / loot mode announcement path.
-				uint32_t a     = reader.read_u32();
-				uint32_t b     = reader.read_u32();
-				uint8_t  c     = reader.read_u8();
-				uint32_t count = reader.read_u16();
+			case SubRollResults: {
+				// FUN_140086fa0. FUN_140154200 prints "%1 rolled a %2 on %3." per entry and hands the row
+				// addressed by ask_key to the highest roller. See BuildRollResultsPacket.
+				uint32_t ask_key = reader.read_u32();
+				uint32_t b       = reader.read_u32();
+				uint8_t  c       = reader.read_u8();
+				uint32_t count   = reader.read_u16();
 
-				out += fmt::format(" a={} b={} c={} count={}", a, b, c, count);
+				out += fmt::format(" ask_key={} b={} c={} count={}", ask_key, b, c, count);
 
 				for (uint32_t i = 0; i < count && !reader.truncated; i++) {
-					uint16_t    mode = reader.read_u16();
+					uint16_t    roll = reader.read_u16();
 					std::string name = reader.read_string(64);
 					out += fmt::format(
-						"\n  member mode={}({}) name='{}'",
-						mode, ModeName(mode), IsPrintableName(name) ? name : ""
+						"\n  roll name='{}' roll={}",
+						IsPrintableName(name) ? name : "", roll
 					);
 				}
 				break;
@@ -651,11 +649,11 @@ namespace AdvLoot {
 		// auto-loots any personal row it is given when LS_AutoLootAllCheckbox is checked
 		// (FUN_14009f790 -> FUN_1400a9cc0 -> FUN_140154cd0), so pre-filling +0x14 loots the item for us.
 		writer.write_u64(filter.item_id);
-		writer.write_u32(filter.icon);              // +0x08
+		writer.write_u32(filter.icon);              // +0x08 icon
 		writer.write_u32(filter.shared_qty);        // +0x0C shared / construct pool
-		writer.write_u32(1);                        // +0x10 managed flag
-		writer.write_u8(0);                         // +0x18
-		writer.write_u32(0);                        // +0x1C
+		writer.write_u32(filter.stack_size);        // +0x10 max stack - row+0x50; row+0x4C bStackable = 1 < this
+		writer.write_u8(filter.no_drop);            // +0x18 no drop - row+0x54; 1 = no drop, 0 = droppable
+		writer.write_u32(0);                        // +0x1C combo id - row+0x58. 0: no combo column in this schema.
 		writer.write_u32(filter.personal_qty);      // +0x14 personal pool - keep 0 on the initial push
 		writer.write_string(filter.name, 64);       // +0x28
 
@@ -734,17 +732,9 @@ namespace AdvLoot {
 		return app;
 	}
 
-	// One group record for the corpse itself, every item on it nested inside. The group name is the NPC
-	// name (the window's NPC Name column), not an item name.
-	EQApplicationPacket* BuildCorpseGroupPacket(
-		uint32_t mode,
-		const std::string& name,
-		const CorpseGroup& group,
-		EQ::versions::ClientVersion client_version
-	)
-	{
-		return BuildCorpseGroupsPacket(mode, name, { group }, client_version);
-	}
+	// The rebuild form of subcmd 0x03: several group records in one packet. Each group record is one corpse,
+	// with that corpse's items nested inside, and the group name is the NPC name (the window's NPC Name
+	// column), not an item name.
 
 	EQApplicationPacket* BuildCorpseGroupsPacket(
 		uint32_t mode,
@@ -832,13 +822,13 @@ namespace AdvLoot {
 		);
 	}
 
-	EQApplicationPacket* BuildStatePacket(uint32_t item_id, uint32_t assignee, uint32_t state, uint8_t flag)
+	EQApplicationPacket* BuildSetStatePacket(uint32_t ask_key, uint32_t remaining_ms, uint32_t state, uint8_t flag)
 	{
 		Writer writer;
 
 		writer.write_u16(SubSetState);
-		writer.write_u32(item_id);
-		writer.write_u32(assignee);
+		writer.write_u32(ask_key);
+		writer.write_u32(remaining_ms);
 		writer.write_u32(state);
 		writer.write_u8(flag);
 
@@ -870,6 +860,40 @@ namespace AdvLoot {
 		writer.write_u32(ask_key);
 		writer.write_u64(item_id);
 		writer.write_u32(loot_details_key);
+
+		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
+		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
+		return app;
+	}
+
+	// subcmd 0x0B, the form FUN_1400a81b0 sends: a looter's Need / Greed / Never answer, named.
+	//
+	// Layout, taken from the 2026-10-16 16:52 capture (25 bytes, one entry, empty name):
+	//   u32 ask_key   u32 corpse_key   u64 item_id   u16 count
+	//   count x { u32 ClientChoiceAction, string name }
+	// The name is NUL-terminated and variable-length, so an empty name costs exactly one byte - which is how
+	// the 25-byte size closes.
+	//
+	// The client's own sender for a row dropdown uses the EMPTY name (FUN_1400a82a0), meaning "this is my
+	// answer"; only the Manage Loot player list fills a name in, meaning "the master looter set this looter's
+	// answer". A server relay therefore has to name the looter, because no other client can otherwise learn it.
+	EQApplicationPacket* BuildRowUpdatePacket(
+		uint32_t ask_key,
+		uint32_t corpse_key,
+		uint64_t item_id,
+		uint32_t action,
+		const std::string& name
+	)
+	{
+		Writer writer;
+
+		writer.write_u16(SubRowUpdate);
+		writer.write_u32(ask_key);
+		writer.write_u32(corpse_key);
+		writer.write_u64(item_id);
+		writer.write_u16(1);              // one entry
+		writer.write_u32(action);
+		writer.write_string(name, 64);
 
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
 		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
@@ -930,27 +954,22 @@ namespace AdvLoot {
 		return app;
 	}
 
-	// Read the body of a subcmd 0x0A record. See AdvLoot::ItemUpdate for the field provenance.
+	// Read the body of a subcmd 0x0A record. See AdvLoot::ItemUpdate for the field provenance: the u64 after
+	// the key is the item id, not a packed {count, field_14}.
 	bool ReadItemUpdate(Reader& reader, ItemUpdate& out)
 	{
 		out = ItemUpdate{};
 
-		out.ask_key = reader.read_u32();
+		out.ask_key      = reader.read_u32();
+		out.item_id      = reader.read_u64();   // record+0x08
+		out.state        = reader.read_u32();   // record+0x40
+		out.flag         = reader.read_u8();    // record+0x20
+		out.remaining_ms = reader.read_u32();   // record+0x18 - client clock, in ms
 
-		// The u64 that follows the key is record+0x10 read whole: low half = nested entry count, high half
-		// = record+0x14.
-		uint64_t packed = reader.read_u64();
-		out.field_14 = static_cast<uint32_t>(packed >> 32);
-		if (static_cast<uint32_t>(packed & 0xffffffff)) {
-			out.entries.reserve(static_cast<size_t>(packed & 0xffffffff));
+		uint32_t count = reader.read_u32();   // record+0x10
+		if (count && count <= 64) {
+			out.entries.reserve(count);
 		}
-
-		out.state   = reader.read_u32();
-		out.flag    = reader.read_u8();
-		out.seconds = reader.read_u32();
-
-		// The count is written a second time here, and this is the copy the reader keeps at record+0x10.
-		uint32_t count = reader.read_u32();
 
 		for (uint32_t i = 0; i < count && !reader.truncated; i++) {
 			uint32_t entry_key = reader.read_u32();
@@ -967,11 +986,10 @@ namespace AdvLoot {
 
 		writer.write_u16(SubItemUpdate);
 		writer.write_u32(update.ask_key);
-		writer.write_u32(static_cast<uint32_t>(update.entries.size()));   // low half of the u64
-		writer.write_u32(update.field_14);                                // high half
+		writer.write_u64(update.item_id);                                // record+0x08
 		writer.write_u32(update.state);
 		writer.write_u8(update.flag);
-		writer.write_u32(update.seconds);
+		writer.write_u32(update.remaining_ms);
 		writer.write_u32(static_cast<uint32_t>(update.entries.size()));
 
 		for (const auto& entry : update.entries) {
@@ -999,28 +1017,29 @@ namespace AdvLoot {
 		return !reader.truncated;
 	}
 
-	// subcmd 0x13 - FUN_140086fa0 reader: u32, u32, u8, u16 count, count x (u16 mode, string name[64]).
-	// FUN_140154200 prints the loot mode name per member from the string table at 0x14086b440, and the
-	// local player gets "molo" when it is the master looter. Only the first u32 is acted on - it is the key
-	// handed to FUN_1400a2a40 and FUN_1400a7bd0 - and the other two are stored and never read.
-	EQApplicationPacket* BuildLootModePacket(
-		uint32_t loot_list_key,
+	// subcmd 0x13 - FUN_140086fa0 reader: u32 ask_key, u32, u8, u16 count, count x (u16 roll, string name[64]).
+	// FUN_140154200 prints "%1 rolled a %2 on %3." per entry and gives the row to whoever rolled highest.
+	// Kept as the capture-verified layout for the roll-announcement path; nothing sends it yet, because the
+	// server's own chat lines already cover the text and the client's winner branch would move the row into the
+	// personal store a second time. See docs/advlootdesignV2.md C28.
+	EQApplicationPacket* BuildRollResultsPacket(
+		uint32_t ask_key,
 		uint32_t unused_u32,
 		uint8_t  unused_u8,
-		const std::vector<std::pair<uint16_t, std::string>>& members
+		const std::vector<std::pair<uint16_t, std::string>>& results
 	)
 	{
 		Writer writer;
 
-		writer.write_u16(SubLootModeList);
-		writer.write_u32(loot_list_key);
+		writer.write_u16(SubRollResults);
+		writer.write_u32(ask_key);
 		writer.write_u32(unused_u32);
 		writer.write_u8(unused_u8);
-		writer.write_u16(static_cast<uint16_t>(members.size()));
+		writer.write_u16(static_cast<uint16_t>(results.size()));
 
-		for (const auto& member: members) {
-			writer.write_u16(member.first);
-			writer.write_string(member.second, 64);
+		for (const auto& result: results) {
+			writer.write_u16(result.first);
+			writer.write_string(result.second, 64);
 		}
 
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
@@ -1120,8 +1139,7 @@ namespace AdvLoot {
 	}
 
 	// Re-derive the mode of every Advanced Loot corpse any of `viewers` has rows on, and re-render each corpse
-	// exactly once. RenderAll() already reaches every viewer of a corpse, so running the per-client version for
-	// each member of a group would send the same 0x03 to the same players several times over.
+	// exactly once, to the clients that already have rows on it.
 	void RefreshCorpsesFor(const std::vector<Client *> &viewers)
 	{
 		std::vector<Corpse *> corpses;
@@ -1144,11 +1162,137 @@ namespace AdvLoot {
 		}
 
 		for (Corpse *corpse: corpses) {
-			corpse->AdvLootSession().RefreshAuthority();
-			corpse->AdvLootSession().RenderAll();
+			AdvLoot::Session &session = corpse->AdvLootSession();
+			session.RefreshAuthority();
+
+			// Re-render to the clients that already have rows here - not to the whole zone, and not to the whole
+			// construct. A player who joined the group after this kill has no claim on the corpse: pushing it to
+			// them is how an unaccepted group invite made a locked corpse appear out of nowhere the moment the
+			// inviter killed (2026-10-16, docs/advlootpcap.md §10.1). RenderAll() stays the kill-time push and the
+			// cash-distribution list, and it is kill-credit-only for the same reason.
+			for (uint32_t character_id: session.ViewerIDs()) {
+				if (Client *c = entity_list.GetClientByCharID(character_id)) {
+					session.Render(c);
+				}
+			}
 		}
 	}
 
+	// OP_MasterLooter (0x3a60) - reader FUN_140087430: u32, then a NUL-terminated name. See the header for what
+	// the client does with it and why the flag it sets is the one the countdown bar hangs off.
+	EQApplicationPacket* BuildMasterLooterPacket(uint32_t mode, const std::string& name)
+	{
+		Writer writer;
+
+		writer.write_u32(mode);
+		writer.write_string(name, 64);
+
+		EQApplicationPacket* app = new EQApplicationPacket(OP_MasterLooter, writer.buffer.size());
+		memcpy(app->pBuffer, writer.buffer.data(), writer.buffer.size());
+		return app;
+	}
+
+	void BroadcastMasterLooter(Group *group)
+	{
+		if (!group) {
+			return;
+		}
+
+		// GetMasterLooter() already falls back to the group leader, so a group always has one - which is the
+		// point. The client has no other source for it, and its fallback makes every member the master looter.
+		Client *master = group->GetMasterLooter();
+		if (!master) {
+			return;
+		}
+
+		std::list<Client *> clients;
+		group->GetClientList(clients, true);
+
+		EQApplicationPacket *app = BuildMasterLooterPacket(0, master->GetCleanName());
+		if (!app) {
+			return;
+		}
+
+		for (Client *c: clients) {
+			if (c) {
+				c->QueuePacket(app);
+			}
+		}
+
+		safe_delete(app);
+
+		LogLootFilters(
+			"master looter [{}] broadcast to [{}] group member(s)",
+			master->GetCleanName(),
+			clients.size()
+		);
+	}
+
+	void BroadcastMasterLooter(Raid *raid)
+	{
+		if (!raid) {
+			return;
+		}
+
+		Client *master = raid->GetMasterLooter();
+		if (!master) {
+			return;
+		}
+
+		std::vector<Client *> clients;
+
+		for (int i = 0; i < MAX_RAID_MEMBERS; ++i) {
+			if (raid->members[i].member && !raid->members[i].is_bot) {
+				clients.push_back(raid->members[i].member);
+			}
+		}
+
+		EQApplicationPacket *app = BuildMasterLooterPacket(0, master->GetCleanName());
+		if (!app) {
+			return;
+		}
+
+		for (Client *c: clients) {
+			if (c) {
+				c->QueuePacket(app);
+			}
+		}
+
+		safe_delete(app);
+
+		LogLootFilters(
+			"master looter [{}] broadcast to [{}] raid member(s)",
+			master->GetCleanName(),
+			clients.size()
+		);
+	}
+
+	// subcmd 0x13 is the dice-result announcement, not a mode list - see BuildRollResultsPacket in the header.
+	// AdvLoot::BroadcastLootMode used to send the group's loot modes here on every membership change, and the
+	// client read them as rolls: the 2026-10-17 11:12 capture shows both windows printing
+	//   Gunadie rolled a 2 on .
+	//   Joka rolled a 3 on .
+	// at the instant the group formed, because BuildLootModePacket put ModeMasterLooter(2) and ModeGroup(3) in
+	// the u16 slot and 0 in the ask-key slot, so %2 was the mode number and %3 - the row looked up by row+0x60 -
+	// matched nothing. It also ran FUN_1400a7bd0 with a key that matched no row. The master looter is announced
+	// by OP_MasterLooter (0x3a60) and by the name field of the subcmd 0x03 record; nothing else is needed.
+
+}
+
+// Fill the nested item record's descriptor fields from the item cache. FUN_14009c0a0 copies +0x10 into
+// row+0x50 MaxStack and derives row+0x4C bStackable from it, and FUN_14009e460 only merges two rows of the
+// same item id when 1 < +0x10 - a hardcoded 1 there costs real stackable merges. +0x18 is a no-drop flag in
+// the plain sense (1 = no drop), which is the inverse of ItemData::NoDrop (0 = no drop): see
+// AdvLoot::Filter::no_drop and docs/advlootpcap.md §7.1. See docs/advlootdesignV2.md C16.
+static void FillAdvLootItemDescriptor(AdvLoot::Filter& filter)
+{
+	const EQ::ItemData *item = database.GetItem(filter.item_id);
+	if (!item) {
+		return;
+	}
+
+	filter.stack_size = item->StackSize > 1 ? static_cast<uint16_t>(item->StackSize) : 1;
+	filter.no_drop    = item->NoDrop == 0 ? 1 : 0;
 }
 
 void Client::LoadAdvLootFilters()
@@ -1171,6 +1315,7 @@ void Client::LoadAdvLootFilters()
 		filter.filter_bits = Strings::ToUnsignedInt(row[1]);
 		filter.icon        = Strings::ToUnsignedInt(row[2]);
 		filter.name        = row[3];
+		FillAdvLootItemDescriptor(filter);
 		advloot_filters.push_back(filter);
 	}
 }
@@ -1227,22 +1372,89 @@ void Client::SaveAdvLootFilter(uint32_t item_id, uint32_t filter_bits, uint32_t 
 			filter.filter_bits = filter_bits;
 			filter.icon        = icon;
 			filter.name        = name;
+			FillAdvLootItemDescriptor(filter);
 			return;
 		}
 	}
 
-	advloot_filters.push_back(AdvLoot::Filter{item_id, filter_bits, icon, name});
+	AdvLoot::Filter filter{item_id, filter_bits, icon, name};
+	FillAdvLootItemDescriptor(filter);
+	advloot_filters.push_back(filter);
+}
+
+// The subcmd 0x03 record's top-level name is not a label - it is the master looter announcement, and it is
+// re-read on every push. FUN_140153970 (the 0x03 receive path) reads the record with FUN_1400874d0, whose
+// first field after a u32 is a 64-byte string at record+0x00, then at 0x140153ad7:
+//
+//   RDX = DAT_140e33f50                      ; local player record
+//   CALL FUN_140560db0                       ; record+0x00 -> const char*
+//   RDX = RBX + 0xa8                         ; the local player's own name
+//   CALL 0x1406ce580                         ; compare
+//   match    -> manager+0x241 = 1
+//   no match -> manager+0x241 = 0
+//   window->vtable+0x380(window, name, 1)    ; UpdateMasterLooter
+//
+// So a 0x03 that names the viewer re-asserts "I am the master looter" for that viewer and undoes the
+// OP_MasterLooter that arrived moments earlier. AdvLootRender() used to pass GetCleanName(), which is why the
+// 2026-10-17 11:12 run showed both members as the master looter again even though 0x3a60 and the 0x13 mode
+// list were both on the wire and correct: the corpse render at 11:12:11 overwrote the announcement from
+// 11:11:59. Solo keeps the player's own name, which is what the client expects when ungrouped.
+std::string Client::AdvLootMasterLooterName()
+{
+	if (Raid *raid = GetRaid()) {
+		Client *master = raid->GetMasterLooter();
+		return master ? master->GetCleanName() : GetCleanName();
+	}
+
+	if (Group *group = GetGroup()) {
+		Client *master = group->GetMasterLooter();
+		return master ? master->GetCleanName() : GetCleanName();
+	}
+
+	return GetCleanName();
+}
+
+// The mode a subcmd 0x03 record carries. advloot_mode is only written by /advloot and defaults to ModeSolo,
+// so every group corpse render on the 2026-10-17 11:12 run went out as mode 1 (ModeSolo) while the session log
+// said mode [group]. The client stores it at record+0x28e648 and nothing in FUN_140153970 reads it, so this is
+// for consistency and for the logs rather than for a gate - but a 0x03 that disagrees with the session is a
+// capture that has to be re-read before it can be believed.
+uint32_t Client::AdvLootModeForViewer()
+{
+	if (!advloot_enabled) {
+		return AdvLoot::ModeInvalid;
+	}
+
+	if (Raid *raid = GetRaid()) {
+		return AdvLoot::ModeRaid;
+	}
+
+	if (Group *group = GetGroup()) {
+		return group->GetMasterLooter() == this ? AdvLoot::ModeMasterLooter : AdvLoot::ModeGroup;
+	}
+
+	return AdvLoot::ModeSolo;
 }
 
 void Client::SendAdvLootFilterSet()
 {
-	EQApplicationPacket* app = AdvLoot::BuildFilterSetPacket(advloot_mode, GetCleanName(), advloot_filters, ClientVersion());
+	EQApplicationPacket* app = AdvLoot::BuildFilterSetPacket(AdvLootModeForViewer(), AdvLootMasterLooterName(), advloot_filters, ClientVersion());
 	if (!app) {
 		return;
 	}
 
 	QueuePacket(app);
 	delete app;
+
+	// The same request is the client's "give me my Advanced Loot state" moment - it is what it sends when the
+	// window opens and after a zone entry - so the master looter has to travel with it. A player who logged
+	// into an existing group otherwise has nothing on manager+0x1f4 until the next membership change, and
+	// FUN_1401500a0 fills the gap with the player's own name.
+	if (Raid* raid = GetRaid()) {
+		AdvLoot::BroadcastMasterLooter(raid);
+	} else if (Group* group = GetGroup()) {
+		AdvLoot::BroadcastMasterLooter(group);
+	}
 }
 
 uint32_t Client::AdvLootFilterBits(uint32_t item_id) const
@@ -1255,28 +1467,11 @@ uint32_t Client::AdvLootFilterBits(uint32_t item_id) const
 	return 0;
 }
 
-// Subcmd 0x03 is also the corpse delivery channel: one group record for the corpse, with the corpse
-// items as nested records. CAdvancedLootWnd::AddCorpse only creates a row when a per-list quantity is
-// non-zero, so the caller must fill quantity (shared) and personal.
-void Client::SendAdvLootGroup(const AdvLoot::CorpseGroup& corpse_group)
-{
-	if (corpse_group.items.empty()) {
-		return;
-	}
-
-	EQApplicationPacket* app = AdvLoot::BuildCorpseGroupPacket(advloot_mode, GetCleanName(), corpse_group, ClientVersion());
-	if (!app) {
-		return;
-	}
-
-	QueuePacket(app);
-	delete app;
-}
-
-// Re-render every corpse this client has rows for, as one subcmd 0x03. This is the only server-side path
-// that clears rows in both panes (FUN_140153970 -> window vtable +0x3b0), and every group record in it comes
-// from AdvLoot::Session::BuildGroupFor, so what the window shows is always what the session thinks it should
-// show.
+// Re-render every corpse this client has rows for, as one subcmd 0x03. This is the only server-side path that
+// emits a 0x03 loot-group push, and it is the only one that can: FUN_140153970 clears rows in both panes
+// (window vtable +0x3b0) before re-adding, so the packet must carry the viewer's whole live set at once or
+// the corpses it leaves out vanish. Every group record in it comes from AdvLoot::Session::BuildGroupFor, so
+// what the window shows is always what the sessions think it should show.
 void Client::AdvLootRender()
 {
 	if (!advloot_enabled) {
@@ -1314,7 +1509,7 @@ void Client::AdvLootRender()
 
 	advloot_corpses = alive;
 
-	EQApplicationPacket* app = AdvLoot::BuildCorpseGroupsPacket(advloot_mode, GetCleanName(), groups, ClientVersion());
+	EQApplicationPacket* app = AdvLoot::BuildCorpseGroupsPacket(AdvLootModeForViewer(), AdvLootMasterLooterName(), groups, ClientVersion());
 	if (!app) {
 		return;
 	}
@@ -1692,19 +1887,26 @@ void Client::SendAdvLootItemUpdate(const AdvLoot::ItemUpdate& update)
 	}
 
 	LogLootFilters(
-		"[{}] item update relay ask_key [{}] state [{}]({}) seconds [{}] entries [{}]",
+		"[{}] item update relay ask_key [{}] state [{}]({}) remaining_ms [{}] entries [{}]",
 		GetCleanName(),
 		update.ask_key,
 		update.state,
 		AdvLoot::StateName(update.state),
-		update.seconds,
+		update.remaining_ms,
 		update.entries.size()
 	);
 
+	// Every member of the construct gets the record, the sender included. QueueClients excludes `this`, which is
+	// right for a broadcast but wrong here: the initiating client installed its own record with
+	// `record+0x18 == 0`, so its row countdown is a wrapped clock and the red time-left bar over the icon never
+	// draws. This relay carries the window the server actually armed, and the client's 0x0a receive path
+	// re-installs the record with it - the only way the player who started the ask sees the countdown.
 	if (Raid* raid = GetRaid()) {
 		raid->QueueClients(this, app, true);
+		QueuePacket(app);
 	} else if (Group* group = GetGroup()) {
 		group->QueueClients(this, app, true);
+		QueuePacket(app);
 	} else {
 		QueuePacket(app);
 	}
@@ -1715,56 +1917,13 @@ void Client::SendAdvLootItemUpdate(const AdvLoot::ItemUpdate& update)
 // Decision 4: the AdvLoot mode is a derived display value, not a configured setting. Raid wins over
 // group, group wins over solo, and the member that is the master looter reads molo. Authority comes
 // from RaidLootType, which is a separate rule and is not changed here.
-void Client::SendAdvLootLootMode()
+//
+// This no longer sends anything. It used to send OP_AdvLoot subcmd 0x13, which is the dice-result
+// announcement rather than a mode list - see AdvLoot::BuildRollResultsPacket and C28. advloot_mode is kept
+// because the session-open and refusal logs print it.
+void Client::RefreshAdvLootMode()
 {
-	std::vector<std::pair<uint16_t, std::string>> members;
-
-	Raid* raid = GetRaid();
-	Group* group = GetGroup();
-
-	if (raid) {
-		Client* ml = raid->GetMasterLooter();
-		for (const auto& member: raid->GetMembers()) {
-			if (!member.member) {
-				continue;
-			}
-			members.emplace_back(member.member == ml ? AdvLoot::ModeMasterLooter : AdvLoot::ModeRaid, member.member->GetCleanName());
-		}
-	} else if (group) {
-		Client* ml = group->GetMasterLooter();
-		std::list<Mob*> member_list;
-		group->GetMemberList(member_list);
-		for (Mob* member: member_list) {
-			if (!member || !member->IsClient()) {
-				continue;
-			}
-			Client* c = member->CastToClient();
-			members.emplace_back(c == ml ? AdvLoot::ModeMasterLooter : AdvLoot::ModeGroup, c->GetCleanName());
-		}
-	} else {
-		members.emplace_back(advloot_enabled ? AdvLoot::ModeSolo : AdvLoot::ModeInvalid, GetCleanName());
-	}
-
-	if (members.empty()) {
-		return;
-	}
-
-	EQApplicationPacket* app = AdvLoot::BuildLootModePacket(0, 0, 0, members);
-	if (!app) {
-		return;
-	}
-
-	LogLootFilters("[{}] loot mode [{}] broadcast to [{}] member(s)", GetCleanName(), AdvLoot::ModeName(advloot_mode), members.size());
-
-	if (raid) {
-		raid->QueueClients(this, app, true);
-	} else if (group) {
-		group->QueueClients(this, app, true);
-	} else {
-		QueuePacket(app);
-	}
-
-	delete app;
+	advloot_mode = AdvLootModeForViewer();
 }
 
 // /advloot need|greed|never <item_id> | /advloot mol [name]
@@ -1824,12 +1983,9 @@ void command_advloot(Client *c, const Seperator *sep)
 
 		target->MessageString(Chat::Yellow, AdvLoot::StringId::MLDelegated, target->GetCleanName());
 
-		// Re-derive the mode list for everyone (decision 4).
-		c->SendAdvLootLootMode();
-
-		// SetMasterLooter() now runs RefreshAdvLootAuthority() over the whole construct, which re-derives each
-		// session's cached mode and re-renders every corpse its viewers share - so the gate, the window's mode
-		// list and the logs all follow the change from here.
+		// SetMasterLooter() now runs RefreshAdvLootAuthority() over the whole construct, which re-announces the
+		// master looter with OP_MasterLooter and re-renders every corpse its viewers share - and each re-render
+		// carries the new name in its 0x03 record. So the gate and the window both follow the change from here.
 		return;
 	}
 

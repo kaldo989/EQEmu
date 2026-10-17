@@ -2751,8 +2751,8 @@ void Group::RemoveClientsBots(Client* c) {
 }
 
 // Decision 4: the group leader is the default master looter. /advloot mol moves it to a member flagged
-// master_loot_candidate. Re-evaluated on leadership and membership change, then broadcast through
-// subcmd 0x13.
+// master_loot_candidate. Re-evaluated on leadership and membership change, then announced with
+// OP_MasterLooter and carried in the name field of every subcmd 0x03 the group's corpses re-render.
 Client* Group::GetMasterLooter()
 {
 	if (!master_looter_name.empty()) {
@@ -2775,7 +2775,7 @@ void Group::SetMasterLooter(Client* c)
 	master_looter_name = c ? c->GetCleanName() : "";
 
 	// Advanced Loot gates every decision sub-command on who the master looter is, and the window shows that
-	// name in its 0x03 mode list. Both change here.
+	// name. Both change here.
 	RefreshAdvLootAuthority();
 }
 
@@ -2786,6 +2786,12 @@ void Group::RefreshAdvLootAuthority()
 {
 	std::list<Client *> clients;
 	GetClientList(clients, true);
+
+	// The client's "am I the master looter" flag has exactly three writers: FUN_1401550d0 (OP_MasterLooter),
+	// FUN_1401500a0 (the fallback that compares the local name with the last announced name) and FUN_140153970
+	// (the subcmd 0x03 record's name). Every hook that can change who the master looter is has to re-announce
+	// it, and the re-render below has to carry the same name in its 0x03 or the 0x03 silently undoes the 0x3a60.
+	AdvLoot::BroadcastMasterLooter(this);
 
 	AdvLoot::RefreshCorpsesFor(std::vector<Client *>(clients.begin(), clients.end()));
 }

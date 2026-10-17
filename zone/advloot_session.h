@@ -129,6 +129,12 @@ namespace AdvLoot {
 		void     ConsumeAward(uint32_t character_id, uint32_t item_id, uint16_t quantity);
 		void     ClearAwards(uint32_t item_id);
 
+		// Broadcast the subcmd 0x0e that moves `quantity` units of `item_id` from the shared pool into
+		// `winner`'s personal pool on every viewer's client. A roll or an assignment that awards a winner without
+		// this leaves the client's row bookkeeping untouched: the Personal pane stays empty and the 0x09 erase
+		// gate can never match. Called from Resolve and Assign before Deliver.
+		void     MoveToPersonal(Client *winner, uint32_t item_id, uint16_t quantity, uint32_t ask_key);
+
 		// The answer to a subcmd 0x08. `quantity` is what goes into both the 0x0e reply and the 0x09 answer:
 		// it has to be the requester's personal pool, because FUN_140151810 only erases the client's corpse
 		// item entry when the reported quantity equals that pool and the shared pool is empty.
@@ -157,12 +163,19 @@ namespace AdvLoot {
 		void SetResponse(uint32_t item_id, const std::string &name, uint32_t choice);
 		Roll &RecordChoice(Client *c, uint32_t item_id, uint32_t choice);
 		void Arm(Roll &roll);
-		void Arm(Roll &roll, uint32_t seconds);
+		// remaining_ms is the wire unit: relative milliseconds, exactly what subcmd 0x0a / 0x11 carry.
+		void Arm(Roll &roll, uint32_t remaining_ms);
 		void Tick();
 		void Resolve(Roll &roll);
 		void Assign(Roll &roll, Client *target);
 		void LeaveOnCorpse(Roll &roll, Client *who);
 		void ChatToRoll(const Roll &roll, uint32_t string_id,
+			const char *arg1 = nullptr, const char *arg2 = nullptr, const char *arg3 = nullptr,
+			const char *arg4 = nullptr, const char *arg5 = nullptr);
+		// Same line, but to everyone who can see the corpse rather than only to the looters who bid on this
+		// item. The roll announcements have to go here: the client prints nothing of its own for another
+		// player's roll, so a line sent only to the roller is invisible to everybody else.
+		void ChatToViewers(const Roll &roll, uint32_t string_id,
 			const char *arg1 = nullptr, const char *arg2 = nullptr, const char *arg3 = nullptr,
 			const char *arg4 = nullptr, const char *arg5 = nullptr);
 
@@ -207,6 +220,21 @@ namespace AdvLoot {
 		void RecordAsk(Roll &roll, const ItemUpdate &update);
 		void ClearAsk(Roll &roll);
 		void ReissueAsks(Client *c);
+		// subcmd 0x11 to every viewer of the corpse. This is the only packet that draws the countdown bar
+		// unconditionally, and the only one that can move a row to state 4 Ask Completed - which is what locks
+		// the row's Need / Greed / Never widgets and what makes the client's Roll button sendable at all.
+		// A zero ask key is dropped: the client resolves 0x11 by filter-hash record and never creates one, so a
+		// key it has not allocated matches nothing. See C23 and C33.
+		void SendAskState(Roll &roll, uint32_t ask_key, uint32_t state, uint32_t remaining_ms);
+		// subcmd 0x13 - the dice results for one row, and the client's own roll award.
+		// FUN_140154200 prints eqstr 11316 "%1 rolled a %2 on %3." per entry, then calls
+		// FUN_1400a7bd0(window, ask_key, highest_roll_is_local_player), which walks the row's LootDetails
+		// entries into the Personal Loot store, runs FUN_14009f790(window, 1, 0), and removes the row from the
+		// Shared pane - with no master-looter gate and no in-flight gate. This is the packet that ends a roll on
+		// the window, and nothing else in the family does it: the 0x0e handler FUN_1400a42f0 skips a row whose
+		// row+0x6C is clear whenever the viewer is the master looter, which is why the master looter kept seeing
+		// the won item sitting in his Shared pane. See C34.
+		void SendRollResults(Roll &roll, uint32_t ask_key, const std::vector<Participant *> &tier);
 		// Derive the client's Ask Completed state: it moves a row to state 4 when every entry on it has an
 		// answer, and the server can see the answers even though it cannot see the client's countdown.
 		void RefreshAskState(Roll &roll);
