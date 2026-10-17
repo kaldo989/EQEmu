@@ -251,6 +251,12 @@ public:
 	void SetKillCreditLooters(Client *killer);
 	bool IsKillCreditLooter(uint32 character_id) const;
 
+	// Drop the kill-credit lockout entirely. An empty m_allowed_looters makes CanPlayerLoot return true for
+	// everyone, which is what unlocks the corpse on the ground for ordinary looting. Advanced Loot calls this
+	// when the master looter leaves an item on the corpse: the row leaves everyone's Shared Loot tab and the
+	// corpse stops being gated by the AdvLoot window.
+	void ClearKillCreditLooters();
+
 	// The kill-credit list itself. AdvLoot::Session derives its mode and its loot authority from it.
 	std::vector<uint32_t> GetKillCreditLooters() const
 	{

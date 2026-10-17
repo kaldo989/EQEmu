@@ -235,6 +235,16 @@ namespace AdvLoot {
 		// row+0x6C is clear whenever the viewer is the master looter, which is why the master looter kept seeing
 		// the won item sitting in his Shared pane. See C34.
 		void SendRollResults(Roll &roll, uint32_t ask_key, const std::vector<Participant *> &tier);
+
+		// Re-render the whole window for every viewer of this corpse. subcmd 0x03 is the only packet the client
+		// has that creates rows, and it replaces the rows it carries wholesale, so it is the reliable way to take
+		// a row away as well. The 0x0C row-remove is a best-effort shortcut: FUN_1400a1340 bails out entirely
+		// unless window+0x280, +0x318, +0x2f0, +0x3e8 and +0x3f0 are all live, and only removes a row whose
+		// row+0x8E/0x8F or row+0x91/0x92 markers are set - so a row that was never clicked leaves the window on a
+		// 0x03 rebuild and on nothing else. The 2026-10-17 19:51 run proves it: `0c 01 ... 34 21 00 00 00 00 00 00`
+		// (item 8500) reached both clients and neither window dropped the row; the row only disappeared when the
+		// next corpse triggered a rebuild.
+		void RenderViewers();
 		// Derive the client's Ask Completed state: it moves a row to state 4 when every entry on it has an
 		// answer, and the server can see the answers even though it cannot see the client's countdown.
 		void RefreshAskState(Roll &roll);

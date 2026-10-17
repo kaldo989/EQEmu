@@ -821,14 +821,24 @@ namespace AdvLoot {
 		const std::vector<std::pair<uint32_t, std::string>>& responses
 	);
 
-	// subcmd 0x0F - reader FUN_140086c50: u64 key, string name. FUN_1401509d0 walks the ask group at
-	// manager[key % 0x14 + 0x29], finds the corpse's item record with a non-zero shared pool, and moves ONE
-	// unit (+0xC -> +0x14). The name decides who that unit lands on: FUN_1401509d0 strncmps it against the
-	// local player and passes the result as FUN_1400a42f0's third argument, which is what gates FUN_1400a4eb0 -
-	// only the named player adds the unit to their personal store (manager + 0x3f0), everyone else just sees
-	// the shared pool drop. It prints nothing: there is no dsp_chat anywhere in that path, so the server's own
-	// 11323 line is the only grab message. This is the reply to a 0x360e / 0x0F Free Grab.
-	EQApplicationPacket* BuildSingleTransferPacket(uint64_t key, const std::string& name);
+	// subcmd 0x0F - reader FUN_140086c50: u32 ask_key, u32 corpse_key, string name. It is the same pair the
+	// client just sent us on 0x360e / 0x0F, echoed back - not the item id.
+	//
+	// FUN_1401509d0 then does two lookups with those two halves:
+	//   ask_key    -> manager[ask_key % 0x14 + 0x29], i.e. the same filter-hash bucket the 0x0a writes, and the
+	//                record supplies the item id at record+0x08
+	//   corpse_key -> the corpse hash at manager[corpse_key % bucket_count], matching node+0x51c8, which
+	//                supplies the LootDetails entry vector
+	// it takes the first entry whose item id matches and whose +0x0C (shared) is non-zero, does entry+0x14 += 1
+	// and entry+0x0C -= 1 - exactly ONE unit per packet - and finally calls FUN_1400a42f0 with quantity 1, the
+	// same shared->personal mover the 0x0e uses.
+	//
+	// The name decides who that unit lands on: FUN_1401509d0 strncmps it against the local player and passes
+	// the result as FUN_1400a42f0's third argument, which is what gates FUN_1400a4eb0 - only the named player
+	// adds the unit to their personal store (manager + 0x3f0), everyone else just sees the shared pool drop. It
+	// prints nothing: there is no dsp_chat anywhere in that path, so the server's own 11323 line is the only
+	// grab message. This is the reply to a 0x360e / 0x0F Free Grab.
+	EQApplicationPacket* BuildSingleTransferPacket(uint32_t ask_key, uint32_t corpse_key, const std::string& name);
 
 	// subcmd 0x06 - reader FUN_140086d70: u8 announce, u64 money, u8 personal, u32 bonus. FUN_140152cb0 is
 	// the whole handler and it is money-only: the u64 is a total in EQ's canonical unit (platinum * 1000 +

@@ -76,6 +76,24 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 			continue;
 		}
 
+		// A row the authority removed stays removed. The item is still physically on the corpse - that is the
+		// whole point of Leave On Corpse - so `corpse->GetLootItems()` still lists it, and rebuilding the window
+		// from that list re-creates the row the client was just told to drop.
+		//
+		// The 2026-10-17 20:45 run shows it exactly: three Leave On Corpse presses on the same Wood Point Arrow
+		// (20:45:02, 20:45:28, 20:46:23), each one `advloot render corpse [12] - [2] viewer window(s) rebuilt`,
+		// each one putting the row straight back. It also left the server's roll in state Removed while the
+		// client still drew the row, so eight later `subcmd=0x12` presses were all refused with
+		// "roll for item [13064] corpse [8] in state [Removed] - 0x12 only fires from [AskCompleted]".
+		//
+		// Every StateRemoved producer means the same thing for the window: nobody claimed the item and it stays
+		// on the corpse (Resolve with an empty tier), the winner went offline, the last participant left the
+		// group, or the session closed.
+		const auto removed = rolls.find(item->ID);
+		if (removed != rolls.end() && removed->second.state == AdvLoot::StateRemoved) {
+			continue;
+		}
+
 		Filter entry;   // the nested item record (see AdvLoot::Filter in zone/advloot.h)
 		entry.item_id         = item->ID;
 		entry.filter_bits     = c->AdvLootFilterBits(item->ID);
@@ -788,6 +806,30 @@ void Session::SendRollResults(Roll &roll, uint32_t ask_key, const std::vector<Pa
 	);
 }
 
+// Rebuild the window for every viewer of this corpse. subcmd 0x03 is the only packet the client has that
+// creates rows, and Client::AdvLootRender sends the viewer's whole live corpse set, so a rebuild both adds
+// and removes rows correctly - which is why a stranded row has always vanished "when the next item drops".
+void Session::RenderViewers()
+{
+	int rendered = 0;
+
+	for (const auto &entry : views) {
+		Client *viewer = entity_list.GetClientByCharID(entry.first);
+		if (!viewer) {
+			continue;
+		}
+
+		viewer->AdvLootRender();
+		++rendered;
+	}
+
+	LogLootFilters(
+		"advloot render corpse [{}] - [{}] viewer window(s) rebuilt",
+		corpse->GetID(),
+		rendered
+	);
+}
+
 // Chat line to every participant on the row. The client's own AdvLoot window shows the same state, so
 // using the string ids from eqstr_us.txt 11300-11323 keeps the wording identical to the client.
 void Session::ChatToRoll(const Roll &roll, uint32_t string_id,
@@ -1061,22 +1103,17 @@ void Session::Resolve(Roll &roll)
 		}
 	}
 
-	ChatToViewers(roll, AdvLoot::StringId::WonRoll,
-		winner->name.c_str(),
-		need.empty() ? "Greed" : "Need",
-		ConvertArray(static_cast<int64>(tier.size()), count_str),
-		roll.item_name.c_str(),
-		ConvertArray(static_cast<int64>(winner->roll), roll_str));
-
-	LogLootFilters(
-		"advloot resolve item [{}] corpse [{}] tier [{}] winner [{}] roll [{}]",
-		roll.item_id,
-		corpse->GetID(),
-		need.empty() ? "Greed" : "Need",
-		winner->name,
-		winner->roll
-	);
-
+	// The state packet and the dice list go out before the server's own chat lines.
+	//
+	// Two reasons. FUN_1400a2a40 reads %3 of eqstr 11316 out of the shared row whose row+0x60 == ask_key, so
+	// 0x13 has to arrive while that row is still on the window - FUN_1400a7bd0 removes it. And the client's
+	// dice are part of the answer, so they have to precede "won the Greed roll": the 2026-10-17 17:35 run
+	// printed
+	//   17:35:51 Gunadie won the Greed roll on 2 item(s): Rat Paw with a roll of 590.
+	//   17:35:51 Gunadie rolled a 590 on Rat Paw.
+	//   17:35:51 Joka rolled a 342 on Rat Paw.
+	// - the result before the dice, because the chat lines were queued before 0x13.
+	//
 	// The row moves to state 4 Ask Completed. There is no countdown left, so remaining_ms is 0 - which is also
 	// what clears the bar. The client's DoAdvLootAction fires on flag == 0, not on an assignee field: 0x11 has
 	// no assignee at all (docs/advlootpcap.md §11.3). The key has to be the one captured above: ClearAsk() has
@@ -1092,6 +1129,22 @@ void Session::Resolve(Roll &roll)
 	// finished on the timer, with nobody pressing Give, left the won item sitting in Gunadie's Shared pane at
 	// 2026-10-17 16:08 while the server had already moved both units into Joka's personal pool.
 	SendRollResults(roll, ask_key, tier);
+
+	ChatToViewers(roll, AdvLoot::StringId::WonRoll,
+		winner->name.c_str(),
+		need.empty() ? "Greed" : "Need",
+		ConvertArray(static_cast<int64>(tier.size()), count_str),
+		roll.item_name.c_str(),
+		ConvertArray(static_cast<int64>(winner->roll), roll_str));
+
+	LogLootFilters(
+		"advloot resolve item [{}] corpse [{}] tier [{}] winner [{}] roll [{}]",
+		roll.item_id,
+		corpse->GetID(),
+		need.empty() ? "Greed" : "Need",
+		winner->name,
+		winner->roll
+	);
 
 	// 0x0e stays as the fallback for a row no client holds an ask record for: it is the only packet that moves
 	// entry+0x0C / entry+0x14 without an ask key, and without it the winner's Personal Loot pane stays empty -
@@ -1185,11 +1238,14 @@ void Session::LeaveOnCorpse(Roll &roll, Client *who)
 		quantity
 	);
 
-	// The row is still on the corpse, so only the window representation changes: FUN_140154a90 with a
-	// non-zero flag removes the matching row without a full rebuild.
-	if (who) {
-		who->SendAdvLootRowRemoved(roll.item_id, roll.item_name);
-	}
+	// Leaving on corpse means the AdvLoot window is done with this corpse: the item stays where it is and the
+	// corpse opens up to ordinary looting. m_allowed_looters is the lockout - clearing it makes CanPlayerLoot
+	// true for everyone, which is what unlocks the corpse on the ground.
+	corpse->ClearKillCreditLooters();
+
+	// roll.state == StateRemoved is the tombstone BuildGroupFor reads, so the rebuild below drops the row from
+	// every viewer's Shared Loot tab instead of re-creating it from corpse->GetLootItems().
+	RenderViewers();
 }
 
 // ---------------------------------------------------------------- viewers

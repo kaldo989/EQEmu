@@ -11479,8 +11479,17 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 			// FUN_1400a0480 then binds that record to the row whose row+0x60 is still 0 and writes row+0x88.
 			// That binding is what makes the later 0x0e find the row at all, because FUN_1400a42f0 matches on
 			// row+0x60 == ask_key.
-			if (roll.armed) {
-				corpse->AdvLootSession().SendAskState(roll, update.ask_key, relay.state, roll.ask.remaining_ms);
+			if (roll.armed || roll.state == AdvLoot::StateFreeGrab) {
+				// FUN_140151c60's 0x11 branch, 0x14015205f: for every state except 3 it does
+				//   record+0x18 = GetClock() + remaining_ms
+				// and then, at 0x14015208c, calls FUN_1400aa1b0(window, ask_key, record+0x18) whenever that
+				// deadline is non-zero. A free grab never arms a timer, so roll.ask.remaining_ms is whatever the
+				// disabled timer held - 0xfe725b9d in the 2026-10-17 19:46 capture, about 49 days - which installs
+				// a countdown bar that never runs out on a row that has no countdown. Only an armed ask has a real
+				// window to carry.
+				const uint32_t state_remaining = roll.armed ? roll.ask.remaining_ms : 0;
+
+				corpse->AdvLootSession().SendAskState(roll, update.ask_key, relay.state, state_remaining);
 
 				// Answers that arrived before anybody pressed Ask are still answers. The 2026-10-17 16:08 run had
 				// Gunadie on Never at 16:06:39 and Joka on Greed at 16:07:43, both before the ask was armed at
@@ -11488,7 +11497,9 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				// ran at all. No row ever reached state 4: nothing locked, both members could re-pick Need /
 				// Greed / Never freely for the whole window, and the master looter's client refused to send 0x12
 				// because FUN_140150240 requires state 4. The roll only happened because the 60 s timer expired.
-				corpse->AdvLootSession().RefreshAskState(roll);
+				if (roll.armed) {
+					corpse->AdvLootSession().RefreshAskState(roll);
+				}
 			}
 			return;
 		}
@@ -11548,23 +11559,27 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 				// ML_LeaveOnCorpse. The item stays on the corpse; the only thing that has to change is the row.
 				corpse->LeaveAdvLootRollOnCorpse(roll, this);
 
-				// subcmd 0x13 removes a row by item id and name. It goes to everyone who can see the row, the
-				// acting client included - in solo that is the only viewer.
+				// subcmd 0x0C with flag non-zero (FUN_140154a90 -> FUN_1400a1340) removes a row by item id. It
+				// goes to everyone who can see the row - but QueueClients excludes `this`, so the player who
+				// pressed Leave needs its own QueuePacket.
 				EQApplicationPacket* drop = AdvLoot::BuildRowRemovePacket(item_id, txn.name);
 				if (drop) {
 					if (Raid* raid = GetRaid()) {
 						raid->QueueClients(this, drop, true);
 					} else if (Group* group = GetGroup()) {
 						group->QueueClients(this, drop, true);
-					} else {
-						QueuePacket(drop);
 					}
+					QueuePacket(drop);
 					safe_delete(drop);
 				}
 
-				if (RuleB(Loot, AdvLootSoloRebuild) && !GetGroup() && !GetRaid()) {
-					AdvLootRender();
-				}
+				// The 0x0C on its own is not enough. FUN_1400a1340 returns immediately unless window+0x280,
+				// +0x318, +0x2f0, +0x3e8 and +0x3f0 all exist, and it only drops a row whose row+0x8E/0x8F or
+				// row+0x91/0x92 markers are set - markers a row only gets from the viewer's own clicks. In the
+				// 2026-10-17 19:51 run `0c 01 ... 34 21 00 00 00 00 00 00` reached both clients and neither window
+				// removed the Wood Point Arrow row; it survived until the next corpse forced a 0x03 rebuild.
+				// Session::LeaveOnCorpse now sets the StateRemoved tombstone, unlocks the corpse and re-renders
+				// every viewer, which is what actually takes the row out of the Shared Loot tab.
 				return;
 			}
 
@@ -11838,7 +11853,8 @@ void Client::Handle_OP_AdvLootManage(const EQApplicationPacket *app)
 			uint32_t corpse_key = 0;
 
 			uint32_t group_item_id = 0;
-			if (FindAdvLootAskGroup(ask_key, &corpse_key, &group_item_id) && group_item_id) {
+			const bool ask_known = FindAdvLootAskGroup(ask_key, &corpse_key, &group_item_id);
+			if (ask_known && group_item_id) {
 				item_id = group_item_id;
 			}
 
@@ -11851,54 +11867,118 @@ void Client::Handle_OP_AdvLootManage(const EQApplicationPacket *app)
 				return;
 			}
 
-			// A free grab is legal two ways: the raid's EntireRaid rule lets any member take a unit without a
-			// roll, or the authority already marked this row FreeGrab with 0x0a state 5, which is what sets
-			// record+0x8D on the client and makes this follow-up possible at all.
+			// A free grab is legal three ways:
+			//   - the raid's EntireRaid rule lets any member take a unit without a roll;
+			//   - the authority marked this row FreeGrab with 0x0a state 5, which is what sets record+0x8D and
+			//     makes this follow-up possible at all;
+			//   - the ask key the client is holding maps to this corpse and item on the server.
+			//
+			// The third one is what the 2026-10-17 21:08 run needed. FUN_140150c00 only ever sends this packet
+			// when its own filter record is in state 5, so the client pressing it *is* the mark - but the server's
+			// copy of the mark is per-roll and rolls die with the session:
+			//
+			//   21:08:14 advloot ask recorded item [13006] corpse [12] ask_key [3] state [FreeGrab]
+			//   21:08:14 [Gunadie] item update relay ask_key [3] state [5](FreeGrab)   -> both clients got 0x0a+0x11
+			//   21:08:27 advloot session closed corpse [12] - corpse unlocked - kill-credit lockout over (3 rows)
+			//   21:08:38 [Gunadie] ask group [3] -> corpse [12] item [13006]           -> row re-created, state Waiting
+			//   21:08:46 [Gunadie] free grab item [13006] corpse [12] - row [not marked], raid rule [master looter only]
+			//   21:08:46 [Gunadie] free grab item [13006] corpse [12] refused
+			//
+			// The corpse-unlock lifecycle closed the session between the mark and the click, so the mark was gone
+			// and the grab was refused - which is why nothing synced: the capture carries zero S->C 0x0f. Authority
+			// is still checked, so this does not let a non-master grab anything.
+			// The client sends one 0x0f per click and FUN_1401509d0 moves exactly ONE unit per packet:
+			// entry+0x14 += 1, entry+0x0C -= 1. Grabbing the whole stack in one go is what broke this path -
+			// the server looted both arrows off corpse 180 at 17:36:50, the client's row was never touched, so
+			// the Free Grab icon stayed live and Gunadie pressed it nine more times, each one answered with
+			// "nothing in the requester's personal pool". One unit per packet, and the client claims it with 0x08
+			// exactly like a rolled row (design 5 C24).
+			const uint16_t quantity = 1;
+
+			AdvLoot::Roll *grab_roll  = corpse->GetAdvLootRoll(item_id);
 			{
-				AdvLoot::Roll *grab_roll  = corpse->GetAdvLootRoll(item_id);
 				const bool     marked     = grab_roll && grab_roll->state == AdvLoot::StateFreeGrab;
 				const bool     raid_wide  = corpse->AdvLootSession().MayFreeGrab(this);
+				const bool     own_ask    = ask_known && corpse_key == static_cast<uint32_t>(corpse->GetID());
+				const bool     allowed    = corpse->AdvLootSession().MayAct(this);
 
-				if (!marked && !raid_wide) {
+				if ((!marked && !raid_wide && !own_ask) || !allowed) {
 					LogLootFilters(
-						"[{}] free grab item [{}] corpse [{}] - row [{}], raid rule [{}]",
+						"[{}] free grab item [{}] corpse [{}] - row [{}], ask group [{}], authority [{}]",
 						GetCleanName(),
 						item_id,
 						corpse->GetID(),
 						marked ? "marked FreeGrab" : "not marked",
+						own_ask ? "known" : "unknown",
 						AdvLoot::AuthorityName(corpse->AdvLootSession().AuthorityFor(this))
 					);
 
 					RefuseAdvLootAction("free grab", corpse, ask_key, item_id, corpse_key);
 					return;
 				}
+
+				// Re-establish the mark the client is already showing, so the row, the ask record and every other
+				// viewer agree about what this row is.
+				if (grab_roll && !marked) {
+					grab_roll->state    = AdvLoot::StateFreeGrab;
+					grab_roll->has_ask  = true;
+					grab_roll->ask.ask_key = ask_key;
+					grab_roll->ask.item_id = item_id;
+					grab_roll->ask.state   = AdvLoot::StateFreeGrab;
+
+					AdvLoot::ItemUpdate relay;
+					relay.ask_key     = ask_key;
+					relay.item_id     = item_id;
+					relay.state       = AdvLoot::StateFreeGrab;
+					relay.remaining_ms = 0;
+					relay.entries.push_back({static_cast<uint32_t>(corpse->GetID()), quantity});
+
+					SendAdvLootItemUpdate(relay);
+					corpse->AdvLootSession().SendAskState(*grab_roll, ask_key, AdvLoot::StateFreeGrab, 0);
+				}
 			}
 
-			uint16_t quantity = static_cast<uint16_t>(corpse->GetLootQuantityByItemID(item_id));
-			if (!quantity) {
-				quantity = 1;
+			if (corpse->AdvLootSession().SharedQty(item_id) == 0 && corpse->GetLootQuantityByItemID(item_id) == 0) {
+				LogLootFilters(
+					"[{}] free grab item [{}] corpse [{}] refused - nothing left in the shared pool",
+					GetCleanName(),
+					item_id,
+					corpse->GetID()
+				);
+				RefuseAdvLootAction("free grab", corpse, ask_key, item_id, corpse_key);
+				return;
 			}
 
-			// A free grab is a grab without a roll: the 0x0f moves one unit from the shared pool to the
-			// requester's personal pool on every client, so the server awards it first and then delivers it the
-			// same way the loot button does.
 			corpse->AdvLootSession().Award(this, item_id, quantity);
-			corpse->AdvLootSession().Deliver(this, item_id, quantity);
 
-			// subcmd 0x0F (FUN_1401509d0, reader FUN_140086c50) moves one unit from the shared pool (+0xC) to
-			// the personal pool (+0x14) of the viewer whose name the packet carries - the name is strncmped
-			// against the local player and gates FUN_1400a4eb0, so only that viewer adds it to their personal
-			// store. It prints nothing, which is why the 11323 line below is the server's, not the client's.
-			// The sender needs its own row moved too, so the group broadcast includes it.
-			EQApplicationPacket* out = AdvLoot::BuildSingleTransferPacket(item_id, GetCleanName());
+			// The key is the {ask_key, corpse_key} pair the client just handed us, echoed back unchanged:
+			// FUN_1401509d0 splits the u64 and uses the low half on manager+0x148[ask_key % 0x14] and the high
+			// half on the corpse hash. Passing the item id here (8500) meant the client looked for a filter-hash
+			// record keyed 8500, found none, and the 0x0F did nothing at all - which is why the grabber's own
+			// window never moved a unit either.
+			EQApplicationPacket* out = AdvLoot::BuildSingleTransferPacket(
+				ask_key,
+				corpse_key ? corpse_key : static_cast<uint32_t>(corpse->GetID()),
+				GetCleanName());
 			if (!out) {
 				return;
 			}
 
+			// The grabber needs its own row moved too. Group::QueueClients' third argument is ack_required,
+			// not ignore_sender - the real signature is
+			//   QueueClients(Mob *sender, const EQApplicationPacket *app, bool ack_required = true,
+			//              bool ignore_sender = true, float distance = 0)
+			// so a bare `false` sets ack_required = false and leaves ignore_sender at its default true. All 16
+			// transfers of the 2026-10-17 19:47 run went to Joka's client port 64521 and none to Gunadie's 54497:
+			// the player who pressed Free Grab never received the packet that moves the unit into his own Personal
+			// Loot pane, his row never changed, and he pressed it sixteen times. Send it to the construct and then
+			// to ourselves, which is the pattern Client::SendAdvLootItemUpdate already uses.
 			if (Raid* raid = GetRaid()) {
 				raid->QueueClients(this, out, true);
+				QueuePacket(out);
 			} else if (Group* group = GetGroup()) {
 				group->QueueClients(this, out, true);
+				QueuePacket(out);
 			} else {
 				QueuePacket(out);
 			}
@@ -11916,8 +11996,22 @@ void Client::Handle_OP_AdvLootManage(const EQApplicationPacket *app)
 				corpse->GetOwnerName()
 			);
 
-			// The grab went through AdvLootTransaction, which already settles the requester's own row (0x09 in
-			// solo, the shared-pool decrement in group/raid), so there is nothing extra to re-render here.
+			LogLootFilters(
+				"[{}] free grab item [{}] corpse [{}] ask_key [{}] - [{}] unit(s) shared -> personal",
+				GetCleanName(),
+				item_id,
+				corpse->GetID(),
+				ask_key,
+				quantity
+			);
+
+			// The 0x0F is the incremental move, and it depends on each client holding a filter-hash record keyed
+			// ask_key: FUN_1401509d0 walks manager[ask_key % 0x14 + 0x29] and returns outright when no record
+			// matches. A rebuild after it makes the shared -> personal move authoritative for everybody whoever
+			// clicked, because BuildGroupFor writes each viewer's own personal_qty and shared_qty into the rows -
+			// which is the rule the grab is supposed to implement: the unit lands in the grabber's Personal Loot
+			// tab and leaves the Shared Loot tab in every window.
+			corpse->AdvLootSession().RenderViewers();
 
 			(void)name; // the client always sends this empty
 			return;

@@ -2304,6 +2304,18 @@ void Corpse::AddLooter(Mob *who)
 	}
 }
 
+// Clear the kill-credit lockout. With m_allowed_looters empty, CanPlayerLoot returns true for everybody
+// (its `looters == 0` fallback), which is exactly "the corpse on the ground is unlocked and anyone may loot
+// it through the normal loot window". Advanced Loot calls this when the master looter leaves an item on the
+// corpse: the row drops from every viewer's Shared Loot tab at the same moment the AdvLoot window stops
+// gating the corpse.
+void Corpse::ClearKillCreditLooters()
+{
+	for (int &allowed_looter : m_allowed_looters) {
+		allowed_looter = 0;
+	}
+}
+
 // Loot rights follow the kill credit. The client's Advanced Loot window marks a row as locked with
 // "These item(s) are locked because you were not present when the enemy died" - the server-side
 // equivalent of that presence check is this list, so it is populated from the client that receives
@@ -2772,11 +2784,29 @@ uint16_t Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint16_t quantity
 		EQApplicationPacket app(OP_LootItem, sizeof(LootingItem_Struct));
 		memcpy(app.pBuffer, &lootitem, sizeof(LootingItem_Struct));
 
-		// allow_cursor_fallback = false: the AdvLoot button is "put it in my bags", and the cursor queue is the
-		// thing that desyncs against the Laurion client (the client renders one cursor item, the server queue
-		// holds many). Only the first slot respects the loot cooldown.
+		// allow_cursor_fallback is decided per attempt, and the condition is that the cursor is **empty**.
+		// It used to be a flat false because of the cursor queue: the server queues cursor items while the
+		// Laurion client renders a single cursor slot, so a second cursor item desyncs the window and every
+		// later loot then fails with the cursor error. A full inventory is the one case where a cursor push is
+		// both correct and harmless - the item would otherwise be stranded on the corpse for a player who has
+		// already won it (2026-10-17 21:07:46, three claims of Backpack answered `free_slot [-1]` and
+		// `the corpse refused the loot`) - and with the cursor empty the queue can only ever hold the one item
+		// the client is about to draw. auto_loot stays 1, so LootCorpseItem tries the bags first and reaches
+		// PutLootInInventory(slotCursor) only when FindFreeSlot had nothing to give.
+		const bool cursor_empty = c->GetInv().CursorSize() == 0;
+
+		if (cursor_empty) {
+			LogLootFilters(
+				"[{}] advloot cursor fallback armed for item [{}] corpse [{}] - no free inventory slot",
+				c->GetCleanName(),
+				item_id,
+				GetID()
+			);
+		}
+
+		// Only the first slot respects the loot cooldown.
 		m_being_looted_by_entity_id = c->GetID();
-		LootCorpseItem(c, &app, false, delivered == 0);
+		LootCorpseItem(c, &app, cursor_empty, delivered == 0);
 
 		// LootCorpseItem returns early on a lore conflict, a full bag, a quest block or a dynamic-zone lock
 		// without touching the loot list, so measure the corpse rather than trusting the call. Comparing the

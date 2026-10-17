@@ -1076,12 +1076,13 @@ namespace AdvLoot {
 	}
 
 	// subcmd 0x0F - reader FUN_140086c50: u64 key, string name.
-	EQApplicationPacket* BuildSingleTransferPacket(uint64_t key, const std::string& name)
+	EQApplicationPacket* BuildSingleTransferPacket(uint32_t ask_key, uint32_t corpse_key, const std::string& name)
 	{
 		Writer writer;
 
 		writer.write_u16(SubSingleTransfer);
-		writer.write_u64(key);
+		writer.write_u32(ask_key);
+		writer.write_u32(corpse_key);
 		writer.write_string(name, 64);
 
 		EQApplicationPacket* app = new EQApplicationPacket(OP_AdvLoot, writer.buffer.size());
