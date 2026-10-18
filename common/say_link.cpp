@@ -28,7 +28,17 @@
 // static bucket global
 std::vector<SaylinkRepository::Saylink> g_cached_saylinks = {};
 
-EQ::versions::ClientVersion EQ::SayLinkEngine::s_DefaultClientVersion = EQ::versions::ClientVersion::RoF2;
+// The link layout a link is written in when the recipient is not passed explicitly. Laurion is the
+// server's live client, so a link has to be emitted in Laurion's 91 char body (etag + 90 data chars,
+// which carries the per socket luck fields and the item luck field) or the client's link parser
+// (FUN_1402357e0, which rejects anything whose data block is not exactly 90 chars) never recognises it
+// as a link and the text renders as plain, unclickable characters.
+//
+// Every reader on the server side identifies a link by the width its data block actually fills
+// (EQ::saylink::DetectLinkDataWidth), not by this constant, and the Laurion patch layer converts links
+// in both directions by measured length, so links that arrive from a client or a quest in the older
+// 56 char canonical form still parse.
+EQ::versions::ClientVersion EQ::SayLinkEngine::s_DefaultClientVersion = EQ::versions::ClientVersion::Laurion;
 
 EQ::SayLinkEngine::SayLinkEngine()
 {

@@ -8240,7 +8240,14 @@ void Client::GarbleMessage(char *message, uint8 variance)
 	for (size_t i = 0; i < strlen(message); i++) {
 		// Client expects hex values inside of a text link body
 		if (message[i] == delimiter) {
-			if (!(delimiter_count & 1)) { i += EQ::constants::SAY_LINK_BODY_SIZE; }
+			if (!(delimiter_count & 1)) {
+				// The body is 91 chars in the Laurion layout and 56 in the canonical one, and the difference
+				// is the socket luck fields. Measure the body that is actually in the message: skipping the
+				// fixed canonical width into a Laurion link leaves 35 hex characters exposed to the garbler
+				// below, and A-F are alpha characters, so the link arrives at the client corrupted.
+				const size_t link_data = EQ::saylink::DetectLinkDataWidth(std::string(message + i + 1));
+				i += (link_data ? link_data + 1 : EQ::constants::SAY_LINK_BODY_SIZE);
+			}
 			++delimiter_count;
 			continue;
 		}

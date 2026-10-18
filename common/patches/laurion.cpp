@@ -5015,6 +5015,36 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	// Saylink click. CChatWindow__WndNotification (FUN_1403948d0) handles WndNotify 0x1b, the link-click
+	// event, parses the 90 character link data with FUN_1402357e0 into an 84 byte record, ORs the keyboard
+	// modifier flags into its +0x20 dword and sends it. Three other window handlers (FUN_140482580,
+	// FUN_14048a080, FUN_1404f3340) emit the same record, and 0x1e67 has no receive case anywhere, so the
+	// client expects no reply on it - it is the "the player clicked this link" packet.
+	//
+	// The record's first 36 bytes are ItemViewRequest_Struct field for field (item_id, augments[6],
+	// link_hash, then the click flags where EQEmu has unknown028), so rebuild that struct here and let
+	// Handle_OP_ItemLinkClick do the work. That handler is what makes the silent quest links run: a link
+	// built by Saylink::Silent carries SAYLINK_ITEM_ID with the saylink row id in augments[1] (augments[0]
+	// for non silent), the handler reads the stored phrase out of the saylink table and hands it to
+	// ChannelMessageReceived on the say channel, which dispatches it as a # command. That is the whole
+	// reason saylinks are the way to run server commands on this client: InterpretCmd (0x14026322c) throws
+	// away any chat line that starts with '#' before it reaches a send site.
+	DECODE(OP_SayLinkClick) // 0x1e67
+	{
+		DECODE_LENGTH_EXACT(structs::SayLinkClick_Struct);
+		SETUP_DIRECT_DECODE(ItemViewRequest_Struct, structs::SayLinkClick_Struct);
+		MEMSET_IN(ItemViewRequest_Struct);
+
+		emu->item_id    = eq->item_id;
+		emu->link_hash  = eq->hash;
+		emu->unknown028 = eq->click_flags;
+		for (int i = 0; i < 6; ++i) {
+			emu->augments[i] = eq->augments[i];
+		}
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_Consume) // 0x5ef7
 	{
 		// Laurion widened the packet to 20 bytes: slot, item global index, uint16, auto_consumed and a

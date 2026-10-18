@@ -694,4 +694,5 @@ N(OP_ServerList),
 N(OP_CharacterSelectRequest),
 N(OP_ItemLuck),
 N(OP_ItemLinkInspect),   // Laurion alt+left-click inspect request, wire opcode 0x0497 (FUN_14040fa60)
+N(OP_SayLinkClick),      // Laurion saylink click, wire opcode 0x1e67 (CChatWindow__WndNotification, WndNotify 0x1b)
 // mail and chat opcodes located in ../mail_oplist.h

@@ -1434,6 +1434,31 @@ namespace Laurion {
 		};
 		static_assert(sizeof(ItemLinkInspect_Struct) == 80, "bad size");
 
+		// Saylink click, wire opcode 0x1e67. CChatWindow__WndNotification (FUN_1403948d0) handles WndNotify
+		// 0x1b - the link-click event, the same id the old "<a WndNotify=\"27,...\">" task links used. It parses
+		// the 90 character link data with FUN_1402357e0 into this record, then ORs the keyboard modifier flags
+		// from CXWndManager__GetKeyboardFlags into the +0x20 dword (4 always, 8 shift+ctrl, 0x10 alt, 2 plain)
+		// and sends 84 bytes. Field offsets are the write sites in FUN_1402357e0: item id at +0, the six
+		// augments at +4, hash at +0x1C, is_evolving at +0x24, lore group +0x28, evolve level +0x2C, ornament
+		// +0x30, luck +0x34 and the six socket luck values at +0x38.
+		struct SayLinkClick_Struct { // OP_0x1e67, 84 byte payload (FUN_1403948d0 notify 0x1b)
+			/*00*/	uint32		item_id;
+			/*04*/	uint32		augments[6];
+			/*1C*/	uint32		hash;
+			/*20*/	uint32		click_flags;
+			/*24*/	uint8		is_evolving;
+			/*25*/	uint8		unknown025[3];
+			/*28*/	uint32		evolve_group;
+			/*2C*/	uint32		evolve_level;
+			/*30*/	uint32		ornament_icon;
+			/*34*/	uint32		luck;
+			/*38*/	uint32		socket_luck[6];
+			/*50*/	uint32		unknown050;   // the dword at [RBP-0x10]: zeroed by the caller, written by no
+												// parser, sent anyway. Reserved field, always 0 on this path.
+			/*54*/
+		};
+		static_assert(sizeof(SayLinkClick_Struct) == 84, "bad size");
+
 		// CItemDisplayWnd::SetItem flags, MacroQuestLS src/eqlib/UI.h L4484 ItemDisplayFlags.
 		enum ItemDisplayFlags : uint32_t {
 			ItemDisplayPreventLink      = 0x00000001,

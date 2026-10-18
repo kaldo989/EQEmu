@@ -120,6 +120,9 @@ D(OP_LootItem)
 D(OP_ItemLinkClick)
 D(OP_ItemLinkInspect)
 D(OP_ItemLinkResponse)
+// Chat saylink click (0x1e67). Decode only: the client has no receive case for this opcode, so nothing
+// is ever encoded on it.
+D(OP_SayLinkClick)
 D(OP_MemorizeSpell)
 D(OP_ItemVerifyRequest)
 D(OP_BookButton)

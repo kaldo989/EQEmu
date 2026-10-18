@@ -301,6 +301,12 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_InspectRequest] = &Client::Handle_OP_InspectRequest;
 	ConnectedOpcodes[OP_InstillDoubt] = &Client::Handle_OP_InstillDoubt;
 	ConnectedOpcodes[OP_ItemLinkClick] = &Client::Handle_OP_ItemLinkClick;
+	// 0x1e67, the client's "the player clicked this saylink" packet. laurion.cpp rebuilds its 84 byte
+	// record into ItemViewRequest_Struct, so the same handler runs. For the silent links EQEmu generates
+	// (Saylink::Silent("#si 12345", "X")) the item id is SAYLINK_ITEM_ID, the handler reads the stored
+	// phrase out of the saylink table and hands it to ChannelMessageReceived on the say channel, which
+	// dispatches it as a # command and sends no reply - correct, because 0x1e67 has no receive case.
+	ConnectedOpcodes[OP_SayLinkClick] = &Client::Handle_OP_ItemLinkClick;
 	ConnectedOpcodes[OP_ItemLinkInspect] = &Client::Handle_OP_ItemLinkInspect;
 	ConnectedOpcodes[OP_ItemLinkResponse] = &Client::Handle_OP_ItemLinkResponse;
 	ConnectedOpcodes[OP_ItemName] = &Client::Handle_OP_ItemName;
