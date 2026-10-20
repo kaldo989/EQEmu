@@ -27,7 +27,11 @@
 extern WorldServer worldserver;
 
 void Client::SendGuildMOTD(bool GetGuildMOTDReply) {
-	auto outapp = new EQApplicationPacket(OP_GuildMOTD, sizeof(GuildMOTD_Struct));
+	const bool laurion_layout = ClientVersion() == EQ::versions::ClientVersion::Laurion;
+
+	auto outapp = new EQApplicationPacket(OP_GuildMOTD, laurion_layout
+		? sizeof(Laurion::structs::GuildMOTD_Struct)
+		: sizeof(GuildMOTD_Struct));
 
 	// When the Client gets an OP_GuildMOTD, it compares the text to the version it has previously stored.
 	// If the text in the OP_GuildMOTD packet is the same, it does nothing. If not the same, it displays
@@ -38,23 +42,46 @@ void Client::SendGuildMOTD(bool GetGuildMOTDReply) {
 	// So OP_GuildMOTD should be sent on zone entry and when an Officer changes the MOTD, and OP_GetGuildMOTDReply
 	// should be sent when the client issues the /getguildmotd command.
 	//
+	// Laurion collapses both onto one opcode (0x5a8d): ZonePacket__dispatchRecv has a single case for the
+	// record and CGuild::SetGuildMotd (FUN_1400c4770) does the compare-and-store itself, so the opcode
+	// choice below only matters to the older clients.
+	//
 	if(GetGuildMOTDReply)
 		outapp->SetOpcode(OP_GetGuildMOTDReply);
 
-	GuildMOTD_Struct *motd = (GuildMOTD_Struct *) outapp->pBuffer;
-	motd->unknown0 = 0;
-	strn0cpy(motd->name, m_pp.name, 64);
+	char motd_text[512]   = {0};
+	char motd_author[64]  = {0};
 
 	if(IsInAGuild()) {
-		if(!guild_mgr.GetGuildMOTD(GuildID(), motd->motd, motd->setby_name)) {
-			motd->setby_name[0] = '\0';
-			strcpy(motd->motd, "ERROR GETTING MOTD!");
+		if(!guild_mgr.GetGuildMOTD(GuildID(), motd_text, motd_author)) {
+			motd_author[0] = '\0';
+			strcpy(motd_text, "ERROR GETTING MOTD!");
 		}
 	} else {
 		//we have to send them an empty MOTD anywyas.
-		motd->motd[0] = '\0';	//just to be sure
-		motd->setby_name[0] = '\0';	//just to be sure
+		motd_text[0] = '\0';	//just to be sure
+		motd_author[0] = '\0';	//just to be sure
 
+	}
+
+	if (laurion_layout) {
+		// 656 byte record: guid at +0, recipient name at +8, author at +0x48, text at +0x8C.
+		// FUN_1400c4770 writes CGuild + 0x79 (GuildMOTD) from +0x8C and CGuild + 0x280 (MOTD_Author)
+		// from +0x48, then refreshes MOTDViewer / MOTDAuthorLabel through FUN_1403ccde0.
+		auto gu = (Laurion::structs::GuildMOTD_Struct*) outapp->pBuffer;
+		gu->GuildGuid = (uint64) GuildIDForWire();
+		strn0cpy(gu->Name, m_pp.name, sizeof(gu->Name));
+		strn0cpy(gu->SetbyName, motd_author, sizeof(gu->SetbyName));
+		gu->Gap088 = 0;
+		strn0cpy(gu->Motd, motd_text, sizeof(gu->Motd));
+		gu->Gap28C = 0;
+	} else {
+		GuildMOTD_Struct *motd = (GuildMOTD_Struct *) outapp->pBuffer;
+		motd->unknown0 = 0;
+		strn0cpy(motd->name, m_pp.name, 64);
+		strn0cpy(motd->setby_name, motd_author, sizeof(motd->setby_name));
+		motd->unknown132 = 0;
+		strn0cpy(motd->motd, motd_text, sizeof(motd->motd));
 	}
 
 	LogGuilds("Sending OP_GuildMOTD of length [{}]", outapp->size);

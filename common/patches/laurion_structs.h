@@ -1822,6 +1822,43 @@ namespace Laurion {
 			/*00C*/
 		};
 
+		/* 0x5a8d OP_GuildMOTD / OP_GetGuildMOTDReply - payload 656 (0x290), wire 658.
+		   ZonePacket__dispatchRecv case 0x5a8d: CMP [RSP+0x74], 0x5a8d at 0x1401e462c ->
+		   JZ 0x1401e65e5 -> CALL FUN_1400c4770(&__Guilds, record). FUN_1400c4770 is
+		   CGuild::SetGuildMotd (MQ UI.h:4071, takes guildmotdSet*):
+		     record + 0x48 -> CGuild + 0x280 MOTD_Author (SoeUtil::String, FUN_140082610)
+		     record + 0x8C -> CGuild + 0x79  GuildMOTD (char[512], byte copy until NUL)
+		     FUN_1403ccde0(guild window, record+0x8C, record+0x48) -> MOTDViewer (obj+0x318,
+		     CStmlWnd__SetSTMLText), MOTDAuthorLabel (obj+0x300), MOTDInput (obj+0x308) cleared
+		   and chat string 0x1d4 printed with the author, but only when the incoming text differs
+		   from the stored GuildMOTD and is not empty. That single compare is why Laurion needs one
+		   opcode where EQEmu has two: OP_GuildMOTD (unsolicited push) and OP_GetGuildMOTDReply (the
+		   /getguildmotd answer) are the same record and the client dedupes it itself.
+
+		   C->S side, same 656 byte shape:
+		     /guildmotd <text> -> FUN_140218e40 (command table entry 0x140cfbf10) sends 0x2626 with
+		       guid = pinstLocalPlayer+0x208 at +0, player name (spawn name, PlayerClient+0xb4) at +8,
+		       +0x48 left zero, the typed text at +0x8C; gated on permission 0x12
+		       (GUILD_ACTION_CHANGE_THE_MOTD) and refuses with string 0x1522 when it is not granted.
+		     /getguildmotd   -> FUN_1402190e0 (command table entry 0x140cfbf30) sends 0x291b with
+		       guid + name and the rest zero.
+		   EQEmu's GuildMOTD_Struct is 648 bytes (u32 at +0, name at +4, motd at +0x88), so both the
+		   size and every offset differ - the decoder normalises down. */
+		struct GuildMOTD_Struct {
+			/*000*/	uint64	GuildGuid;          /* EqGuid: u32 guild_id + u32 0 */
+			/*008*/	char	Name[64];           /* C->S: the local player's name */
+			/*048*/	char	SetbyName[64];      /* S->C: MOTD author; zero on the way up */
+			/*088*/	uint32	Gap088;
+			/*08C*/	char	Motd[512];
+			/*28C*/	uint32	Gap28C;
+			/*290*/
+		};
+
+		/* Laurion C->S MOTD opcodes (both carry the 656 byte record above) */
+		static const uint32 GuildMOTDSetOpcode  = 0x2626; /* /guildmotd  -> FUN_140218e40 */
+		static const uint32 GuildMOTDGetOpcode  = 0x291b; /* /getguildmotd -> FUN_1402190e0 */
+		static const uint32 GuildMOTDSendOpcode = 0x5a8d; /* S->C -> FUN_1400c4770 */
+
 		/* 0x4a13 OP_TributeItem - payload 40 */
 		struct TributeItem_Struct {
 			/*000*/	uint64	ItemField0;

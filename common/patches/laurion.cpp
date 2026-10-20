@@ -5375,6 +5375,39 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_SetGuildMOTD)
+	{
+		// /guildmotd <text> (FUN_140218e40, command table entry 0x140cfbf10) sends the 656 byte
+		// record documented in Laurion::structs::GuildMOTD_Struct. EQEmu's GuildMOTD_Struct is 648
+		// bytes with a u32 at +0, the name at +4 and the text at +0x88, so the size and every offset
+		// differ. The client leaves the author field zero - Handle_OP_SetGuildMOTD records GetName().
+		DECODE_LENGTH_EXACT(structs::GuildMOTD_Struct);
+		SETUP_DIRECT_DECODE(GuildMOTD_Struct, structs::GuildMOTD_Struct);
+
+		emu->unknown0   = 0;
+		strn0cpy(emu->name, eq->Name, sizeof(emu->name));
+		strn0cpy(emu->setby_name, eq->SetbyName, sizeof(emu->setby_name));
+		emu->unknown132 = 0;
+		strn0cpy(emu->motd, eq->Motd, sizeof(emu->motd));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_GetGuildMOTD)
+	{
+		// /getguildmotd (FUN_1402190e0, command table entry 0x140cfbf30): guid + name, everything
+		// else zero. Normalised for the same reason as above; Handle_OP_GetGuildMOTD only uses the
+		// packet as a trigger.
+		DECODE_LENGTH_EXACT(structs::GuildMOTD_Struct);
+		SETUP_DIRECT_DECODE(GuildMOTD_Struct, structs::GuildMOTD_Struct);
+
+		emu->unknown0   = 0;
+		strn0cpy(emu->name, eq->Name, sizeof(emu->name));
+		emu->unknown132 = 0;
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_GroupFollow)
 	{
 		// The group invite accept, sent by FUN_140260420 when the invitee clicks FOLLOW in the group
