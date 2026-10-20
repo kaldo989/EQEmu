@@ -4602,6 +4602,35 @@ Mob* Mob::GetOwner() {
 	return 0;
 }
 
+// The client whose windows display this mob's buffs: the owner when it is a client, or the client behind
+// a bot / mercenary owner. A bot's pet has the Bot as its owner and a mercenary's pet has the Merc as its
+// owner - never a Client - so the common `IsPet() && GetOwner()->IsClient()` gate silently dropped both.
+// Bot::GetOwner() returns GetBotOwner() and Merc::GetOwner() returns the owning client, so one extra hop
+// through the virtual resolves both chains. Returns nullptr for unowned mobs, NPC-owned pets, swarm pets
+// with an NPC owner and pets of a bot whose owner is offline.
+Client *Mob::GetOwnerClient()
+{
+	Mob *owner = GetOwner();
+
+	if (!owner) {
+		return nullptr;
+	}
+
+	if (owner->IsClient()) {
+		return owner->CastToClient();
+	}
+
+	if (owner->IsBot() || owner->IsMerc()) {
+		Mob *controlling = owner->GetOwner();
+
+		if (controlling && controlling->IsClient()) {
+			return controlling->CastToClient();
+		}
+	}
+
+	return nullptr;
+}
+
 Mob* Mob::GetUltimateOwner()
 {
 	Mob* m = GetOwner();
@@ -5586,8 +5615,28 @@ void Mob::SetTarget(Mob *mob)
 
 	parse->EventMob(EVENT_TARGET_CHANGE, this, mob, [&]() { return ""; }, 0, &args);
 
-	if (IsPet() && GetOwner() && GetOwner()->IsClient()) {
-		GetOwner()->CastToClient()->UpdateXTargetType(MyPetTarget, mob);
+	if (IsPet()) {
+		Mob *pet_owner = GetOwner();
+		Client *my_pet_target_owner = nullptr;
+
+		if (pet_owner && pet_owner->IsClient()) {
+			my_pet_target_owner = pet_owner->CastToClient();
+		}
+		else if (pet_owner && (pet_owner->IsBot() || pet_owner->IsMerc())) {
+			// A bot's or a mercenary's pet now feeds the MyPetTarget slot too, but there is exactly one
+			// MyPetTarget slot per client and it is what PetInfoWindow's pet-target gauge reads, so it is
+			// only allowed to touch it when that client has no pet of its own. Without this the two pets
+			// fight over the slot and the player's own pet's target gets stolen by the bot's pet.
+			Client *controlling = pet_owner->GetOwnerClient();
+
+			if (controlling && !controlling->GetPet()) {
+				my_pet_target_owner = controlling;
+			}
+		}
+
+		if (my_pet_target_owner) {
+			my_pet_target_owner->UpdateXTargetType(MyPetTarget, mob);
+		}
 	}
 
 	if (IsClient() && GetTarget()) {

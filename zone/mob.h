@@ -1078,6 +1078,7 @@ public:
 	void SetPet(Mob* newpet);
 	virtual Mob* GetOwner();
 	virtual Mob* GetOwnerOrSelf();
+	Client *GetOwnerClient();
 	Mob* GetUltimateOwner();
 	void SetPetID(uint16 NewPetID);
 	inline uint16 GetPetID() const { return petid; }

@@ -3756,10 +3756,16 @@ int Mob::AddBuff(Mob *caster, uint16 spell_id, int duration, int32 level_overrid
 	if (IsPet() && GetOwner() && GetOwner()->IsClient())
 		SendPetBuffsToClient();
 
+	// Deliberately the strict form above: the Pet Info window is bound to the client's own
+	// PlayerClient::PetID and has a single 400 slot array, so only a directly owned pet may feed it.
+	// Bot and mercenary pets are served through the target buff window below instead.
+	//
+	// GetOwnerClient() resolves the client behind a bot's pet (owner is the Bot) and a mercenary's pet
+	// (owner is the Merc), which the old `IsPet() && GetOwner()->IsClient()` branch silently dropped.
+	Client *owner_client = GetOwnerClient();
+
 	if((IsClient() && !CastToClient()->GetPVP()) ||
-		(IsPet() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()) ||
-		(IsBot() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()) ||
-		(IsMerc() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()))
+		((IsPet() || IsBot() || IsMerc()) && owner_client && !owner_client->GetPVP()))
 	{
 		EQApplicationPacket *outapp = MakeBuffsPacket();
 

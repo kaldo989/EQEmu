@@ -4685,10 +4685,13 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 	if(IsPet() && GetOwner() && GetOwner()->IsClient()) {
 		SendPetBuffsToClient();
 	}
+	// See the matching comment in Mob::AddBuff: the pet-window call above stays strict (only a directly
+	// owned pet may feed PetInfoWindow), while GetOwnerClient() widens the target-buff call so a bot's
+	// pet and a mercenary's pet get their removals pushed too.
+	Client *owner_client = GetOwnerClient();
+
 	if((IsClient() && !CastToClient()->GetPVP()) ||
-		(IsPet() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()) ||
-		(IsBot() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()) ||
-		(IsMerc() && GetOwner() && GetOwner()->IsClient() && !GetOwner()->CastToClient()->GetPVP()))
+		((IsPet() || IsBot() || IsMerc()) && owner_client && !owner_client->GetPVP()))
 	{
 		EQApplicationPacket *outapp = MakeBuffsPacket();
 

@@ -17354,10 +17354,15 @@ void Client::Handle_OP_TargetMouse(const EQApplicationPacket *app)
 						inspect_buffs = group->GetLeadershipAA(groupAAInspectBuffs);
 				}
 			}
-			if (GetGM() || RuleB(Spells, AlwaysSendTargetsBuffs) || nt == this || inspect_buffs || (nt->IsClient() && !nt->CastToClient()->GetPVP()) ||
-				(nt->IsPet() && nt->GetOwner() && nt->GetOwner()->IsClient() && !nt->GetOwner()->CastToClient()->GetPVP()) ||
-				(nt->IsBot() && nt->GetOwner() && nt->GetOwner()->IsClient() && !nt->GetOwner()->CastToClient()->GetPVP()) || // TODO: bot pets
-				(nt->IsMerc() && nt->GetOwner() && nt->GetOwner()->IsClient() && !nt->GetOwner()->CastToClient()->GetPVP()))
+			// nt->GetOwnerClient() walks pet -> Bot -> bot owner and pet -> Merc -> mercenary owner, so a
+			// bot's pet and a mercenary's pet now pass this gate. The old branches required the owner itself
+			// to be a Client, which silently dropped both - that is what the upstream `// TODO: bot pets`
+			// marker on the IsBot line was about.
+			Client *nt_owner_client = nt->GetOwnerClient();
+
+			if (GetGM() || RuleB(Spells, AlwaysSendTargetsBuffs) || nt == this || inspect_buffs ||
+				(nt->IsClient() && !nt->CastToClient()->GetPVP()) ||
+				((nt->IsPet() || nt->IsBot() || nt->IsMerc()) && nt_owner_client && !nt_owner_client->GetPVP()))
 			{
 				nt->SendBuffsToClient(this);
 			}
