@@ -4418,6 +4418,20 @@ void Client::Handle_OP_BuffRemoveRequest(const EQApplicationPacket *app)
 	if (brrs->SlotID >= (uint32)m->GetMaxTotalSlots())
 		return;
 
+	// A buff you cast on your own pet or bot counts as "cast by us" even when that mob is not your current
+	// target. The pet buff window sends 0x4507 on a plain left click for *any* icon (CPetInfoWnd::WndNotification
+	// 0x140480336 -> PcZoneClient::RemovePetEffect 0x1402d4ff0, payload {slot, PlayerClient::PetID}), and the
+	// client's own right-click menu already restricts removal to spells with SpellType >= 1 and NoRemove == 0.
+	// Before this, b_casted_by_us was only ever set by the target-window branch above, which requires you to be
+	// targeting the mob - so a detrimental spell you cast on your own pet could not be clicked off, silently.
+	// Caster identity comes from the buff record (Buffs_Struct::casterid), not the caster name, so renames
+	// cannot break it. `m != this` is deliberate: a buff on your own body keeps the stricter beneficial-only
+	// rule below. See docs/petwnd.md section 8.8.
+	if (!b_casted_by_us && m != this && m->GetOwnerClient() == this &&
+		m->GetBuffs()[brrs->SlotID].casterid == GetID()) {
+		b_casted_by_us = true;
+	}
+
 	uint16 SpellID = m->GetSpellIDFromSlot(brrs->SlotID);
 
 	if (SpellID && (GetGM() || (b_casted_by_us && !spells[SpellID].no_remove) ||
