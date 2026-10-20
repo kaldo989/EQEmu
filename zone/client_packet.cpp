@@ -371,6 +371,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_ShopSendParcel] = &Client::Handle_OP_ShopSendParcel;
 	ConnectedOpcodes[OP_ShopRetrieveParcel] = &Client::Handle_OP_ShopRetrieveParcel;
 	ConnectedOpcodes[OP_PDeletePetition] = &Client::Handle_OP_PDeletePetition;
+	ConnectedOpcodes[OP_PetBuffWindow] = &Client::Handle_OP_PetBuffWindow;
 	ConnectedOpcodes[OP_PetCommands] = &Client::Handle_OP_PetCommands;
 	ConnectedOpcodes[OP_Petition] = &Client::Handle_OP_Petition;
 	ConnectedOpcodes[OP_PetitionBug] = &Client::Handle_OP_PetitionBug;
@@ -13086,6 +13087,23 @@ void Client::Handle_OP_PDeletePetition(const EQApplicationPacket *app)
 	else
 		MessageString(Chat::White, PETITION_NO_DELETE);
 	return;
+}
+
+// Laurion client -> server: CDisplay__refreshUIAndSendStatus (send sites 0x1401908bb / 0x140190926) pings
+// 0x5ff2 with a 4-byte __EQGetTime() payload every time the UI is loaded or reloaded - it is the client's
+// "re-feed my pet buff window" request. The client keeps no persistent copy of the pet buff list, so without
+// a reply PetInfoWindow's PetBuffWindow stays empty until the next buff lands on the pet. Answer with the
+// current list. See docs/petwnd.md.
+void Client::Handle_OP_PetBuffWindow(const EQApplicationPacket *app)
+{
+	if (app->size != 4) {
+		LogDebug("OP_PetBuffWindow request with unexpected size [{}], expected 4", app->size);
+	}
+
+	Mob *pet = GetPet();
+	if (pet) {
+		pet->SendPetBuffsToClient();
+	}
 }
 
 

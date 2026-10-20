@@ -32,6 +32,9 @@
 
 static const uint32 BUFF_COUNT = 42;
 static const uint32 PET_BUFF_COUNT = 30;
+// Laurion's CPetInfoWnd always allocates 400 pet buff records (0x78 bytes each, CPetInfoWnd+0x378/+0x380)
+// and its packet parser gates on `slot < 400`, independent of the UI skin. See docs/petwnd.md.
+static const uint32 PET_BUFF_WINDOW_SLOTS = 400;
 static const uint32 MAX_MERC = 100;
 static const uint32 MAX_MERC_GRADES = 10;
 static const uint32 MAX_MERC_STANCES = 10;

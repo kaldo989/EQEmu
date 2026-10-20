@@ -285,6 +285,7 @@
 	void Handle_OP_OpenInventory(const EQApplicationPacket *app);
 	void Handle_OP_OpenTributeMaster(const EQApplicationPacket *app);
 	void Handle_OP_PDeletePetition(const EQApplicationPacket *app);
+	void Handle_OP_PetBuffWindow(const EQApplicationPacket *app);
 	void Handle_OP_PetCommands(const EQApplicationPacket *app);
 	void Handle_OP_Petition(const EQApplicationPacket *app);
 	void Handle_OP_PetitionBug(const EQApplicationPacket *app);

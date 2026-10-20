@@ -6630,8 +6630,61 @@ void Mob::SendPetBuffsToClient()
 {
 	// Don't really need this check, as it should be checked before this method is called, but it doesn't hurt
 	// too much to check again.
+	//
+	// This guard is intentionally the strict `owner is a Client` form and is NOT widened to
+	// GetOwnerClient(). PetInfoWindow is bound to the local PC's own PlayerClient::PetID
+	// (MQ PlayerClient.h:604, +0x578) and has one shared 400 slot buff array that `all_buffs = 1` clears
+	// wholesale, so letting a bot's or a mercenary's pet feed it would overwrite the player's own pet.
+	// Those pets are served through OP_TargetBuffs (0x5765) instead - see Mob::AddBuff and
+	// BuffFadeBySlot. See docs/petwnd.md section 7.
 	if(!(GetOwner() && GetOwner()->IsClient()))
 		return;
+
+	Client *owner = GetOwner()->CastToClient();
+
+	// Laurion does not have the old fixed 30 slot PetBuff_Struct. Its pet buff window is fed from the same
+	// BuffIcon packet family as the self buff window (OP_BuffCreate 0x27a1) and the target buff window
+	// (OP_TargetBuffs 0x5765): opcode 0x5ff2, parsed by CPetInfoWnd::RefreshPetBuffs (0x14047ec10).
+	// See docs/petwnd.md and ENCODE(OP_PetBuffWindow) in common/patches/laurion.cpp.
+	if (owner->ClientVersionBit() & EQ::versions::bitLaurion) {
+		int MaxSlots = GetMaxTotalSlots();
+
+		if(MaxSlots > PET_BUFF_WINDOW_SLOTS)
+			MaxSlots = PET_BUFF_WINDOW_SLOTS;
+
+		uint32 PetBuffCount = 0;
+		for(int buffslot = 0; buffslot < MaxSlots; buffslot++) {
+			if (IsValidSpell(buffs[buffslot].spellid))
+				PetBuffCount++;
+		}
+
+		auto outapp = new EQApplicationPacket(OP_PetBuffWindow, sizeof(BuffIcon_Struct) + sizeof(BuffIconEntry_Struct) * PetBuffCount);
+		BuffIcon_Struct *pbs = (BuffIcon_Struct *)outapp->pBuffer;
+		pbs->entity_id = GetID();
+		pbs->count = PetBuffCount;
+		// all_buffs = 1 makes the client clear every slot the packet does not mention, so this is a full
+		// authoritative refresh of the window. 0 would be an incremental update.
+		pbs->all_buffs = 1;
+		pbs->tic_timer = tic_timer.GetRemainingTime();
+		pbs->type = 0; // trailing byte #1, skipped by the pet window
+		pbs->name_lengths = 0; // the encoder recomputes this from the caster strings
+
+		uint32 index = 0;
+		for(int buffslot = 0; buffslot < MaxSlots; buffslot++) {
+			if (!IsValidSpell(buffs[buffslot].spellid))
+				continue;
+			pbs->entries[index].buff_slot = buffslot;
+			pbs->entries[index].spell_id = buffs[buffslot].spellid;
+			pbs->entries[index].tics_remaining = buffs[buffslot].ticsremaining;
+			pbs->entries[index].num_hits = buffs[buffslot].hit_number;
+			strn0cpy(pbs->entries[index].caster, buffs[buffslot].caster_name, 64);
+			++index;
+		}
+
+		owner->QueuePacket(outapp);
+		safe_delete(outapp);
+		return;
+	}
 
 	int PetBuffCount = 0;
 
@@ -6655,7 +6708,7 @@ void Mob::SendPetBuffsToClient()
 	}
 
 	pbs->buffcount=PetBuffCount;
-	GetOwner()->CastToClient()->QueuePacket(outapp);
+	owner->QueuePacket(outapp);
 	safe_delete(outapp);
 }
 

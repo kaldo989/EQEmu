@@ -415,6 +415,52 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	// PetInfoWindow's PetBuffWindow feed. Laurion client: recv handler 0x1401d870a ->
+	// CPetInfoWnd::RefreshPetBuffs (0x14047ec10). Same BuffIcon layout as OP_TargetBuffs above;
+	// see docs/petwnd.md. Sent by Mob::SendPetBuffsToClient().
+	ENCODE(OP_PetBuffWindow)
+	{
+		SETUP_VAR_ENCODE(BuffIcon_Struct);
+
+		// Recompute from the caster strings instead of trusting emu->name_lengths.
+		uint32 name_lengths = 0;
+		for (int i = 0; i < emu->count; ++i)
+			name_lengths += static_cast<uint32>(strlen(emu->entries[i].caster)) + 1; // + nullterm
+
+		uint32 sz = 13 + (16 * emu->count) + name_lengths;
+		__packet->size = sz;
+		__packet->pBuffer = new unsigned char[sz];
+		memset(__packet->pBuffer, 0, sz);
+
+		__packet->WriteUInt32(emu->entity_id);		// REQUIRED here: the dispatcher pre-reads this spawn id,
+							// resolves it through the client spawn manager and drops the whole packet
+							// (no window call at all) when the spawn is unknown. The window parser then
+							// rewinds the cursor to 0 and skips these same 4 bytes.
+		__packet->WriteUInt32(emu->tic_timer);		// sub-tick remainder in ms, added to every duration
+		__packet->WriteUInt8(emu->all_buffs);		// 1 = full list (client clears every slot the packet omits), 0 = incremental
+		__packet->WriteUInt16(emu->count);
+
+		for (int i = 0; i < emu->count; ++i)
+		{
+			// No ServerToLaurionBuffSlot() remap: CPetInfoWnd indexes its own 400 entry array
+			// (records of 0x78 bytes at CPetInfoWnd+0x378) straight from the wire slot, gate is slot < 400.
+			__packet->WriteUInt32(emu->entries[i].buff_slot);
+			__packet->WriteUInt32(emu->entries[i].spell_id);
+			__packet->WriteUInt32(emu->entries[i].tics_remaining);	// <0 = permanent, 0 = expires after tic_timer ms
+			__packet->WriteUInt32(emu->entries[i].num_hits);		// parsed, ignored by the pet window
+			__packet->WriteString(emu->entries[i].caster);
+		}
+
+		// Trailing byte #1 is skipped by RefreshPetBuffs (CPetInfoWnd has no CTargetWnd::Type equivalent).
+		// Trailing byte #2 -> the local PC's pet spawn + 0x215, the same 0/1 buffed/hit flag the target
+		// window writes. Note the client reads the pet from pinstLocalPC+0x2850 -> +0x578, NOT from
+		// entity_id, so this byte always lands on the player's own pet.
+		__packet->WriteUInt8(0);
+		__packet->WriteUInt8(0);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_CancelTrade)
 	{
 		ENCODE_LENGTH_EXACT(CancelTrade_Struct);
