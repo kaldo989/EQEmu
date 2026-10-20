@@ -27,6 +27,9 @@
 #include "common/repositories/aa_rank_prereqs_repository.h"
 #include "common/repositories/aa_ranks_repository.h"
 #include "common/repositories/character_alternate_abilities_repository.h"
+#include "common/repositories/merc_aa_ability_repository.h"
+#include "common/repositories/merc_aa_currency_repository.h"
+#include "common/repositories/player_merc_aa_repository.h"
 #include "common/spdat.h"
 #include "common/strings.h"
 #include "zone/bot.h"
@@ -1455,6 +1458,81 @@ bool ZoneDatabase::LoadAlternateAdvancement(Client *c) {
 
 			slot_id++;
 		}
+	}
+
+	return true;
+}
+
+// Mercenary Alternate Advancement (Laurion).
+//
+// Loads the character's granted mercenary AA abilities and the mercenary AA point pool.
+// Grants are validated against merc_aa_ability: an id the server does not define is skipped
+// rather than pushed, because the client would file it in its granted container (mgr+0x6d0) with
+// no matching definition record and no way to report it back to us.
+//
+// An empty player_merc_aa result is normal -- it just means the character has never bought a
+// mercenary AA rank -- so it is not an error and the caller still sends both packets.
+bool ZoneDatabase::LoadMercenaryAA(Client *c)
+{
+	c->ClearMercenaryAARanks();
+	c->SetMercenaryAACurrency(MercAaCurrencyRepository::NewEntity());
+
+	const auto &owned = PlayerMercAaRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			c->CharacterID()
+		)
+	);
+
+	if (!owned.empty()) {
+		const auto &abilities = MercAaAbilityRepository::GetWhere(database, "`enabled` = 1");
+
+		std::unordered_map<uint32_t, const MercAaAbilityRepository::MercAaAbility *> defined;
+		defined.reserve(abilities.size());
+		for (const auto &a : abilities) {
+			defined[a.ability_id] = &a;
+		}
+
+		for (const auto &e : owned) {
+			auto it = defined.find(e.ability_id);
+			if (it == defined.end()) {
+				LogError(
+					"Mercenary AA: character {} owns ability_id {}, which is not a defined "
+					"mercenary AA ability; skipping. [player_merc_aa]",
+					c->CharacterID(), e.ability_id
+				);
+				continue;
+			}
+
+			// The client stores this as an opaque u32, but our own rank lookups
+			// (CAltAbilityData__GetMercCurrentRank equivalents) need it to be a real rank, so
+			// clamp rather than drop -- dropping would silently un-grant the ability.
+			uint32 value = static_cast<uint32>(e.aa_value);
+			const uint32 max_rank = static_cast<uint32>(it->second->max_rank);
+			if (value > max_rank) {
+				LogError(
+					"Mercenary AA: character {} has value {} for ability_id {} but its max_rank "
+					"is {}; clamping. [player_merc_aa]",
+					c->CharacterID(), value, e.ability_id, max_rank
+				);
+				value = max_rank;
+			}
+
+			c->SetMercenaryAARank(e.ability_id, value);
+		}
+	}
+
+	const auto &currency = MercAaCurrencyRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			c->CharacterID()
+		)
+	);
+
+	if (!currency.empty()) {
+		c->SetMercenaryAACurrency(currency.front());
 	}
 
 	return true;

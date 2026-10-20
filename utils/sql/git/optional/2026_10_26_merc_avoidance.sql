@@ -1,0 +1,57 @@
+-- 2026_10_26_merc_avoidance.sql
+--
+-- Adds merc_stats.Avoidance, the mercenary equivalent of npc_types.avoidance.
+--
+-- Why the column exists
+-- ---------------------
+-- The Merc tab's "Armor Class" row is a pair: Mitigation / Evasion. EQUI_Inventory.xml labels the
+-- second half outright -- "Evasion: Chance to avoid melee damage" on IWM_EvasionNumber -- and the
+-- server had nothing to put in it, because merc_stats had no avoidance column at all.
+--
+-- Mob::compute_defense() (zone/attack.cpp) already adds CastToNPC()->GetAvoidanceRating() under
+-- IsNPC(), and Merc is `class Merc : public NPC`, so the combat half of the plumbing was already
+-- live for mercenaries; it was simply reading a zero, because ZoneDatabase::GetMercenaryType() memsets
+-- its NPCType and never assigned avoidance_rating. This column is what feeds it:
+--
+--   merc_stats.Avoidance -> NPCType::avoidance_rating -> NPC::avoidance_rating
+--                        -> Mob::compute_defense() (combat)
+--                        -> Merc::GetDisplayEvasion() -> 0x1f38 keys 8 and 9 (the window)
+--
+-- It scales with Mercs:ScaleRate the same way ATK and Accuracy do, through Merc::ScaleStats(), so a
+-- mercenary levelled from 1 to 100 keeps the same relative tuning.
+--
+-- Why the default is 0
+-- --------------------
+-- 0 is what the equivalent NPC columns carry. In a stock peq database npc_types.avoidance is 0 for
+-- every row except a handful of named mobs (the highest per-level average anywhere is 13.6 at level
+-- 80), because EQEmu treats accuracy and avoidance as optional per-mob tweaks layered on top of
+-- compute_tohit() and compute_defense(), not as the base value. The mercenary data was built the same
+-- way: merc_stats.Accuracy is 0 in all 2380 rows, and it was 0 in the original seed too -- every
+-- REPLACE INTO in utils/sql/svn/mercs.sql passes 0 for Accuracy.
+--
+-- Seeding invented numbers here would make the window disagree with what the server actually rolls.
+-- The Evasion row is filled from the mercenary's real Defense skill and AGI instead; this column is
+-- the knob for tuning on top of that.
+--
+-- How to tune it
+-- --------------
+-- Live EQ tunes evasion per archetype -- "Increased the total HP and evasion of tank mercenaries.
+-- Increased the evasion of healer mercenaries. Increased the evasion, offense, and HP of melee damage
+-- mercenaries" (Allakhazam eq:mercenaries patch notes).
+--
+-- The archetype column is `merc_npc_types.class_id`, NOT proficiency_id. proficiency_id is the training
+-- tier (1 Apprentice, 2 Journeyman); `merc_npc_types.name` spells it out, e.g. "Apprentice Tank - Tier
+-- I" is class_id 1 / proficiency_id 1 and "Journeyman Healer - Tier II" is class_id 2 / proficiency_id
+-- 2. The archetypes present in the stock data are class_id 1 Tank, 2 Healer, 9 Melee DPS, 12 Caster DPS.
+--
+-- Migration 9334 (2026_10_27_merc_avoidance_tuning.sql) seeds this column on both axes. To re-tune
+-- after it has run, zero the column and re-run that file:
+--
+--   UPDATE merc_stats SET Avoidance = 0;
+--
+-- Verify with:
+--   SELECT n.class_id, n.proficiency_id, ms.level, ms.AC, ms.Avoidance
+--   FROM merc_stats ms JOIN merc_npc_types n ON n.merc_npc_type_id = ms.merc_npc_type_id
+--   WHERE ms.merc_npc_type_id = 17 AND ms.clientlevel = 10;
+
+ALTER TABLE `merc_stats` ADD COLUMN `Avoidance` mediumint(9) NOT NULL DEFAULT 0 AFTER `Accuracy`;

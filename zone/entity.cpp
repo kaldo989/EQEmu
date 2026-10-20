@@ -5752,6 +5752,11 @@ void EntityList::StopMobAI()
 }
 
 void EntityList::SendAlternateAdvancementStats() {
+	// Mercenary AA definitions are static server data shared by every client, so they are reloaded
+	// once here rather than once per client. SendMercenaryAAState() sends 0x78e8 before the grant
+	// list, so refreshing the cache first is what makes an edited merc_aa_ability take effect.
+	zone->LoadMercenaryAAAbilities();
+
 	for (auto &c : client_list) {
 		c.second->Message(Chat::White, "Reloading AA");
 		c.second->ReloadExpansionProfileSetting();
@@ -5759,10 +5764,16 @@ void EntityList::SendAlternateAdvancementStats() {
 			c.second->Message(Chat::Red, "Error loading alternate advancement character data");
 		}
 
+		if (!database.LoadMercenaryAA(c.second)) {
+			c.second->Message(Chat::Red, "Error loading mercenary alternate advancement character data");
+		}
+
 		c.second->SendClearPlayerAA();
 		c.second->SendAlternateAdvancementTable();
 		c.second->SendAlternateAdvancementStats();
 		c.second->SendAlternateAdvancementPoints();
+		c.second->SendMercenaryAAState();
+		c.second->SendMercenaryStats();
 	}
 }
 

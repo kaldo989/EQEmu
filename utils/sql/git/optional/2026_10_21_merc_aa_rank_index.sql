@@ -1,0 +1,62 @@
+-- Add merc_aa_ability.rank_index
+--
+-- Why this column exists.
+--
+-- Opcode 0x78e8 carries ten u32 fields per ability. Field 5 (f5, byte offset +0x14 in the client's
+-- record) turned out not to be a spare field. Three client functions agree on what it is:
+--
+-- FUN_1401a71f0  (grant registration, called by 0x0516 and 0x50e6)
+--   rec   = definition record for the ability being granted
+--   group = rec[4]                       -- f4, the group id
+--   walk the granted-ability container (mgr+0x6d0, buckets at mgr+0x6f0), which is keyed by group
+--   if a node already exists for that group:
+--       other = definition record for the ability currently granted to the group
+--       if (rec[5] <= other[5]) return;  -- the lower-f5 ability is ignored
+--       node[1] = ability_id;            -- the higher-f5 ability replaces it
+--
+-- CAltAbilityData__GetMercCurrentRank (0x1401a5ce0)
+--   group = rec[4] -> granted container -> the one ability id stored for that group
+--   -> return that ability's rec[5]
+--
+-- FUN_1401a4ff0  (index builder, called per record while parsing 0x78e8)
+--   group node (keyed by f4) holds a 16-bucket sub-container keyed by f5, whose payload is f0
+--
+-- So a group holds exactly one granted ability at a time, chosen as the highest f5 among the
+-- granted abilities in that group, and f5 is what the client reports as the current rank. f5 is a
+-- rank index within the group, not a type or a flag.
+--
+-- This also means the client's model is one ability id per rank, grouped by f4 -- which is why
+-- dbstr_us.txt category 37 has 14 names but 279 descriptions, and why ids 1001 and 1100 both
+-- render as "Steadfast Resolve". merc_aa_ability currently ships one row per family (Improved
+-- Health = ability 101, max_rank 4, four merc_aa_rank rows). That shape still works, but it cannot
+-- express "this ability is rank 3 of its group", so the value has nowhere to come from.
+--
+-- rank_index defaults to 1, which is correct for every row in the current seed and for any
+-- single-rank ability. Converting the seed to one row per rank is a data change that needs a live
+-- 0x78e8 capture to get the real ability ids right; this migration only opens the column.
+--
+-- WHO NEEDS THIS FILE.
+-- rank_index is now part of the CREATE TABLE in
+-- 2026_10_18_mercenary_aa_schema_draft.sql, so a fresh import does not need this.
+-- Run it only if you imported that file before rank_index existed.
+--
+-- Skip it if this returns a row:
+--   SELECT COLUMN_NAME FROM information_schema.COLUMNS
+--   WHERE TABLE_SCHEMA = DATABASE()
+--     AND TABLE_NAME = 'merc_aa_ability' AND COLUMN_NAME = 'rank_index';
+
+ALTER TABLE `merc_aa_ability`
+    ADD COLUMN `rank_index` INT(11) NOT NULL DEFAULT 1 AFTER `group_id`;
+
+-- Post-migration check: within a group, rank_index should be distinct and within max_rank.
+-- Expect no rows.
+--
+-- SELECT group_id, rank_index, COUNT(*) AS c
+-- FROM merc_aa_ability
+-- WHERE enabled = 1
+-- GROUP BY group_id, rank_index
+-- HAVING c > 1;
+--
+-- SELECT ability_id, group_id, rank_index, max_rank
+-- FROM merc_aa_ability
+-- WHERE enabled = 1 AND (rank_index < 1 OR rank_index > max_rank);

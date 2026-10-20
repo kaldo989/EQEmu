@@ -70,6 +70,8 @@ namespace EQ
 #include "common/repositories/buyer_buy_lines_repository.h"
 #include "common/repositories/character_evolving_items_repository.h"
 #include "common/repositories/character_parcels_repository.h"
+#include "common/repositories/merc_aa_currency_repository.h"
+#include "common/repositories/player_merc_aa_repository.h"
 #include "common/repositories/player_titlesets_repository.h"
 #include "common/repositories/trader_repository.h"
 #include "common/seperator.h"
@@ -1936,7 +1938,85 @@ public:
 	void SendMercSuspendResponsePacket(uint32 suspended_time);
 	void SendMercAssignPacket(uint32 entityID, uint32 unk01, uint32 unk02);
 	void SendMercPersonalInfo();
+	// Laurion owned mercenary list (OP_MercenaryDataUpdate, 0x59b7). Laurion's record layout is
+	// variable length and differs from the RoF MercenaryDataUpdate_Struct, so it is built through
+	// Laurion::MercenaryRecordWriter instead of a fixed struct. See docs/mercenary.md 4.1 and 4.2.
+	void SendMercPersonalInfoLaurion();
+	// Laurion Merc tab stat table (OP_MercenaryStatsUpdate, 0x1f38). The client renders the Merc
+	// tab straight out of a 44 slot int32 array it only allocates when this packet arrives, so
+	// without it every stat shows the XML placeholder 0. See docs/mercenary.md 4.8.
+	void SendMercenaryStats();
+	// Laurion merchant shop list (OP_MercenaryDataResponse, 0x689c). Takes the liaison NPC so the
+	// caller does not have to repeat the distance / class / version filtering already done in
+	// Handle_OP_MercenaryDataRequest.
+	void SendMercMerchantShopListLaurion(NPC *merchant);
+	// Laurion active mercenary state push (OP_MercenaryAssign, 0x4c40), 24 aligned bytes:
+	// i32 has_mercenary | i32 init_time_ms | i32 warning_time_ms | i32 state | i64 restoration_time.
+	// This is the packet that repaints the Manage window; SendMercAssignPacket's 12 byte RoF shape
+	// is not it. Implemented in zone/merc_laurion.cpp.
+	void SendMercAssignStateLaurion();
+	// Ties the mercenary NPC to this client in the client's spawn table (OP_MercenarySpawnLink,
+	// 0x33e0). Without it the client does not consider the NPC to be your mercenary.
+	void SendMercenarySpawnLinkLaurion(Merc *merc);
+	void SendMercenarySpawnIdLaurion(uint32 spawn_id);
+	void SendMercenaryTimerLaurion(int32 time_remaining);
+	void SendMercenarySuspendedLaurion();
+	void SendMercenaryUnsuspendLaurion();
+	void SendMercenaryUpkeepChargedLaurion(bool use_alt_currency);
+	void SendMercenaryDeadLaurion();
+	void SendMercenaryStateNoneLaurion(int64 restoration_time);
+	void SendMercenaryStateReadyLaurion(int64 restoration_time);
+	void SendMercenaryClearTimersLaurion();
+	void SendMercenaryCostUpdateLaurion();
+	// OP_MercenarySelect (0xb8f3): tell the client which owned-list index is now active. It copies
+	// that record into MercenaryClientData itself, so this is cheaper than a full 0x59b7 rebuild.
+	void SendMercenarySelectLaurion(int32 index);
+	// OP_MercenarySwitch reply: i32 unk0 | i32 suspend_remaining_ms | i32 result 0..5.
+	void SendMercenarySwitchResultLaurion(uint32 suspend_remaining_ms, uint32 result);
+	void SendMercenaryAssistModeLaurion(int32 value);
+	// OP_MercenaryDataUpdateRequest (0x0b22) is bidirectional. The C->S direction is the 8-byte stance
+	// pair; this is the S->C direction, 4 bytes, which raises UI event 0x10 for the stance combo box.
+	void SendMercenaryStanceNotificationLaurion(int32 stance_id);
+	// Shared by OP_MercenaryCallAssist (0x0183) and OP_MercenaryAssistMode (0x2d14).
+	void AssistMercLaurion();
+	// OP_MercenaryCurrencyMessage (0x466d): i8 use_alt | pad | i32 currency_id | NUL text. The client
+	// appends the currency name itself from db_str categories 17/18 and prints "%s%s.", so the text
+	// must not name the currency. currency_id 0 makes the client use MercenaryInfo.altCurrencyId.
+	void SendMercenaryCurrencyMessageLaurion(bool use_alt_currency, int32 currency_id, const std::string &text);
+	// OP_MercenaryTransferOffer (0xd966), 28 bytes. See MercenaryTransfer_Struct.
+	void SendMercenaryTransferOfferLaurion(uint32 target_spawn_id, int32 gold_cost,
+		int32 alt_currency_cost, int32 alt_currency_id, bool alt_currency_only);
+	// OP_MercenaryLevelUpgrade (0x4a03), 120 bytes. Only the first five dwords and the name at +0x14
+	// are understood; the rest is opaque storage the client copies for the popup's answer.
+	void SendMercenaryLevelUpgradeLaurion(int32 plat_cost, int32 alt_currency_cost,
+		int32 from_level, int32 to_level, const std::string &mercenary_name);
+	// OP_MercenaryRecordDump (0x2d48): u64 echo | u32 count | count x {u32 len, bytes}. Diagnostic.
+	void SendMercenaryRecordDumpLaurion(uint64 echo, const std::vector<std::string> &records);
 	void SendClearMercInfo();
+	// Mercenary AA state push. Sends OP_MercenaryAAGrant (Laurion 0x0516) followed by
+	// OP_MercenaryAARanks (Laurion 0x3e8c). Order matters: 0x0516 clears the client's granted
+	// ability container before repopulating it, so it has to come first.
+	void SendMercenaryAAAbilities();
+	void SendMercenaryAAState();
+	std::map<uint32, uint32> GetMercenaryAARanks() { return m_merc_aa_ranks; }
+	uint32 GetMercenaryAARank(uint32 ability_id) {
+		auto it = m_merc_aa_ranks.find(ability_id);
+		return it == m_merc_aa_ranks.end() ? 0 : it->second;
+	}
+	void SetMercenaryAARank(uint32 ability_id, uint32 value) { m_merc_aa_ranks[ability_id] = value; }
+	void ClearMercenaryAARanks() { m_merc_aa_ranks.clear(); }
+	MercAaCurrencyRepository::MercAaCurrency &GetMercenaryAACurrency() { return m_merc_aa_currency; }
+	void SetMercenaryAACurrency(MercAaCurrencyRepository::MercAaCurrency c) { m_merc_aa_currency = c; }
+	// Highest rank currently held anywhere inside a rank family. The client keeps one granted ability
+	// per group (FUN_1401a71f0 only accepts a strictly higher rank_index), so the server has to
+	// answer the same question the same way.
+	uint32 GetMercenaryAAGroupRank(int32 group_id) const;
+	void ClearMercenaryAAGroup(int32 group_id);
+	bool SaveMercenaryAA();
+	void SendMercenaryAAActionLaurion(uint32 arg0, uint32 arg1, uint64 arg2, uint32 action);
+	void SendMercenaryAACountersLaurion();
+	void ClearMercenaryAAAbilityLaurion(uint32 ability_id);
+	void RefundMercenaryAALaurion();
 	void SuspendMercCommand();
 	void SpawnMercOnZone();
 	void SpawnMerc(Merc* merc, bool setMaxStats);
@@ -2292,6 +2372,11 @@ private:
 	PetInfo m_petinfo; // current pet data, used while loading from and saving to DB
 	PetInfo m_suspendedminion; // pet data for our suspended minion.
 	MercInfo m_mercinfo[MAXMERCS]; // current mercenary
+	// Mercenary AA: ability_id -> opaque aa_value, exactly the pair the client's
+	// FUN_14061e0c0(player, aa_id, value) stores. Loaded from player_merc_aa.
+	std::map<uint32, uint32> m_merc_aa_ranks;
+	// Mercenary AA point pool. Loaded from merc_aa_currency.
+	MercAaCurrencyRepository::MercAaCurrency m_merc_aa_currency{};
 	InspectMessage_Struct m_inspect_message;
 	bool temp_pvp;
 

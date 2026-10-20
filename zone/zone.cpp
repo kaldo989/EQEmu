@@ -756,8 +756,8 @@ void Zone::LoadMercenaryTemplates()
 	}
 
 	const std::string& query = SQL(
-		SELECT DISTINCT MTem.merc_template_id, MTyp.dbstring
-		AS merc_type_id, MTem.dbstring
+		SELECT DISTINCT MTem.merc_template_id, MTyp.dbstring_id
+		AS merc_type_id, MTem.dbstring_id
 		AS merc_subtype_id, MTyp.race_id, MS.class_id, MTyp.proficiency_id, MS.tier_id, 0
 		AS CostFormula, MTem.clientversion, MTem.merc_npc_type_id
 		FROM merc_types MTyp, merc_templates MTem, merc_subtypes MS
@@ -770,10 +770,24 @@ void Zone::LoadMercenaryTemplates()
 	}
 
 	for (auto row: results) {
+		const uint32 merc_type_id    = Strings::ToUnsignedInt(row[1]);
+		const uint32 merc_subtype_id = Strings::ToUnsignedInt(row[2]);
+
+		// merc_type_id is a dbstr_us.txt category 21 id and merc_subtype_id is shared by categories
+		// 22 (eMercenarySubCategory) and 23 (eMercenarySubCategoryDescription). A 0 here means the
+		// column was coerced from a non-numeric value, and the client will render the mercenary with
+		// no name and no description while logging the problem only on the client side.
+		if (merc_type_id == 0 || merc_subtype_id == 0) {
+			Log(Logs::General, Logs::Mercenaries,
+				"LoadMercenaries: merc_template %u has dbstring_id 0 (type %u, subtype %u); the client cannot label it.",
+				Strings::ToUnsignedInt(row[0]), merc_type_id, merc_subtype_id);
+			continue;
+		}
+
 		MercTemplate t{
 			.MercTemplateID = Strings::ToUnsignedInt(row[0]),
-			.MercType = Strings::ToUnsignedInt(row[1]),
-			.MercSubType = Strings::ToUnsignedInt(row[2]),
+			.MercType = merc_type_id,
+			.MercSubType = merc_subtype_id,
 			.RaceID = static_cast<uint16>(Strings::ToUnsignedInt(row[3])),
 			.ClassID = static_cast<uint8>(Strings::ToUnsignedInt(row[4])),
 			.MercNPCID = Strings::ToUnsignedInt(row[9]),
@@ -801,6 +815,297 @@ void Zone::LoadMercenaryTemplates()
 
 		merc_templates[t.MercTemplateID] = t;
 	}
+
+	ValidateMercenaryStrings();
+}
+
+// Audit the mercenary dbstr ids against db_str, the server's copy of the client's dbstr_us.txt.
+//
+// This exists because a wrong id fails invisibly: the client looks the id up in its own string
+// table, shows a blank row in MerchantWnd/TypeComboBox or SubtypeListBox, and writes
+// "Unknown DB String %d-%d" to the CLIENT log. The server sees nothing at all.
+//
+// It reports rather than filters. db_str is a strict subset of the client's table -- type 21 has
+// 198 of the client's 252 ids -- so an id that is absent from db_str is not necessarily wrong, it
+// may just be a creature this data dump never imported. Dropping the mercenary on that basis would
+// hide working content. A dbstring_id of 0 is unambiguously bad and is dropped in the loop above.
+//
+// Runs once per process: the merc template tables are identical in every zone, and
+// LoadMercenaryTemplates() runs per zone instance.
+void Zone::ValidateMercenaryStrings()
+{
+	static bool audited = false;
+	if (audited) {
+		return;
+	}
+	audited = true;
+
+	const std::string& query = SQL(
+		SELECT MTem.merc_template_id, MTyp.merc_type_id, MTyp.race_id, MTyp.proficiency_id,
+		MTyp.dbstring_id, MTem.dbstring_id,
+		s_type.id AS resolved_type_id, s_sub.id AS resolved_sub_id
+		FROM merc_templates MTem
+		INNER JOIN merc_types MTyp ON MTem.merc_type_id = MTyp.merc_type_id
+		LEFT JOIN db_str s_type ON s_type.id = MTyp.dbstring_id AND s_type.type = 21
+		LEFT JOIN db_str s_sub ON s_sub.id = MTem.dbstring_id AND s_sub.type = 22
+		WHERE s_type.id IS NULL OR s_sub.id IS NULL
+		ORDER BY MTem.merc_template_id
+	);
+
+	auto results = database.QueryDatabase(query);
+	if (!results.Success()) {
+		// db_str may not exist at all on a minimal database; that is not a mercenary bug.
+		Log(Logs::Detail, Logs::Mercenaries,
+			"ValidateMercenaryStrings: could not audit mercenary template strings against db_str.");
+	}
+	else if (!results.RowCount()) {
+		Log(Logs::Detail, Logs::Mercenaries,
+			"ValidateMercenaryStrings: every mercenary template dbstr id resolves in db_str.");
+	}
+	else {
+		for (auto row : results) {
+			const uint32 template_id  = Strings::ToUnsignedInt(row[0]);
+			const uint32 type_row_id  = Strings::ToUnsignedInt(row[1]);
+			const uint32 race_id      = Strings::ToUnsignedInt(row[2]);
+			const uint32 proficiency  = Strings::ToUnsignedInt(row[3]);
+			const uint32 type_id      = Strings::ToUnsignedInt(row[4]);
+			const uint32 subtype_id   = Strings::ToUnsignedInt(row[5]);
+			// A LEFT JOIN that found nothing yields a null field, so an empty resolved_* means
+			// that side is the one the client will not be able to label.
+			const bool type_unresolved = !row[6];
+			const bool sub_unresolved  = !row[7];
+
+			if (type_unresolved) {
+				Log(Logs::General, Logs::Mercenaries,
+					"merc_template %u: merc_type %u (race %u, proficiency %u) has dbstring_id %u, which is not a category 21 string. The client will show a blank TypeComboBox entry for it.",
+					template_id, type_row_id, race_id, proficiency, type_id);
+			}
+
+			if (sub_unresolved) {
+				Log(Logs::General, Logs::Mercenaries,
+					"merc_template %u: dbstring_id %u is not a category 22 string. The client will show a blank SubtypeListBox entry and no InfoWnd description for it.",
+					template_id, subtype_id);
+			}
+		}
+
+		Log(Logs::General, Logs::Mercenaries,
+			"ValidateMercenaryStrings: %zu mercenary template rows have dbstr ids this server cannot resolve. They are still sent to the client; db_str is a subset of the client's own table, so some of these are expected.",
+			results.RowCount());
+	}
+
+	// Mercenary AA strings are the only mercenary text the server authors itself -- every other
+	// mercenary dbstr id ships in the PEQ merc data. That is why the manual import
+	// utils/sql/git/optional/2026_10_20_db_str_mercenary_aa_strings.sql copied client
+	// categories 37 (eMercenaryAbilityName) and 38 (eMercenaryAbilityDescription) into db_str: so
+	// this audit can exist. Before it, a typo in merc_aa_ability.name_sid or merc_aa_rank.desc_sid
+	// reached the client as a blank row in AAW_MercAAList and nothing on the server reported it.
+	const std::string& aa_query = SQL(
+		SELECT a.ability_id, a.name_sid, a.desc_sid, a.max_rank,
+		s_name.id AS resolved_name_id, s_desc.id AS resolved_desc_id
+		FROM merc_aa_ability a
+		LEFT JOIN db_str s_name ON s_name.id = a.name_sid AND s_name.type = 37
+		LEFT JOIN db_str s_desc ON s_desc.id = a.desc_sid AND s_desc.type = 38
+		WHERE s_name.id IS NULL OR s_desc.id IS NULL
+		ORDER BY a.ability_id
+	);
+
+	auto aa_results = database.QueryDatabase(aa_query);
+	if (!aa_results.Success()) {
+		// merc_aa_ability is absent until the manual import is run. Not a runtime error.
+		Log(Logs::Detail, Logs::Mercenaries,
+			"ValidateMercenaryStrings: mercenary AA tables are not present, skipped the AA string audit.");
+	}
+	else if (!aa_results.RowCount()) {
+		Log(Logs::Detail, Logs::Mercenaries,
+			"ValidateMercenaryStrings: every mercenary AA ability name and description resolves in db_str.");
+	}
+	else {
+		for (auto row : aa_results) {
+			const uint32 ability_id = Strings::ToUnsignedInt(row[0]);
+			const int32  name_sid   = Strings::ToInt(row[1]);
+			const int32  desc_sid   = Strings::ToInt(row[2]);
+
+			if (!row[4]) {
+				Log(Logs::General, Logs::Mercenaries,
+					"merc_aa_ability %u: name_sid %d is not a category 37 string. The client lists the ability in AAW_MercAAList with a blank name.",
+					ability_id, name_sid);
+			}
+
+			if (!row[5]) {
+				Log(Logs::General, Logs::Mercenaries,
+					"merc_aa_ability %u: desc_sid %d is not a category 38 string. The client shows no description for it.",
+					ability_id, desc_sid);
+			}
+		}
+
+		Log(Logs::General, Logs::Mercenaries,
+			"ValidateMercenaryStrings: %zu mercenary AA abilities have name or description ids this server cannot resolve.",
+			aa_results.RowCount());
+	}
+
+	// Per-rank descriptions are what the client actually renders when a rank is selected, so they
+	// are audited separately from the ability-level description.
+	const std::string& rank_query = SQL(
+		SELECT r.ability_id, r.rank_index, r.desc_sid, s_rank.id AS resolved_rank_id
+		FROM merc_aa_rank r
+		LEFT JOIN db_str s_rank ON s_rank.id = r.desc_sid AND s_rank.type = 38
+		WHERE s_rank.id IS NULL
+		ORDER BY r.ability_id, r.rank_index
+	);
+
+	auto rank_results = database.QueryDatabase(rank_query);
+	if (rank_results.Success()) {
+		if (!rank_results.RowCount()) {
+			Log(Logs::Detail, Logs::Mercenaries,
+				"ValidateMercenaryStrings: every mercenary AA rank description resolves in db_str.");
+		}
+		else {
+			for (auto row : rank_results) {
+				Log(Logs::General, Logs::Mercenaries,
+					"merc_aa_rank (%u, rank %u): desc_sid %d is not a category 38 string. The client shows no text for that rank.",
+					Strings::ToUnsignedInt(row[0]), Strings::ToUnsignedInt(row[1]), Strings::ToInt(row[2]));
+			}
+
+			Log(Logs::General, Logs::Mercenaries,
+				"ValidateMercenaryStrings: %zu mercenary AA ranks have a description id this server cannot resolve.",
+				rank_results.RowCount());
+		}
+	}
+}
+
+// Build the opcode 0x78e8 ability definition records from merc_aa_ability + merc_aa_rank.
+//
+// Field provenance is in docs/mercenary.md 4.9. The short version, all of it read out of the
+// client's own accessors:
+//
+//   f0 ability id   -- hash key of the definition container, the BuyAbility argument, and the
+//                      first u32 of the 0x3861 request
+//   f1 name dbstr id -- CDBStr__GetString(pinstCDBStr, *(rec + 4), 0x25), category 37
+//   f2 description   -- candidate, category 38
+//   f3 rank count    -- drives the singular/plural label pair 0xfc9 / 0xfca
+//   f4 group id      -- key of the granted-ability container (mgr+0x6d0, buckets at mgr+0x6f0)
+//   f5 rank index    -- FUN_1401a71f0 keeps the highest-f5 granted ability per group, and
+//                       CAltAbilityData__GetMercCurrentRank returns that f5
+//
+// The important consequence for the data: CAltAbilityData__GetMercMaxRank does not read f3. It
+// looks up the group record and returns its +0x10 counter, which FUN_1401a4ff0 increments once per
+// ability it indexes into that group. So the client's maximum rank is the number of definitions
+// that share a group_id, and a family with four ranks needs four ability rows, not one row with
+// max_rank = 4. That is audited below rather than silently accepted.
+void Zone::LoadMercenaryAAAbilities()
+{
+	merc_aa_abilities.clear();
+	merc_aa_ability_by_id.clear();
+	merc_aa_group_members.clear();
+
+	const auto &abilities = MercAaAbilityRepository::GetWhere(database, "`enabled` = 1");
+	if (abilities.empty()) {
+		return;
+	}
+
+	for (const auto &a : abilities) {
+		merc_aa_ability_by_id[a.ability_id] = a;
+		merc_aa_group_members[a.group_id].push_back(a.ability_id);
+	}
+
+	std::map<int32_t, int32_t> group_size;
+	for (const auto &a : abilities) {
+		++group_size[a.group_id];
+	}
+
+	std::map<uint32_t, std::vector<MercAaRankRepository::MercAaRank>> ranks_by_ability;
+	for (const auto &r : MercAaRankRepository::All(database)) {
+		ranks_by_ability[r.ability_id].push_back(r);
+	}
+
+	int shape_problems = 0;
+
+	for (const auto &a : abilities) {
+		Laurion::MercenaryAAAbilityRecord rec;
+
+		rec.ability_id  = static_cast<int32_t>(a.ability_id);
+		rec.name_sid    = a.name_sid;
+		rec.desc_sid    = a.desc_sid;
+		rec.cost        = a.cost;
+		rec.group_id    = a.group_id;
+		rec.rank_index  = a.rank_index;
+		rec.aa_type     = a.aa_type;
+		rec.level_req   = a.level_req;
+		rec.currency_id = a.currency_id;
+		rec.flags       = 0;
+
+		// f3, f6, f7 and f8 are not guesses any more. FUN_14033cd80 renders the AA list columns
+		// from them (cost column, and GetString(f6, 36) for the type column) and FUN_1401a53f0
+		// gates a purchase on f3 against the point pool at PlayerClient+0x2738 and on f7 against
+		// the player level. f9 still has no consumer, so it stays zero.
+		//
+		// f6 is looked up in dbstr category 36, which only has ids 1..5. The AA list cell guards the
+		// lookup with `0 < f6` and draws an empty cell, but the mercenary type combo does not:
+		// FUN_14033a5d0 calls CDBStr__GetString(value, 36) for every key in the type container
+		// unconditionally (0x14033b2e9), and CDBStr__GetString returns its own error buffer holding
+		// "Unknown DB String <value>-36" when the pair is missing. That is what the client shows in
+		// the mercenary type list when aa_type is 0, so a zero is coerced to General rather than
+		// shipped.
+		if (a.aa_type < 1 || a.aa_type > 5) {
+			Log(Logs::General, Logs::Mercenaries,
+				"merc_aa_ability %u: aa_type is %d. The client renders this with GetString(aa_type, 36) and category 36 only defines 1 General, 2 Tank, 3 Healer, 4 Melee DPS and 5 Caster DPS, so the mercenary type list shows 'Unknown DB String %d-36'. Sending 1 (General) instead; set merc_aa_ability.aa_type to the role the ability belongs to.",
+				static_cast<uint32>(a.ability_id), a.aa_type, a.aa_type);
+			++shape_problems;
+			rec.aa_type = Laurion::MercRoleGeneral;
+		}
+
+		auto it = ranks_by_ability.find(a.ability_id);
+		if (it != ranks_by_ability.end()) {
+			for (const auto &r : it->second) {
+				rec.ranks.emplace_back(r.lo_value, r.hi_value);
+			}
+		}
+
+		// The client counts group members to get max rank. If the row disagrees with its own group,
+		// the AA window will show one number in the "N ranks" label and enforce a different maximum
+		// when the player tries to buy.
+		if (a.max_rank != group_size[a.group_id]) {
+			Log(Logs::General, Logs::Mercenaries,
+				"merc_aa_ability %u: max_rank is %d but %d enabled abilities share group_id %d. The client derives maximum rank from the group member count, so it will treat this family as %d ranks max. Either add the missing rank abilities or fix max_rank.",
+				static_cast<uint32>(a.ability_id), a.max_rank, group_size[a.group_id], a.group_id, group_size[a.group_id]);
+			++shape_problems;
+		}
+
+		// The array tail is what the client actually stores per rank, so its length has to agree
+		// with the rank count the record advertises.
+		if (static_cast<int32_t>(rec.ranks.size()) != a.max_rank) {
+			Log(Logs::General, Logs::Mercenaries,
+				"merc_aa_ability %u: max_rank is %d but merc_aa_rank has %zu rows for it.",
+				static_cast<uint32>(a.ability_id), a.max_rank, rec.ranks.size());
+			++shape_problems;
+		}
+
+		merc_aa_abilities.push_back(std::move(rec));
+	}
+
+	Log(Logs::Detail, Logs::Mercenaries,
+		"Loaded {} mercenary AA ability definitions for opcode 0x78e8 ({} with a rank-shape problem).",
+		merc_aa_abilities.size(), shape_problems);
+}
+
+const MercAaAbilityRepository::MercAaAbility *Zone::FindMercenaryAAAbility(uint32 ability_id) const
+{
+	auto it = merc_aa_ability_by_id.find(ability_id);
+	if (it == merc_aa_ability_by_id.end()) {
+		return nullptr;
+	}
+
+	return &it->second;
+}
+
+int32 Zone::MercenaryAAGroupSize(int32 group_id) const
+{
+	auto it = merc_aa_group_members.find(group_id);
+	if (it == merc_aa_group_members.end()) {
+		return 0;
+	}
+
+	return static_cast<int32>(it->second.size());
 }
 
 void Zone::LoadLevelEXPMods()
@@ -1214,6 +1519,7 @@ bool Zone::Init(bool is_static) {
 	if (RuleB(Mercs, AllowMercs)) {
 		LoadMercenaryTemplates();
 		LoadMercenarySpells();
+		LoadMercenaryAAAbilities();
 	}
 
 	PetitionList::Instance()->ClearPetitions();

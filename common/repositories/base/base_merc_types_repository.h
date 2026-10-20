@@ -24,6 +24,11 @@
  *
  * @generator ./utils/scripts/generators/repository-generator.pl
  * @docs https://docs.eqemu.dev/developer/repositories
+ * @note Hand-edited for the manual import
+ *       utils/sql/git/optional/2026_10_19_merc_dbstring_ids.sql: `dbstring`
+ *       varchar(12) became `dbstring_id` INT UNSIGNED. The column always held a
+ *       numeric dbstr_us.txt id, so the generator will reproduce this file once
+ *       that file has been imported. There is no manifest entry for it.
  */
 
 #pragma once
@@ -40,7 +45,7 @@ public:
 		uint32_t    merc_type_id;
 		uint32_t    race_id;
 		uint8_t     proficiency_id;
-		std::string dbstring;
+		uint32_t    dbstring_id;
 		uint32_t    clientversion;
 	};
 
@@ -55,7 +60,7 @@ public:
 			"merc_type_id",
 			"race_id",
 			"proficiency_id",
-			"dbstring",
+			"dbstring_id",
 			"clientversion",
 		};
 	}
@@ -66,7 +71,7 @@ public:
 			"merc_type_id",
 			"race_id",
 			"proficiency_id",
-			"dbstring",
+			"dbstring_id",
 			"clientversion",
 		};
 	}
@@ -111,7 +116,7 @@ public:
 		e.merc_type_id   = 0;
 		e.race_id        = 0;
 		e.proficiency_id = 0;
-		e.dbstring       = "";
+		e.dbstring_id    = 0;
 		e.clientversion  = 0;
 
 		return e;
@@ -152,7 +157,7 @@ public:
 			e.merc_type_id   = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
 			e.race_id        = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.proficiency_id = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.dbstring       = row[3] ? row[3] : "";
+			e.dbstring_id    = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
 			e.clientversion  = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
 
 			return e;
@@ -189,7 +194,7 @@ public:
 
 		v.push_back(columns[1] + " = " + std::to_string(e.race_id));
 		v.push_back(columns[2] + " = " + std::to_string(e.proficiency_id));
-		v.push_back(columns[3] + " = '" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(columns[3] + " = " + std::to_string(e.dbstring_id));
 		v.push_back(columns[4] + " = " + std::to_string(e.clientversion));
 
 		auto results = db.QueryDatabase(
@@ -215,7 +220,7 @@ public:
 		v.push_back(std::to_string(e.merc_type_id));
 		v.push_back(std::to_string(e.race_id));
 		v.push_back(std::to_string(e.proficiency_id));
-		v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(std::to_string(e.dbstring_id));
 		v.push_back(std::to_string(e.clientversion));
 
 		auto results = db.QueryDatabase(
@@ -249,7 +254,7 @@ public:
 			v.push_back(std::to_string(e.merc_type_id));
 			v.push_back(std::to_string(e.race_id));
 			v.push_back(std::to_string(e.proficiency_id));
-			v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+			v.push_back(std::to_string(e.dbstring_id));
 			v.push_back(std::to_string(e.clientversion));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
@@ -287,7 +292,7 @@ public:
 			e.merc_type_id   = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
 			e.race_id        = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.proficiency_id = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.dbstring       = row[3] ? row[3] : "";
+			e.dbstring_id    = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
 			e.clientversion  = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
 
 			all_entries.push_back(e);
@@ -316,7 +321,7 @@ public:
 			e.merc_type_id   = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
 			e.race_id        = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.proficiency_id = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.dbstring       = row[3] ? row[3] : "";
+			e.dbstring_id    = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
 			e.clientversion  = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
 
 			all_entries.push_back(e);
@@ -395,7 +400,7 @@ public:
 		v.push_back(std::to_string(e.merc_type_id));
 		v.push_back(std::to_string(e.race_id));
 		v.push_back(std::to_string(e.proficiency_id));
-		v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(std::to_string(e.dbstring_id));
 		v.push_back(std::to_string(e.clientversion));
 
 		auto results = db.QueryDatabase(
@@ -422,7 +427,7 @@ public:
 			v.push_back(std::to_string(e.merc_type_id));
 			v.push_back(std::to_string(e.race_id));
 			v.push_back(std::to_string(e.proficiency_id));
-			v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+			v.push_back(std::to_string(e.dbstring_id));
 			v.push_back(std::to_string(e.clientversion));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");

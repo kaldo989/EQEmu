@@ -60,6 +60,7 @@ public:
 		uint32_t    DrakkinHeritage;
 		uint32_t    DrakkinTattoo;
 		uint32_t    DrakkinDetails;
+		uint8_t     AutoAssist;
 	};
 
 	static std::string PrimaryKey()
@@ -94,6 +95,7 @@ public:
 			"DrakkinHeritage",
 			"DrakkinTattoo",
 			"DrakkinDetails",
+			"AutoAssist",
 		};
 	}
 
@@ -124,6 +126,7 @@ public:
 			"DrakkinHeritage",
 			"DrakkinTattoo",
 			"DrakkinDetails",
+			"AutoAssist",
 		};
 	}
 
@@ -188,6 +191,7 @@ public:
 		e.DrakkinHeritage  = 0;
 		e.DrakkinTattoo    = 0;
 		e.DrakkinDetails   = 0;
+		e.AutoAssist       = 0;
 
 		return e;
 	}
@@ -248,6 +252,7 @@ public:
 			e.DrakkinHeritage  = row[21] ? static_cast<uint32_t>(strtoul(row[21], nullptr, 10)) : 0;
 			e.DrakkinTattoo    = row[22] ? static_cast<uint32_t>(strtoul(row[22], nullptr, 10)) : 0;
 			e.DrakkinDetails   = row[23] ? static_cast<uint32_t>(strtoul(row[23], nullptr, 10)) : 0;
+			e.AutoAssist       = row[24] ? static_cast<uint8_t>(strtoul(row[24], nullptr, 10)) : 0;
 
 			return e;
 		}
@@ -304,6 +309,7 @@ public:
 		v.push_back(columns[21] + " = " + std::to_string(e.DrakkinHeritage));
 		v.push_back(columns[22] + " = " + std::to_string(e.DrakkinTattoo));
 		v.push_back(columns[23] + " = " + std::to_string(e.DrakkinDetails));
+		v.push_back(columns[24] + " = " + std::to_string(e.AutoAssist));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -349,6 +355,7 @@ public:
 		v.push_back(std::to_string(e.DrakkinHeritage));
 		v.push_back(std::to_string(e.DrakkinTattoo));
 		v.push_back(std::to_string(e.DrakkinDetails));
+		v.push_back(std::to_string(e.AutoAssist));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -402,6 +409,7 @@ public:
 			v.push_back(std::to_string(e.DrakkinHeritage));
 			v.push_back(std::to_string(e.DrakkinTattoo));
 			v.push_back(std::to_string(e.DrakkinDetails));
+			v.push_back(std::to_string(e.AutoAssist));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}
@@ -459,6 +467,7 @@ public:
 			e.DrakkinHeritage  = row[21] ? static_cast<uint32_t>(strtoul(row[21], nullptr, 10)) : 0;
 			e.DrakkinTattoo    = row[22] ? static_cast<uint32_t>(strtoul(row[22], nullptr, 10)) : 0;
 			e.DrakkinDetails   = row[23] ? static_cast<uint32_t>(strtoul(row[23], nullptr, 10)) : 0;
+			e.AutoAssist       = row[24] ? static_cast<uint8_t>(strtoul(row[24], nullptr, 10)) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -507,6 +516,7 @@ public:
 			e.DrakkinHeritage  = row[21] ? static_cast<uint32_t>(strtoul(row[21], nullptr, 10)) : 0;
 			e.DrakkinTattoo    = row[22] ? static_cast<uint32_t>(strtoul(row[22], nullptr, 10)) : 0;
 			e.DrakkinDetails   = row[23] ? static_cast<uint32_t>(strtoul(row[23], nullptr, 10)) : 0;
+			e.AutoAssist       = row[24] ? static_cast<uint8_t>(strtoul(row[24], nullptr, 10)) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -605,6 +615,7 @@ public:
 		v.push_back(std::to_string(e.DrakkinHeritage));
 		v.push_back(std::to_string(e.DrakkinTattoo));
 		v.push_back(std::to_string(e.DrakkinDetails));
+		v.push_back(std::to_string(e.AutoAssist));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -651,6 +662,7 @@ public:
 			v.push_back(std::to_string(e.DrakkinHeritage));
 			v.push_back(std::to_string(e.DrakkinTattoo));
 			v.push_back(std::to_string(e.DrakkinDetails));
+			v.push_back(std::to_string(e.AutoAssist));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}

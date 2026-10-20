@@ -266,6 +266,14 @@
 	void Handle_OP_MercenaryDataUpdateRequest(const EQApplicationPacket *app);
 	void Handle_OP_MercenaryDismiss(const EQApplicationPacket *app);
 	void Handle_OP_MercenaryHire(const EQApplicationPacket *app);
+	void Handle_OP_MercenaryLogfileRequest(const EQApplicationPacket *app);
+	// Laurion only. All four live in zone/merc_laurion.cpp because their payload shapes are
+	// Laurion-specific and have no RoF equivalent.
+	void Handle_OP_MercenaryAABuy(const EQApplicationPacket *app);
+	void Handle_OP_MercenaryAssistMode(const EQApplicationPacket *app);
+	void Handle_OP_MercenaryCallAssist(const EQApplicationPacket *app);
+	void Handle_OP_MercenaryRecordDumpReply(const EQApplicationPacket *app);
+	void Handle_OP_MercenaryTransferResult(const EQApplicationPacket *app);
 	void Handle_OP_MercenarySuspendRequest(const EQApplicationPacket *app);
 	void Handle_OP_MercenarySwitch(const EQApplicationPacket *app);
 	void Handle_OP_MercenaryTimerRequest(const EQApplicationPacket *app);

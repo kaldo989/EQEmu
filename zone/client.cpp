@@ -16,6 +16,7 @@
 	along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 #include "client.h"
+#include "common/patches/laurion_structs.h"
 
 #include "common/data_bucket.h"
 #include "common/data_verification.h"
@@ -862,6 +863,22 @@ void Client::SendZoneInPackets()
 	safe_delete(outapp);
 
 	SendAlternateAdvancementTimers();
+
+	// Mercenary AA state. Sent unconditionally, including an empty grant list: 0x0516 with
+	// count 0 is the clear the client expects, and leaving the granted container stale from a
+	// previous zone is worse than clearing it. The call self-gates on client version.
+	SendMercenaryAAState();
+
+	// Merc tab stat table. The client only allocates its 44 slot stat array when 0x1f38 arrives,
+	// so sending it here means the window shows real AA counters immediately; SetMerc re-sends it
+	// with live mercenary stats once a mercenary is spawned. Self-gates on client version.
+	SendMercenaryStats();
+
+	// Laurion active mercenary state. The client's MercenaryClientData starts every zone with
+	// hasMercenary false, so without this push the Manage window has nothing to render and a later
+	// 0x59b7 owned list would leave the state byte at whatever the previous zone left there.
+	// Self-gates on client version.
+	SendMercAssignStateLaurion();
 
 	outapp = new EQApplicationPacket(OP_RaidUpdate, sizeof(ZoneInSendName_Struct));
 	ZoneInSendName_Struct* zonesendname = (ZoneInSendName_Struct*)outapp->pBuffer;
@@ -8042,6 +8059,14 @@ void Client::SendMercPersonalInfo()
 {
 	uint32 altCurrentType = 19; //TODO: Implement alternate currency purchases involving mercs!
 
+	// Laurion's owned mercenary list is a different wire format from RoF/RoF2: the record is
+	// variable length, required_membership_level is a byte where RoF has a uint32 Status, and the
+	// packet carries a selected index plus num/max mercenaries that RoF does not have.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercPersonalInfoLaurion();
+		return;
+	}
+
 	if (ClientVersion() >= EQ::versions::ClientVersion::RoF) {
 		// Count owned mercs across all slots
 		uint32 mercCount = GetNumberOfMercenaries();
@@ -8200,6 +8225,27 @@ void Client::SendMercPersonalInfo()
 
 void Client::SendClearMercInfo()
 {
+	const int max_slots = std::min(RuleI(Mercs, MaxMercSlots), MAXMERCS);
+
+	// Laurion: selected_index -1, count 0, num_mercenaries 0, max_mercenaries. FUN_1402ace10 sees
+	// count 0 and prints "You do not currently have a mercenary.\n" and opens MMGW_ManageWnd.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_MercenaryDataUpdate, 16);
+		Laurion::MercenaryRecordWriter writer(outapp->pBuffer, 16);
+		writer.Int32(-1);
+		writer.Int32(0);
+		writer.Int32(0);
+		writer.Int32(max_slots);
+
+		if (!writer.Ok() || writer.Offset() != 16) {
+			safe_delete(outapp);
+			return;
+		}
+
+		FastQueuePacket(&outapp);
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_MercenaryDataUpdate, sizeof(NoMercenaryHired_Struct));
 	NoMercenaryHired_Struct *nmhs = (NoMercenaryHired_Struct*)outapp->pBuffer;
 	nmhs->MercStatus = -1;

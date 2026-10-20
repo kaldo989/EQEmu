@@ -269,6 +269,11 @@ struct MercInfo {
 	float	MercSize;
 	int32	State;
 	uint32	Stance;
+	// Laurion MercenaryInfo.autoAssist (MercenaryClientData+0x50). Set by the Manage window's
+	// AssistModeCheckbox and by "/assistmerc on|off", which both send OP_MercenaryAssistMode
+	// (0x2d14). It belongs to the owned mercenary rather than to the spawn, so it is persisted with
+	// the mercs row and travels through a suspend and a zone change.
+	bool	AutoAssist;
 	int32	hp;
 	int32	mana;
 	int32	endurance;
@@ -540,6 +545,9 @@ public:
 	bool	LoadAlternateAdvancementAbilities(std::unordered_map<int, std::unique_ptr<AA::Ability>> &abilities,
 											  std::unordered_map<int, std::unique_ptr<AA::Rank>> &ranks);
 	bool	LoadAlternateAdvancement(Client *c);
+
+	/* Mercenary Alternate Advancement (Laurion) */
+	bool	LoadMercenaryAA(Client *c);
 
 	/* Zone related   */
 	bool		SaveZoneCFG(uint32 zone_id, uint16 instance_version, NewZone_Struct* zd);

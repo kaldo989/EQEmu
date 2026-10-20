@@ -17,6 +17,9 @@
 */
 #pragma once
 
+#include "common/patches/laurion_structs.h"
+#include "common/repositories/merc_aa_ability_repository.h"
+#include "common/repositories/merc_aa_rank_repository.h"
 #include "common/discord/discord.h"
 #include "common/eqtime.h"
 #include "common/linked_list.h"
@@ -232,6 +235,15 @@ public:
 	std::map<uint32, std::list<MerchantList> >       merchanttable;
 	std::map<uint32, std::list<MercSpellEntry> >     merc_spells_list;
 	std::map<uint32, std::list<MercStanceInfo> >     merc_stance_list;
+	// Mercenary AA ability definitions ready for opcode 0x78e8, built once per zone load.
+	// Static server data, identical for every client, so it is cached here rather than queried
+	// per zone-in. See docs/mercenary.md 4.9.
+	std::vector<Laurion::MercenaryAAAbilityRecord>   merc_aa_abilities;
+	// The same definitions in table form, keyed by ability id, plus the rank families. The purchase
+	// handler needs these: 0x3861 carries only an ability id, and every rule (max rank, rank order,
+	// cost) is expressed through the group that ability belongs to.
+	std::map<uint32_t, MercAaAbilityRepository::MercAaAbility> merc_aa_ability_by_id;
+	std::map<int32_t, std::vector<uint32_t>>                   merc_aa_group_members;
 	std::map<uint32, std::list<TempMerchantList> >   tmpmerchanttable;
 	std::map<uint32, std::string>                    adventure_entry_list_flavor;
 	std::map<uint32, ZoneEXPModInfo>                 level_exp_mod;
@@ -316,6 +328,18 @@ public:
 	void LoadGrids();
 	void LoadMercenarySpells();
 	void LoadMercenaryTemplates();
+	// Build the 0x78e8 ability definition records from merc_aa_ability + merc_aa_rank.
+	void LoadMercenaryAAAbilities();
+	// Look up a cached definition by the ability id the client put in 0x3861. Returns nullptr when
+	// the id is unknown or disabled.
+	const MercAaAbilityRepository::MercAaAbility *FindMercenaryAAAbility(uint32 ability_id) const;
+	// Number of enabled definitions sharing group_id. This is the maximum rank the client will
+	// enforce: FUN_1401a4ff0 increments the group record's counter once per member and
+	// CAltAbilityData__GetMercMaxRank returns it.
+	int32 MercenaryAAGroupSize(int32 group_id) const;
+	// Audit the mercenary dbstr ids we are about to hand to the client against the server's own
+	// copy of the client string table (db_str). Runs once per process.
+	void ValidateMercenaryStrings();
 	void LoadNewMerchantData(uint32 merchantid);
 	void LoadNPCEmotes(std::vector<NPC_Emote_Struct*>* v);
 	void LoadTempMerchantData();

@@ -18,6 +18,7 @@
 #include "merc.h"
 
 #include "common/skill_caps.h"
+#include "common/patches/laurion_structs.h"
 #include "zone/client.h"
 #include "zone/corpse.h"
 #include "zone/entity.h"
@@ -26,6 +27,8 @@
 #include "zone/quest_parser_collection.h"
 #include "zone/string_ids.h"
 #include "zone/zone.h"
+
+#include <algorithm>
 
 extern volatile bool is_zone_loaded;
 
@@ -51,6 +54,8 @@ Merc::Merc(const NPCType* d, float x, float y, float z, float heading)
 	_baseWIS = d->WIS;
 	_baseCHA = d->CHA;
 	_baseATK = d->ATK;
+	_baseAccuracy = d->accuracy_rating;
+	_baseAvoidance = d->avoidance_rating;
 	_baseRace = d->race;
 	_baseGender = d->gender;
 	_baseMR = d->MR;
@@ -551,12 +556,16 @@ int64 Merc::CalcBaseManaRegen()
 	return regen;
 }
 
-int64 Merc::CalcManaRegen()
+int64 Merc::CalcManaRegen(bool fade_sit_modifiers)
 {
 	int64 regen = 0;
 	if (IsSitting())
 	{
-		BuffFadeBySitModifier();
+		// BuffFadeBySitModifier() cancels buffs. Merc::Process() wants that as part of its regen tic;
+		// the Merc tab stat readout (GetCombatManaRegen) must not mutate the mercenary just because
+		// the window asked what its regen is.
+		if (fade_sit_modifiers)
+			BuffFadeBySitModifier();
 		if (HasSkill(EQ::skills::SkillMeditate)) {
 			_medding = true;
 			regen = ((GetSkill(EQ::skills::SkillMeditate) / 10) + mana_regen);
@@ -4095,6 +4104,16 @@ bool Merc::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillT
 
 	Save();
 
+	// Laurion: 0x0d70 sets state 4 (dead) and zeroes restorationTime. Suspend() below then sends
+	// the 0x4815/0x4c40 pair, and the client's own arm for 0x4815 deliberately leaves a state of 4
+	// alone, so the dead state survives into the suspend cooldown.
+	{
+		Client *mercOwner = GetMercenaryOwner();
+		if (mercOwner && mercOwner->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			mercOwner->SendMercenaryDeadLaurion();
+		}
+	}
+
 	// If client is in zone, suspend merc, else depop it.
 	if (!Suspend()) {
 		Depop();
@@ -4124,6 +4143,9 @@ Mob* Merc::GetOwner() {
 
 	if(!Result) {
 		SetOwnerID(0);
+		// Returning the null CastToMob() used to crash every caller that dereferenced the result,
+		// which included GetMercenaryOwner() just above.
+		return nullptr;
 	}
 
 	return Result->CastToMob();
@@ -4450,6 +4472,17 @@ void Merc::UpdateMercStats(Client *c, bool setmax)
 
 			_baseAC = npc_type->AC;
 			_baseATK = npc_type->ATK;
+			// MercInfo::Stance and the mercenary's stats both follow the owner's level, and this is the
+			// only place the level-appropriate merc_stats row is applied. Without this the accuracy from
+			// the row the Merc was first constructed with stays in NPC::accuracy_rating forever, which
+			// is what Mob::compute_tohit() adds to a mercenary's to-hit.
+			_baseAccuracy = npc_type->accuracy_rating;
+			accuracy_rating = npc_type->accuracy_rating;
+			// Same story for avoidance: NPC::NPC() copied npc_type_data->avoidance_rating once at
+			// construction, and Mob::compute_defense() adds CastToNPC()->GetAvoidanceRating() under
+			// IsNPC(). Merc is an NPC, so this is the mercenary's Evasion row and its real avoidance.
+			_baseAvoidance = npc_type->avoidance_rating;
+			avoidance_rating = npc_type->avoidance_rating;
 			_baseSTR = npc_type->STR;
 			_baseSTA = npc_type->STA;
 			_baseDEX = npc_type->DEX;
@@ -4526,6 +4559,22 @@ void Merc::ScaleStats(int scalepercent, bool setmax) {
 	{
 		ATK = (int)((float)_baseATK * scalerate);
 		_baseATK = ATK;
+	}
+
+	// Scaled the same way as ATK, and written back into NPC::accuracy_rating because that is the
+	// member Mob::compute_tohit() actually reads for a mercenary.
+	if (_baseAccuracy)
+	{
+		accuracy_rating = (int)((float)_baseAccuracy * scalerate);
+		_baseAccuracy = accuracy_rating;
+	}
+
+	// Scaled the same way as ATK and accuracy, written back into NPC::avoidance_rating because that is
+	// the member Mob::compute_defense() actually reads for a mercenary.
+	if (_baseAvoidance)
+	{
+		avoidance_rating = (int)((float)_baseAvoidance * scalerate);
+		_baseAvoidance = avoidance_rating;
 	}
 
 	if (_baseSTR)
@@ -4856,7 +4905,17 @@ void Client::UpdateMercTimer()
 			GetMercTimer()->Start(RuleI(Mercs, UpkeepIntervalMS));
 			GetMercTimer()->SetTimer(GetMercInfo().MercTimerRemaining);
 
-			// Send upkeep charge message
+			// Send upkeep charge message.
+			//
+			// On Laurion this is not just a response code: SendMercResponsePackets(12) routes to
+			// SendMercMerchantResponsePacket(11), and FUN_1402ae5f0 case 0xb calls FUN_1402ac7e0 ->
+			// FUN_1402ac830(mgr, 0), which prints the full localized line
+			//   "You have been charged a mercenary upkeep cost of %d plat, and %d gold and your
+			//    mercenary upkeep cost timer has been reset to %s."
+			// out of the MercenaryInfo costs the server already sent (plat = upkeepCost/10,
+			// gold = upkeepCost%10) and the reset interval from mgr+0x278. Reason 12 is the same line
+			// with the alt currency name instead. Sending OP_MercenaryUnsuspendResponse (0x421c) here
+			// as well would print the identical sentence twice, so it is deliberately not sent.
 			SendMercResponsePackets(12);
 
 			// Warn that mercenary is about to be suspended due to insufficient funds (on next upkeep)
@@ -5022,6 +5081,14 @@ void Client::CheckMercSuspendTimer() {
 			GetMercInfo().SuspendedTime = 0;
 			SendMercResponsePackets(0);
 			SendMercSuspendResponsePacket(GetMercInfo().SuspendedTime);
+
+			// Laurion: the cooldown has expired, so tell the client the mercenary is hireable again.
+			// 0x6c4b sets state 1 and writes the restoration time, which is what re-enables the
+			// Unsuspend button.
+			if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+				SendMercenaryStateReadyLaurion(0);
+			}
+
 			Log(Logs::General, Logs::Mercenaries, "CheckMercSuspendTimer Ready for %s.", GetName());
 		}
 	}
@@ -5221,6 +5288,15 @@ void Client::SpawnMerc(Merc* merc, bool setMaxStats) {
 	merc->Unsuspend(setMaxStats);
 	merc->SetStance(GetMercInfo().Stance);
 
+	// Laurion needs two more things after a spawn that RoF never asked for: the spawn id, and the
+	// master/pet link in the client's spawn table. Order matters -- 0x33e0 looks both spawns up
+	// through SpawnManager, so the mercenary has to exist before it is sent.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenarySpawnIdLaurion(merc->GetID());
+		SendMercenarySpawnLinkLaurion(merc);
+		SendMercAssignStateLaurion();
+	}
+
 	Log(Logs::General, Logs::Mercenaries, "SpawnMerc Success for %s.", GetName());
 }
 
@@ -5356,6 +5432,17 @@ bool Client::DismissMerc(uint32 MercID) {
 		SendMercPersonalInfo();
 	} else {
 		SendClearMercInfo();
+	}
+
+	// Laurion: 0x4ec9 is what actually clears the client's MercenaryClientData and prints
+	// "Your mercenary is being dismissed!". Without it the client keeps showing the dismissed
+	// mercenary as active until the next 0x59b7 replaces the list.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_MercenaryDismiss, 0);
+		FastQueuePacket(&outapp);
+
+		SendMercAssignStateLaurion();
+		SendMercenarySpawnIdLaurion(0);
 	}
 
 	return Dismissed;
@@ -5677,6 +5764,12 @@ void Client::SetMerc(Merc* newmerc) {
 		snprintf(GetMercInfo().merc_name, 64, "%s", newmerc->GetName());
 		Log(Logs::General, Logs::Mercenaries, "SetMerc New Merc for %s.", GetName());
 	}
+
+	// The Merc tab reads its whole stat panel out of the client's 44 slot array, which only
+	// exists after a 0x1f38 arrives. Push it whenever the active mercenary changes.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenaryStats();
+	}
 }
 
 void Client::UpdateMercLevel() {
@@ -5702,6 +5795,16 @@ void Client::SendMercMerchantResponsePacket(int32 response_type) {
 
 void Client::SendMercenaryUnknownPacket(uint8 type) {
 
+	// Laurion: OP_MercenaryUnknown1 has no counterpart, so this maps to 0x6bdc, whose arm reads a
+	// single byte and raises UI event 0x19. Sending it on the unmapped opcode 0 would put a bogus
+	// packet on the wire.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_MercenaryUnknown4, 1);
+		outapp->WriteUInt8(type);
+		FastQueuePacket(&outapp);
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_MercenaryUnknown1, 1);
 	outapp->WriteUInt8(type);
 	FastQueuePacket(&outapp);
@@ -5710,6 +5813,14 @@ void Client::SendMercenaryUnknownPacket(uint8 type) {
 }
 
 void Client::SendMercenaryUnsuspendPacket(uint8 type) {
+
+	// Laurion: 0x184e (OP_MercenaryUnsuspend) is the payload-less "mercenary is available again"
+	// notification -- state <- 6 and unsuspendedTime <- now. The RoF 1 byte payload has no meaning
+	// there.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenaryUnsuspendLaurion();
+		return;
+	}
 
 	auto outapp = new EQApplicationPacket(OP_MercenaryUnsuspendResponse, 1);
 	outapp->WriteUInt8(type);
@@ -5720,6 +5831,18 @@ void Client::SendMercenaryUnsuspendPacket(uint8 type) {
 
 void Client::SendMercSuspendResponsePacket(uint32 suspended_time) {
 
+	// Laurion: there is no timestamped suspend response. The client learns the cooldown from the
+	// 0x4c40 state push (RestorationTime) and gets its state change from 0x4815, which sets state 2
+	// unless the client was already in 0, 1, 4 or 5. Sending both keeps the Manage window's
+	// Unsuspend button in step with EQEmu's pTimerMercSuspend.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenarySuspendedLaurion();
+		SendMercAssignStateLaurion();
+		Log(Logs::Detail, Logs::Mercenaries,
+			"Sent Laurion suspend notification, restoration %u. Client: %s.", suspended_time, GetName());
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_MercenarySuspendResponse, sizeof(SuspendMercenaryResponse_Struct));
 	SuspendMercenaryResponse_Struct* smr = (SuspendMercenaryResponse_Struct*)outapp->pBuffer;
 	smr->SuspendTime = suspended_time;              // Seen 0 (not suspended) or c9 c2 64 4f (suspended on Sat Mar 17 11:58:49 2012) - Unix Timestamp
@@ -5729,6 +5852,15 @@ void Client::SendMercSuspendResponsePacket(uint32 suspended_time) {
 }
 
 void Client::SendMercTimerPacket(int32 entity_id, int32 merc_state, int32 suspended_time, int32 update_interval, int32 unk01) {
+
+	// Laurion has no MercenaryStatus_Struct. Its timer packet is OP_MercenaryTimer (0x6f85), a
+	// single i32 written straight into MercenaryInfo.timeRemaining; the cooldown and the state come
+	// from the 0x4c40 state push instead. Routing here keeps every existing SendMercTimer call site
+	// working for both client families.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenaryTimerLaurion(update_interval);
+		return;
+	}
 
 	// Send Mercenary Status/Timer packet
 	auto outapp = new EQApplicationPacket(OP_MercenaryTimer, sizeof(MercenaryStatus_Struct));
@@ -5743,7 +5875,657 @@ void Client::SendMercTimerPacket(int32 entity_id, int32 merc_state, int32 suspen
 
 }
 
+// Push the character's mercenary AA state to the client.
+//
+// Two packets, in this order:
+//   OP_MercenaryAAGrant (Laurion 0x0516)  u32 count, count x { u32 aa_id, u32 value }
+//   OP_MercenaryAARanks (Laurion 0x3e8c)  u32 n, u32 ids[n], u32 m, u32 values[m]
+//
+// 0x0516 must go first: FUN_1401a5fa0's 0x0516 arm clears the granted-ability container at
+// mgr+0x6d0 and the three CAltAdvManager counters before repopulating, so anything sent before
+// it is thrown away.
+//
+// These opcodes bypass the mercenary manager dispatcher (FUN_1402af060) entirely -- they are
+// armed directly in ZonePacket__dispatchRecv. See docs/mercenary.md section 4.9.
+// Opcode 0x78e8: the mercenary AA ability definition list that populates AAW_MercAAList.
+// Without it the Merc page of the AA window is empty, and 0x0516 grants are dropped too --
+// FUN_1401a71f0 looks the ability up in the definition container first and returns without
+// recording anything when the definition is missing. That is why SendMercenaryAAState() sends
+// this packet before the grant list rather than treating it as an independent send.
+void Client::SendMercenaryAAAbilities() {
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	const auto &defs = zone->merc_aa_abilities;
+	if (defs.empty()) {
+		return;
+	}
+
+	// Size the payload from the records before allocating. The client reports nothing when a
+	// record is short -- FUN_1401a7090 bounds-checks every field individually and simply leaves
+	// the unread ones at zero -- so a miscount would show up as abilities with blank names rather
+	// than as an error.
+	uint32 payload = 4;
+	for (const auto &d : defs) {
+		payload += Laurion::MercenaryAARecordWireSize(d);
+	}
+
+	auto outapp = new EQApplicationPacket(OP_MercenaryAAAbilities, payload);
+	Laurion::MercenaryRecordWriter w(outapp->pBuffer, payload);
+
+	w.Int32(static_cast<int32_t>(defs.size()));
+	for (const auto &d : defs) {
+		Laurion::WriteMercenaryAAAbility(w, d);
+	}
+
+	if (!w.Ok() || w.Offset() != payload) {
+		LogError(
+			"SendMercenaryAAAbilities: wrote {} bytes for {} definitions but sized {}; not sending. Client: {}.",
+			w.Offset(), defs.size(), payload, GetName()
+		);
+		delete outapp;
+		return;
+	}
+
+	FastQueuePacket(&outapp);
+
+	Log(Logs::Detail, Logs::Mercenaries,
+		"Sent mercenary AA ability definitions: %zu abilities, %u bytes. Client: %s.",
+		defs.size(), payload, GetName());
+}
+
+void Client::SendMercenaryAAState() {
+	// Laurion only. An opcode that is not mapped in a patch conf still gets queued as 0x0000
+	// rather than dropped (EQStream::QueuePacket), so sending this to an older client would put
+	// a bogus opcode-0 packet on the wire.
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	// Definitions first: 0x0516 registers each granted ability by looking it up in the container
+	// that 0x78e8 fills, so a grant that arrives before its definition is silently discarded.
+	SendMercenaryAAAbilities();
+
+	// Deterministic order: std::map iterates by key, so the id run is sorted ascending.
+	// That matters for debugging a live capture against our own logs.
+	const uint32 count = static_cast<uint32>(m_merc_aa_ranks.size());
+
+	// 0x0516 -- full, authoritative grant list.
+	{
+		const uint32 size = sizeof(MercenaryAAGrant_Struct) + count * sizeof(MercenaryAAPair_Struct);
+		auto outapp = new EQApplicationPacket(OP_MercenaryAAGrant, size);
+		auto grant  = (MercenaryAAGrant_Struct *) outapp->pBuffer;
+
+		grant->Count = count;
+		uint32 i = 0;
+		for (const auto &kv : m_merc_aa_ranks) {
+			grant->Pairs[i].AAID  = kv.first;
+			grant->Pairs[i].Value = kv.second;
+			++i;
+		}
+
+		FastQueuePacket(&outapp);
+	}
+
+	// 0x3e8c -- the mercenary AA type table, NOT an ability-to-rank map.
+	//
+	// Wire: i32 n | n x key | i32 m | m x value. The 0x3e8c arm of FUN_1401a5fa0 reads the two
+	// runs, calls FUN_1401a6b70 to clear the container embedded at mgr+0x08, and only when n == m
+	// inserts one node per index: key = run1[i], value = run2[i], hashed into bucket
+	// `param_1 + (key % 5) + 4`. Five buckets and a modulo of 5 means the keys are the dbstr
+	// category 36 ids 1..5, and FUN_14033a5d0 renders that container into AAW_MercTypeFilter with
+	// GetString(key, 36).
+	//
+	// Putting ability ids here instead is what makes the AA window print "Unknown DB String
+	// 101-36": category 36 has no member 101, and CDBStr__GetString returns its own error text as
+	// the label. The value half has no consumer identified yet, so it is sent as zero.
+	{
+		std::vector<int32_t> aa_types;
+		for (const auto &d : zone->merc_aa_abilities) {
+			if (d.aa_type <= 0) {
+				continue;
+			}
+			if (std::find(aa_types.begin(), aa_types.end(), d.aa_type) == aa_types.end()) {
+				aa_types.push_back(d.aa_type);
+			}
+		}
+		std::sort(aa_types.begin(), aa_types.end());
+
+		const uint32 type_count = static_cast<uint32>(aa_types.size());
+		const uint32 size = 4 + (4 * type_count) + 4 + (4 * type_count);
+		auto outapp = new EQApplicationPacket(OP_MercenaryAARanks, size);
+
+		outapp->WriteUInt32(type_count);
+		for (const auto &t : aa_types) {
+			outapp->WriteUInt32(static_cast<uint32>(t));
+		}
+		outapp->WriteUInt32(type_count);
+		for (size_t i = 0; i < aa_types.size(); ++i) {
+			outapp->WriteUInt32(0);
+		}
+
+		FastQueuePacket(&outapp);
+	}
+
+	Log(Logs::Detail, Logs::Mercenaries,
+		"Sent mercenary AA state: %u granted abilities, %d/%d points. Client: %s.",
+		count, m_merc_aa_currency.aa_points, m_merc_aa_currency.aa_points_assigned, GetName());
+}
+
+// ---------------------------------------------------------------------------
+// Laurion mercenary lists and stat table -- docs/mercenary.md 4.1, 4.2, 4.3, 4.8
+// ---------------------------------------------------------------------------
+
+// Stance dbstr ids need no lookup table: dbstr_us.txt category 24 (eMercenaryStanceName) and
+// category 25 (eMercenaryStanceDescription) both use ids 1..9, and merc_stance_entries.stance_id
+// uses the same numbering. The wire pair is therefore {stance_id, stance_id}.
+// MercInfo::Stance is persisted per mercenary in mercs.StanceID, and it can hold an id that is not
+// in the stance list of that mercenary's own template: merc_stance_entries is keyed on
+// (class_id, proficiency_id), so a mercenary re-hired into a different template keeps the stance it
+// was last given. The client cannot select a stance that is not on the list it was handed --
+// FUN_1404522a0 searches the rebuilt StanceListBox for the item whose data equals the MercenaryInfo
+// stance and, when nothing matches, leaves the selection at index 0, which FUN_14044f160 then sends
+// back as a stance change the server has to reject. Clamping the record keeps it self-consistent, so
+// the first 0x0b22 the client sends is already the stance the server holds and the exchange is a
+// no-op instead of a rejection plus a re-push. See docs/mercenary.md 15.8.
+int32_t ClampLaurionStance(uint32 merc_template_id, int32_t stance_id)
+{
+	auto it = zone->merc_stance_list.find(merc_template_id);
+	if (it == zone->merc_stance_list.end() || it->second.empty()) {
+		return stance_id;   // no stance list at all: nothing to clamp against
+	}
+
+	for (const auto &s : it->second) {
+		if (static_cast<int32_t>(s.StanceID) == stance_id) {
+			return stance_id;
+		}
+	}
+
+	return static_cast<int32_t>(it->second.begin()->StanceID);
+}
+
+static void FillLaurionStances(Laurion::MercenaryRecord &r, uint32 merc_template_id)
+{
+	auto it = zone->merc_stance_list.find(merc_template_id);
+	if (it != zone->merc_stance_list.end()) {
+		for (const auto &stance : it->second) {
+			if (r.stances.size() >= Laurion::MERCENARY_MAX_STANCES) {
+				break;
+			}
+			r.stances.emplace_back(
+				static_cast<int32_t>(stance.StanceID),
+				static_cast<int32_t>(stance.StanceID));
+		}
+	}
+
+	// The client writes stanceData into a fixed 10 entry array with no bound check, so this
+	// clamp is what keeps a long database stance list from corrupting the client's heap.
+	Laurion::ClampMercenaryRecordStances(r);
+}
+
+// Laurion cannot present an alternate-currency mercenary cost, so every alt field in a Laurion
+// mercenary record stays zero.
+//
+// The client takes the currency name out of its own container at PlayerClient + 0x2188. That
+// container is filled only by the alt-currency populate packet: FUN_1401f3eb0 is the handler, its
+// mode 8 branch calls FUN_140666240(pinstLocalPC + 0x2188, ...) to build the table and its mode 7
+// branch updates one balance. EQEmu sends that packet as OP_AltCurrency, and OP_AltCurrency is
+// 0x0000 in utils/patches/patch_Laurion.conf, so a Laurion client never receives it and the
+// container stays empty.
+//
+// With an empty container FUN_140665fb0(PC + 0x2188, currency_id, 1) falls through to `return 0`,
+// and the caller then renders CDBStr__GetString(0, 17) or CDBStr__GetString(0, 18). A miss is not
+// null: CDBStr__GetString formats "Unknown DB String %d-%d" and returns that as the label, so the
+// widget shows the literal text "Unknown DB String 0-17". Advertising alt_currency_id 19 (Bayle
+// Mark) is enough to trigger it, because FUN_1402ac7b0(mgr, 1) is just `mgr + 0x7c != 0` and
+// FUN_140451be0 uses it to decide whether to show MMTW_AltPurchaseCostText at all.
+//
+// Flip this once OP_AltCurrency has a real Laurion opcode and SendAltCurrencies() reaches the
+// client, or once the mercenary data carries a currency the client already knows.
+static bool LaurionAltCurrencySupported()
+{
+	return false;
+}
+
+// OP_MercenaryDataUpdate (Laurion 0x59b7): the character's owned mercenary list.
+//
+// Wire: i32 selected_index | i32 count | count x record | i32 num_mercenaries | i32 max_mercenaries
+//
+// FUN_1402ace10 clears mgr+0x230 before parsing, so this is a full replacement, not an update.
+// It then copies list[selected_index] into MercenaryClientData at mgr+0x140, so selected_index
+// decides which owned mercenary the client treats as active; a value < 0 or >= count is forced
+// to -1 (no selection). If the parse cursor does not land exactly on the packet end the client
+// prints "ERROR: Corrupt MSG_MERCENARIES.", which is why the size is computed from the records
+// before the packet is allocated and re-checked after writing.
+void Client::SendMercPersonalInfoLaurion()
+{
+	const uint32 alt_currency_type = LaurionAltCurrencySupported() ? 19u : 0u; // Bayle Mark
+	const int max_slots = std::min(RuleI(Mercs, MaxMercSlots), MAXMERCS);
+
+	std::vector<Laurion::MercenaryRecord> records;
+	int32_t selected_index = -1;
+
+	auto append_merc = [&](int slot, bool is_active) -> bool {
+		if (records.size() >= MAX_MERC) {
+			return false;
+		}
+
+		MercInfo &info = GetMercInfo(static_cast<uint8_t>(slot));
+		if (info.mercid == 0) {
+			return false;
+		}
+
+		auto tmpl_it = zone->merc_templates.find(info.MercTemplateID);
+		if (tmpl_it == zone->merc_templates.end()) {
+			return false;
+		}
+
+		const MercTemplate &tmpl = tmpl_it->second;
+
+		Laurion::MercenaryRecord r;
+		r.id                     = static_cast<int32_t>(info.MercTemplateID);
+		r.type_string_id         = static_cast<int32_t>(tmpl.MercType);
+		r.subtype_string_id      = static_cast<int32_t>(tmpl.MercSubType);
+		r.initial_cost           = static_cast<int32_t>(Merc::CalcPurchaseCost(info.MercTemplateID, GetLevel(), 0));
+		r.upkeep_cost            = static_cast<int32_t>(Merc::CalcUpkeepCost(info.MercTemplateID, GetLevel(), 0));
+		// merc_types has no membership column, and every merc EQEmu ships is free to buy.
+		r.required_membership_level = 0;
+		r.alt_initial_cost       = alt_currency_type
+			? static_cast<int32_t>(Merc::CalcPurchaseCost(info.MercTemplateID, GetLevel(), alt_currency_type)) : 0;
+		r.alt_upkeep_cost        = alt_currency_type
+			? static_cast<int32_t>(Merc::CalcUpkeepCost(info.MercTemplateID, GetLevel(), alt_currency_type)) : 0;
+		r.alt_currency_id        = static_cast<int32_t>(alt_currency_type);
+		r.alt_currency_only      = 0;
+		r.time_remaining         = static_cast<int32_t>(info.MercTimerRemaining);
+		r.stance_group_id        = 0; // unresolved: see docs/mercenary.md 8.
+		r.stance_id              = ClampLaurionStance(info.MercTemplateID, static_cast<int32_t>(info.Stance));
+		r.unsuspended_time       = info.IsSuspended ? static_cast<int32_t>(info.SuspendedTime) : 0;
+		r.auto_assist            = info.AutoAssist ? 1 : 0;
+		// dbstr category 36 role id (1 General, 2 Tank, 3 Healer, 4 Melee DPS, 5 Caster DPS).
+		// The merchant window and the AA window both render this column with GetString(type, 36),
+		// and category 36 has no member 0, so leaving it at 0 puts the literal text
+		// "Unknown DB String 0-36" into the mercenary row.
+		r.type                   = LaurionMercRoleForClassID(tmpl.ClassID);
+		r.name                   = info.merc_name;
+
+		FillLaurionStances(r, info.MercTemplateID);
+
+		if (is_active) {
+			selected_index = static_cast<int32_t>(records.size());
+		}
+
+		records.push_back(r);
+		return true;
+	};
+
+	// Emit the active mercenary first so its index is 0, then the rest in slot order.
+	if (GetMercSlot() < max_slots && GetMercInfo().mercid != 0) {
+		append_merc(GetMercSlot(), true);
+	}
+
+	for (int slot = 0; slot < max_slots; ++slot) {
+		if (slot == GetMercSlot()) {
+			continue;
+		}
+		append_merc(slot, false);
+	}
+
+	uint32 payload = 4 + 4 + 4 + 4; // selected_index, count, num_mercenaries, max_mercenaries
+	for (const auto &r : records) {
+		payload += Laurion::MercenaryRecordWireSize(r);
+	}
+
+	auto outapp = new EQApplicationPacket(OP_MercenaryDataUpdate, payload);
+	Laurion::MercenaryRecordWriter writer(outapp->pBuffer, payload);
+
+	writer.Int32(selected_index);
+	writer.Int32(static_cast<int32_t>(records.size()));
+	for (const auto &r : records) {
+		Laurion::WriteMercenaryRecord(writer, r);
+	}
+	writer.Int32(static_cast<int32_t>(records.size())); // mgr+0x248
+	writer.Int32(max_slots);                            // mgr+0x24c
+
+	// The client reports corruption on any leftover or short read, so refuse to send a packet
+	// whose length does not match what the writer actually produced.
+	if (!writer.Ok() || writer.Offset() != payload) {
+		Log(Logs::General, Logs::Mercenaries,
+			"SendMercPersonalInfoLaurion: record sizing mismatch (%u written, %u allocated), not sending.",
+			writer.Offset(), payload);
+		safe_delete(outapp);
+		return;
+	}
+
+	FastQueuePacket(&outapp);
+
+	Log(Logs::Detail, Logs::Mercenaries,
+		"Sent Laurion owned mercenary list: %zu mercs, selected index %d, max %d. Client: %s.",
+		records.size(), selected_index, max_slots, GetName());
+}
+
+// Merc-tab combat values.
+//
+// The Merc tab is the mercenary's copy of the player's Inventory window, and EQUI_Inventory.xml names
+// the four terms outright in the tooltips on IWM_ArmorClassScreen and IWM_AttackScreen:
+//
+//   "Mitigation and Evasion components of your mercenary's Armor Class"
+//   "Mitigation: Chance to take less melee damage"
+//   "Evasion: Chance to avoid melee damage"
+//   "Attack: Offense and Accuracy components of your mercenary's melee attacks"
+//   "Offense: Chance to deal more damage"
+//   "Accuracy: Chance to land a hit"
+//
+// Those are the four numbers Mob::CheckHitChance() rolls with when this mercenary fights:
+// GetMitigationAC() and GetTotalDefense() are the defender halves (attack.cpp:1094 and :362),
+// GetTotalToHit() and offense() are the attacker halves. zone/mob_info.cpp already publishes exactly
+// these under the attribute names "mitigation_ac", "total_defense", "offense" and "tohit", so this is
+// EQEmu's own vocabulary for the four display terms, not a new invention.
+//
+// Reporting them is the only honest way to fill the Accuracy and Evasion rows. There is no mercenary
+// accuracy or avoidance dataset to import: merc_stats.Accuracy is 0 in all 2380 rows, and it was 0 in
+// the original seed as well (every REPLACE INTO in utils/sql/svn/mercs.sql passes 0 for Accuracy), so
+// the column has never carried data. That matches how EQEmu treats the equivalent NPC columns --
+// npc_types.accuracy and npc_types.avoidance are 0 for essentially every row in the database (the
+// highest average avoidance at any level is 13.6 at level 80, and only a handful of named mobs are
+// non-zero), because they are optional per-mob tweaks on top of compute_tohit() and compute_defense(),
+// not the base value. The Allakhazam EQ:Merc Stats table that would have held the live numbers is an
+// empty stub: 2 cells filled in 240 rows, and its own Merc_Stats_How_To page defines Avoid as "avoided
+// swings percentage", a parsed combat percentage rather than a window stat.
+//
+// So the real value is computed, not stored. merc_stats.Accuracy and the new merc_stats.Avoidance stay
+// what npc_types.accuracy and npc_types.avoidance are: flat bonuses a server owner can tune per
+// archetype, which is what the live patch notes describe ("Increased the total HP and evasion of tank
+// mercenaries ... Increased the evasion, offense, and HP of melee damage mercenaries"). Both feed the
+// model through NPC::accuracy_rating and NPC::avoidance_rating, so tuning them moves both the window
+// and combat.
+int32 Merc::GetDisplayMitigation()
+{
+	// Cached Mob::ACSum(), refreshed by CalcBonuses() -> CalcAC(). Merc::CalcAC() hides Mob::CalcAC()
+	// rather than overriding it (int32 vs void), so the Mob::CalcAC() that bonuses.cpp calls is the one
+	// that fills mitigation_ac.
+	return GetMitigationAC();
+}
+
+int32 Merc::GetDisplayEvasion()
+{
+	// GetTotalDefense() returns -1 for an auto-avoid disc; there is no sensible number to show for
+	// that, so fall back to the unmodified avoidance.
+	const int avoidance = GetTotalDefense();
+	return avoidance < 0 ? compute_defense() : avoidance;
+}
+
+int32 Merc::GetDisplayOffense()
+{
+	return offense(GetMeleeSkill());
+}
+
+int32 Merc::GetDisplayAccuracy()
+{
+	const int accuracy = GetTotalToHit(GetMeleeSkill(), 0);
+	return accuracy < 0 ? compute_tohit(GetMeleeSkill()) : accuracy;
+}
+
+// The skill this mercenary actually swings with.
+//
+// Merc::Attack() forwards to NPC::Attack() (zone/merc.cpp:4047 -> zone/attack.cpp:2246), and NPC::Attack
+// sets my_hit.skill from GetPrimSkill() -- NPCType::prim_melee_type, which ZoneDatabase::GetMercenaryType()
+// fills from merc_weaponinfo.prim_melee_type. It is only overridden by the equipped item's ItemType when
+// equipment[slotPrimary] is set. So the combat to-hit is compute_tohit(prim_melee_type), and passing
+// SkillHandtoHand instead -- which is what zone/mob_info.cpp does for generic mobs -- understates it:
+// in the stock data every archetype has a real one-handed primary, class 1 Tank 1H Slashing, class 2
+// Healer 1H Blunt, class 9 Melee DPS 1H Piercing, class 12 Caster DPS 1H Blunt, and Hand-to-Hand is
+// capped far below those (30..40 vs 75 at level 10).
+//
+// offense() is unaffected either way for the stock data: its SkillHandtoHand case substitutes
+// GetBestMeleeSkill(), which returns the same number the real primary skill does.
+EQ::skills::SkillType Merc::GetMeleeSkill() const
+{
+	return static_cast<EQ::skills::SkillType>(GetPrimSkill());
+}
+
+// OP_MercenaryStatsUpdate (Laurion 0x1f38): the Merc tab stat table.
+//
+// Wire: i32 pair_count | pair_count x { i32 key, i32 value }
+//
+// FUN_1402aeb30 lazily allocates a 44 slot int32 array at mgr+0x250 and prefills it with -1.
+// Keys must be 0..43; a key >= 44 trips the assert helper at 0x14007dc80. Because unwritten
+// slots stay -1, this sends the whole 0..43 table every time rather than a delta, otherwise a
+// partial update renders -1 in the window.
+//
+// The key order below is the order the client's own label code reads. The previous order came from
+// MacroQuestLS's eMercenaryStats, which EQData.h itself marks "out of date", and from the Merc tab
+// EQTypes in EQUI_Inventory.xml; that order put the three AA counters in slots 0..2 and shifted
+// every real stat by three, so the window read HP out of the MAX_HP slot and so on.
+//
+// __GetLabelFromEQ at 0x1404dcda0 is the only consumer of the array. Each LABELTYPE_MERCENARY_* id
+// picks two indices with FUN_1404db2f0(array, index) and hands them to FUN_1404e8dc0(cache, value,
+// baseline, ...), which paints `value` as the number and uses `baseline` only to colour it: grey
+// when the two are equal, green when value is above baseline, red when below. So even indices are
+// the unbuffed baseline and odd indices are the displayed value. EQEmu has no mercenary gear buff
+// model yet, so both halves carry the same number and every row renders grey.
+//
+//	label  name                          value  baseline
+//	338    HP                            live Mob HP scaled by index 1
+//	339    MAX_HP                        1      0
+//	340    MANA                          live Mob mana scaled by index 3
+//	341    MAX_MANA                      3      2
+//	342    ENDURANCE                     live Mob endurance scaled by index 5
+//	343    MAX_ENDURANCE                 5      4
+//	344    MITIGATION                    7      6
+//	345    ACCURACY                      13     12
+//	346    HASTE_PERCENT                 14     -
+//	347..353 STR STA INT WIS AGI DEX CHA 16 18 20 22 24 26 28, baselines 15 17 19 21 23 25 27
+//	354..356 COMBAT_HP/MANA/END_REGEN    30 32 34, baselines 29 31 33
+//	357    HEAL_AMOUNT                   35     -
+//	358    SPELL_DAMAGE                  36     -
+//	404    EVASION                       9      8
+//	405    OFFENSE                       11     10
+//	406..412 HEROIC_STR STA DEX AGI WIS INT CHA   37..43
+//
+// The three AA labels (335 AA_EXPERIENCE_PCT, 336 AA_POINTS, 337 AA_POINTS_SPENT) are not in this
+// table: __GetLabelFromEQ handles them before the mercenary gate and reads PlayerClient+0x2730,
+// +0x2738 and +0x273c, which the 0x78e8 / 0x0516 / 0x3e8c alt-advancement packets fill. Sending AA
+// numbers in keys 0..2 here did nothing except shift the real stats.
+void Client::SendMercenaryStats()
+{
+	// Laurion only: OP_MercenaryStatsUpdate is not mapped for older clients, and an unmapped
+	// opcode is still queued as 0x0000 rather than dropped (EQStream::QueuePacket).
+	if (ClientVersion() != EQ::versions::ClientVersion::Laurion) {
+		return;
+	}
+
+	enum MercStatKey : int32_t {
+		KEY_MAX_HP_BASE, KEY_MAX_HP,
+		KEY_MAX_MANA_BASE, KEY_MAX_MANA,
+		KEY_MAX_ENDURANCE_BASE, KEY_MAX_ENDURANCE,
+		KEY_MITIGATION_BASE, KEY_MITIGATION,
+		KEY_EVASION_BASE, KEY_EVASION,
+		KEY_OFFENSE_BASE, KEY_OFFENSE,
+		KEY_ACCURACY_BASE, KEY_ACCURACY,
+		KEY_HASTE,
+		KEY_STR_BASE, KEY_STR,
+		KEY_STA_BASE, KEY_STA,
+		KEY_INT_BASE, KEY_INT,
+		KEY_WIS_BASE, KEY_WIS,
+		KEY_AGI_BASE, KEY_AGI,
+		KEY_DEX_BASE, KEY_DEX,
+		KEY_CHA_BASE, KEY_CHA,
+		KEY_COMBAT_HP_REGEN_BASE, KEY_COMBAT_HP_REGEN,
+		KEY_COMBAT_MANA_REGEN_BASE, KEY_COMBAT_MANA_REGEN,
+		KEY_COMBAT_END_REGEN_BASE, KEY_COMBAT_END_REGEN,
+		KEY_HEAL_AMOUNT,
+		KEY_SPELL_DAMAGE,
+		KEY_HEROIC_STR, KEY_HEROIC_STA, KEY_HEROIC_DEX, KEY_HEROIC_AGI,
+		KEY_HEROIC_WIS, KEY_HEROIC_INT, KEY_HEROIC_CHA,
+		KEY_COUNT = 44
+	};
+
+	int32_t stats[KEY_COUNT] = {0};
+
+	Merc *merc = GetMerc();
+	if (merc) {
+		// Current HP/mana/endurance come from the mercenary spawn: the client reads the live Mob
+		// values and scales them by the max pair here, so only the max halves travel in this table.
+		stats[KEY_MAX_HP]        = stats[KEY_MAX_HP_BASE]        = static_cast<int32_t>(merc->GetMaxHP());
+		stats[KEY_MAX_MANA]      = stats[KEY_MAX_MANA_BASE]      = static_cast<int32_t>(merc->GetMaxMana());
+		stats[KEY_MAX_ENDURANCE] = stats[KEY_MAX_ENDURANCE_BASE] = static_cast<int32_t>(merc->GetMaxEndurance());
+
+		// Mitigation / Evasion and Offense / Accuracy are the two paired rows the window labels "Armor
+		// Class" and "Attack". Both halves of each pair carry the same number, so FUN_1404e8dc0 renders
+		// them grey; a real base/current split needs an unbuffed recomputation, which EQEmu does not
+		// have for either term. See the block comment on GetDisplay* above.
+		stats[KEY_MITIGATION] = stats[KEY_MITIGATION_BASE] = merc->GetDisplayMitigation();
+		stats[KEY_EVASION]    = stats[KEY_EVASION_BASE]    = merc->GetDisplayEvasion();
+		stats[KEY_OFFENSE]    = stats[KEY_OFFENSE_BASE]    = merc->GetDisplayOffense();
+		stats[KEY_ACCURACY]   = stats[KEY_ACCURACY_BASE]   = merc->GetDisplayAccuracy();
+		stats[KEY_HASTE]      = merc->GetHaste();
+
+		stats[KEY_STR]  = stats[KEY_STR_BASE]  = merc->GetSTR();
+		stats[KEY_STA]  = stats[KEY_STA_BASE]  = merc->GetSTA();
+		stats[KEY_INT]  = stats[KEY_INT_BASE]  = merc->GetINT();
+		stats[KEY_WIS]  = stats[KEY_WIS_BASE]  = merc->GetWIS();
+		stats[KEY_AGI]  = stats[KEY_AGI_BASE]  = merc->GetAGI();
+		stats[KEY_DEX]  = stats[KEY_DEX_BASE]  = merc->GetDEX();
+		stats[KEY_CHA]  = stats[KEY_CHA_BASE]  = merc->GetCHA();
+
+		stats[KEY_COMBAT_HP_REGEN]   = stats[KEY_COMBAT_HP_REGEN_BASE]   = static_cast<int32_t>(merc->GetCombatHPRegen());
+		stats[KEY_COMBAT_MANA_REGEN] = stats[KEY_COMBAT_MANA_REGEN_BASE] = static_cast<int32_t>(merc->GetCombatManaRegen());
+		stats[KEY_COMBAT_END_REGEN]  = stats[KEY_COMBAT_END_REGEN_BASE]  = static_cast<int32_t>(merc->GetCombatEnduranceRegen());
+
+		stats[KEY_HEAL_AMOUNT]  = 0; // Phase 3
+		stats[KEY_SPELL_DAMAGE] = 0; // Phase 3
+
+		stats[KEY_HEROIC_STR] = merc->GetHeroicSTR();
+		stats[KEY_HEROIC_STA] = merc->GetHeroicSTA();
+		stats[KEY_HEROIC_DEX] = merc->GetHeroicDEX();
+		stats[KEY_HEROIC_AGI] = merc->GetHeroicAGI();
+		stats[KEY_HEROIC_WIS] = merc->GetHeroicWIS();
+		stats[KEY_HEROIC_INT] = merc->GetHeroicINT();
+		stats[KEY_HEROIC_CHA] = merc->GetHeroicCHA();
+	}
+
+	const uint32 payload = 4 + (8 * KEY_COUNT);
+	auto outapp = new EQApplicationPacket(OP_MercenaryStatsUpdate, payload);
+
+	outapp->WriteSInt32(KEY_COUNT);
+	for (int32_t key = 0; key < KEY_COUNT; ++key) {
+		outapp->WriteSInt32(key);
+		outapp->WriteSInt32(stats[key]);
+	}
+
+	FastQueuePacket(&outapp);
+}
+
+// OP_MercenaryDataResponse (Laurion 0x689c): the merchant's shop list.
+//
+// Wire: i32 type_count | i32 type_dbstr[type_count] | i32 merc_count | merc_count x record
+//
+// There is no merchant id on the wire. FUN_1402acfd0 reads the type ids into mgr+0x48 (the
+// TypeComboBox) and the records into mgr+0x30 (the SubtypeListBox), then only applies them when
+// mgr+0x26c (currentMerchantId, set when the shop was requested) is non-zero. If type_count is 0
+// the client prints "You do not meet the requirements to purchase any mercenaries." and opens
+// MMTW_MerchantWnd empty. A cursor that does not land on the packet end gives
+// "ERROR: Corrupt MSG_MERCENARIES."
+void Client::SendMercMerchantShopListLaurion(NPC *merchant)
+{
+	if (!merchant) {
+		return;
+	}
+
+	const uint32 alt_currency_type = LaurionAltCurrencySupported() ? 19u : 0u; // Bayle Mark
+
+	std::vector<int32_t> type_ids;
+	for (const auto &merc_type : merchant->GetMercenaryTypesList(static_cast<unsigned int>(ClientVersion()))) {
+		type_ids.push_back(static_cast<int32_t>(merc_type.Type));
+	}
+
+	std::vector<Laurion::MercenaryRecord> records;
+	for (const auto &merc_data : merchant->GetMercenariesList(static_cast<unsigned int>(ClientVersion()))) {
+		if (records.size() >= MAX_MERC) {
+			break;
+		}
+
+		Laurion::MercenaryRecord r;
+		r.id                     = static_cast<int32_t>(merc_data.MercTemplateID);
+		r.type_string_id         = static_cast<int32_t>(merc_data.MercType);
+		r.subtype_string_id      = static_cast<int32_t>(merc_data.MercSubType);
+		r.initial_cost           = RuleB(Mercs, ChargeMercPurchaseCost)
+			? static_cast<int32_t>(Merc::CalcPurchaseCost(merc_data.MercTemplateID, GetLevel(), 0)) : 0;
+		r.upkeep_cost            = RuleB(Mercs, ChargeMercUpkeepCost)
+			? static_cast<int32_t>(Merc::CalcUpkeepCost(merc_data.MercTemplateID, GetLevel(), 0)) : 0;
+		r.required_membership_level = 0;
+		r.alt_initial_cost       = (alt_currency_type && RuleB(Mercs, ChargeMercPurchaseCost))
+			? static_cast<int32_t>(Merc::CalcPurchaseCost(merc_data.MercTemplateID, GetLevel(), alt_currency_type)) : 0;
+		r.alt_upkeep_cost        = (alt_currency_type && RuleB(Mercs, ChargeMercUpkeepCost))
+			? static_cast<int32_t>(Merc::CalcUpkeepCost(merc_data.MercTemplateID, GetLevel(), alt_currency_type)) : 0;
+		r.alt_currency_id        = static_cast<int32_t>(alt_currency_type);
+		r.alt_currency_only      = 0;
+		r.time_remaining         = -1;   // shop entries have no timer
+		r.stance_group_id        = 0;    // unresolved: see docs/mercenary.md 8.
+		r.stance_id              = 0;    // shop entries have no current stance
+		r.unsuspended_time       = 0;
+		r.auto_assist            = 0;
+		// Same role id as the owned-mercenary records. Shop rows are rendered by the same list code,
+		// so a 0 here is what the client shows as "Unknown DB String 0-36" in the available
+		// mercenaries list.
+		{
+			auto shop_it = zone->merc_templates.find(merc_data.MercTemplateID);
+			r.type = shop_it != zone->merc_templates.end()
+				? LaurionMercRoleForClassID(shop_it->second.ClassID)
+				: LaurionMercRoleGeneral;
+		}
+		r.name                   = "";   // shop entries are unnamed; the client shows a bare NUL
+
+		FillLaurionStances(r, merc_data.MercTemplateID);
+
+		records.push_back(r);
+	}
+
+	uint32 payload = 4 + (4 * static_cast<uint32>(type_ids.size())) + 4;
+	for (const auto &r : records) {
+		payload += Laurion::MercenaryRecordWireSize(r);
+	}
+
+	auto outapp = new EQApplicationPacket(OP_MercenaryDataResponse, payload);
+	Laurion::MercenaryRecordWriter writer(outapp->pBuffer, payload);
+
+	writer.Int32(static_cast<int32_t>(type_ids.size()));
+	for (int32_t type_id : type_ids) {
+		writer.Int32(type_id);
+	}
+	writer.Int32(static_cast<int32_t>(records.size()));
+	for (const auto &r : records) {
+		Laurion::WriteMercenaryRecord(writer, r);
+	}
+
+	if (!writer.Ok() || writer.Offset() != payload) {
+		Log(Logs::General, Logs::Mercenaries,
+			"SendMercMerchantShopListLaurion: record sizing mismatch (%u written, %u allocated), not sending.",
+			writer.Offset(), payload);
+		safe_delete(outapp);
+		return;
+	}
+
+	FastQueuePacket(&outapp);
+
+	Log(Logs::Detail, Logs::Mercenaries,
+		"Sent Laurion mercenary shop list: %zu types, %zu mercenaries. Client: %s.",
+		type_ids.size(), records.size(), GetName());
+}
+
 void Client::SendMercAssignPacket(uint32 entityID, uint32 unk01, uint32 unk02) {
+	// Laurion's 0x4c40 payload is not this struct. The client reads 24 dword-aligned bytes:
+	//   i32 has_mercenary | i32 initTimeMS | i32 warningTimeMS | i32 state | i64 restorationTime
+	// (disassembly 0x1402af701..0x1402af740), while MercenaryAssign_Struct is 12 bytes of
+	// {entity id, unk, unk}. Sending the RoF shape would make the client read the entity id as the
+	// has-mercenary byte and then a garbage timer triple, and its transition check would answer
+	// with a 0x7172 re-sync request every time. Route to the Laurion builder instead.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercAssignStateLaurion();
+		return;
+	}
+
 	auto outapp = new EQApplicationPacket(OP_MercenaryAssign, sizeof(MercenaryAssign_Struct));
 	MercenaryAssign_Struct* mas = (MercenaryAssign_Struct*)outapp->pBuffer;
 	mas->MercEntityID = entityID;
@@ -5757,7 +6539,7 @@ void NPC::LoadMercenaryTypes()
 {
 	const std::string& query = fmt::format(
 		SQL(
-			SELECT DISTINCT MTyp.dbstring, MTyp.clientversion
+			SELECT DISTINCT MTyp.dbstring_id, MTyp.clientversion
 			FROM merc_merchant_entries MME, merc_merchant_template_entries MMTE,
 			merc_types MTyp, merc_templates MTem
 			WHERE MME.merchant_id = {}
@@ -5774,9 +6556,22 @@ void NPC::LoadMercenaryTypes()
 	}
 
 	for (auto row : results) {
+		const uint32 type_id = Strings::ToUnsignedInt(row[0]);
+
+		// dbstring_id is a dbstr_us.txt category 21 (eMercenaryCategory) id. The client resolves
+		// it in its own string table and shows a blank TypeComboBox entry plus
+		// "Unknown DB String %d-%d" in the CLIENT log when it is missing, which the server never
+		// sees. 0 is what MySQL leaves behind if a non-numeric value was coerced, so reject it here.
+		if (type_id == 0) {
+			Log(Logs::General, Logs::Mercenaries,
+				"LoadMercenaryTypes: merchant NPC %u has a merc_type with dbstring_id 0; the client cannot label it.",
+				GetNPCTypeID());
+			continue;
+		}
+
 		mercTypeList.push_back(
 			MercType{
-				.Type = Strings::ToUnsignedInt(row[0]),
+				.Type = type_id,
 				.ClientVersion = Strings::ToUnsignedInt(row[1])
 			}
 		);
@@ -5787,8 +6582,8 @@ void NPC::LoadMercenaries()
 {
 	const std::string& query = fmt::format(
 		SQL(
-			SELECT DISTINCT MTem.merc_template_id, MTyp.dbstring AS merc_type_id,
-			MTem.dbstring AS merc_subtype_id, 0 AS CostFormula,
+			SELECT DISTINCT MTem.merc_template_id, MTyp.dbstring_id AS merc_type_id,
+			MTem.dbstring_id AS merc_subtype_id, 0 AS CostFormula,
 			CASE WHEN MTem.clientversion > MTyp.clientversion
 			THEN MTem.clientversion
 			ELSE MTyp.clientversion END AS clientversion, MTem.merc_npc_type_id

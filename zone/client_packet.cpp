@@ -17,6 +17,8 @@
 */
 #include "client.h"
 
+#include "merc.h"
+
 #include "common/data_bucket.h"
 #include "common/data_verification.h"
 #include "common/eqemu_logsys.h"
@@ -351,6 +353,14 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_MercenarySuspendRequest] = &Client::Handle_OP_MercenarySuspendRequest;
 	ConnectedOpcodes[OP_MercenarySwitch] = &Client::Handle_OP_MercenarySwitch;
 	ConnectedOpcodes[OP_MercenaryTimerRequest] = &Client::Handle_OP_MercenaryTimerRequest;
+	// Laurion mercenary surfaces with no RoF counterpart. Each is unmapped (0x0000) in the older
+	// patch confs, so these handlers can only ever fire for a Laurion client.
+	ConnectedOpcodes[OP_MercenaryAABuy] = &Client::Handle_OP_MercenaryAABuy;
+	ConnectedOpcodes[OP_MercenaryAssistMode] = &Client::Handle_OP_MercenaryAssistMode;
+	ConnectedOpcodes[OP_MercenaryCallAssist] = &Client::Handle_OP_MercenaryCallAssist;
+	ConnectedOpcodes[OP_MercenaryRecordDumpReply] = &Client::Handle_OP_MercenaryRecordDumpReply;
+	ConnectedOpcodes[OP_MercenaryTransferResult] = &Client::Handle_OP_MercenaryTransferResult;
+	ConnectedOpcodes[OP_MercenaryLogfileRequest] = &Client::Handle_OP_MercenaryLogfileRequest;
 	ConnectedOpcodes[OP_MoveCoin] = &Client::Handle_OP_MoveCoin;
 	ConnectedOpcodes[OP_MoveItem] = &Client::Handle_OP_MoveItem;
 	ConnectedOpcodes[OP_MoveMultipleItems] = &Client::Handle_OP_MoveMultipleItems;
@@ -1595,6 +1605,12 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 
 	if (!database.LoadAlternateAdvancement(this)) {
 		LogError("Error loading AA points for [{}]", GetName());
+	}
+
+	// Mercenary AA is separate from player AA and has its own tables; it is loaded here rather
+	// than in LoadAlternateAdvancement so a failure in one does not hide the other.
+	if (!database.LoadMercenaryAA(this)) {
+		LogError("Error loading mercenary AA for [{}]", GetName());
 	}
 
 	if (RuleB(Bots, Enabled)) {
@@ -12250,6 +12266,13 @@ void Client::Handle_OP_MercenaryDataRequest(const EQApplicationPacket *app)
 		if (mercCount > MAX_MERC)
 			return;
 
+		// Laurion's shop packet is variable length and has no merchant id on the wire; it is built
+		// through Laurion::MercenaryRecordWriter rather than the fixed RoF carrier.
+		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			SendMercMerchantShopListLaurion(tar);
+			return;
+		}
+
 		std::list<MercType> mercTypeList = tar->GetMercenaryTypesList(static_cast<unsigned int>(ClientVersion()));
 		std::list<MercData> mercDataList = tar->GetMercenariesList(static_cast<unsigned int>(ClientVersion()));
 
@@ -12327,9 +12350,11 @@ void Client::Handle_OP_MercenaryDataRequest(const EQApplicationPacket *app)
 
 void Client::Handle_OP_MercenaryDataUpdateRequest(const EQApplicationPacket *app)
 {
-	// The payload is 0 bytes for older clients. LS sends two client side mercenary
-	// manager dwords on 0x0b22 which the handler does not consume, so accept up to 8.
-	if (app->size > 8)
+	// The payload is 0 bytes for older clients. Laurion sends exactly two dwords on 0x0b22 from
+	// FUN_14044f160, wired to the Manage window's StanceListBox: the MercenaryInfo stance group id
+	// (+0x28) followed by the stance id (+0x2C) the player just picked. Both values came from the
+	// stance pairs this server put into the 0x59b7 record, so they are ids, not list positions.
+	if (app->size != 0 && app->size != sizeof(MercenaryStanceChange_Struct))
 	{
 		Message(Chat::Red, "Size mismatch in OP_MercenaryDataUpdateRequest expected 0 got %i", app->size);
 		LogDebug("Size mismatch in OP_MercenaryDataUpdateRequest expected 0 got [{}]", app->size);
@@ -12338,6 +12363,76 @@ void Client::Handle_OP_MercenaryDataUpdateRequest(const EQApplicationPacket *app
 	}
 
 	Log(Logs::General, Logs::Mercenaries, "Data Update Request Received for %s.", GetName());
+
+	if (!RuleB(Mercs, AllowMercs))
+		return;
+
+	if (app->size == sizeof(MercenaryStanceChange_Struct))
+	{
+		const MercenaryStanceChange_Struct *st = reinterpret_cast<const MercenaryStanceChange_Struct *>(app->pBuffer);
+		const int32 stance_id = st->StanceID;
+
+		Merc *merc = GetMerc();
+		const uint32 template_id = merc ? merc->GetMercenaryTemplateID() : GetMercInfo().MercTemplateID;
+
+		auto stance_it = zone->merc_stance_list.find(template_id);
+		bool valid_stance = false;
+		if (stance_it != zone->merc_stance_list.end()) {
+			for (const auto &s : stance_it->second) {
+				if (s.StanceID == static_cast<uint32>(stance_id)) {
+					valid_stance = true;
+					break;
+				}
+			}
+		}
+
+		if (!valid_stance) {
+			// The client already prints "Your mercenary does not have stance: %s!" from its own list.
+			// Resending the owned list is what puts its MercenaryInfo back in agreement with the server,
+			// which is the only thing that restores the stance combo box. This is the one branch that
+			// still pushes 0x59b7, and it is self-limiting: the record the client then rebuilds its
+			// stance list from carries the server's stance, so the request that follows is a no-op and
+			// is swallowed below.
+			Log(Logs::General, Logs::Mercenaries,
+				"Stance %d rejected for %s: not in the stance list of mercenary template %u.",
+				stance_id, GetName(), template_id);
+			SendMercPersonalInfo();
+			return;
+		}
+
+		// The client re-sends this opcode on its own, with no player input, after every 0x59b7 and
+		// every 0x6f85. Copying a 0x59b7 record into MercenaryClientData (FUN_1402a90e0) and the
+		// 0x6f85 arm at 0x1402af935 both end in FUN_1402ac550, which raises UI event 0x13. FUN_14044e3a0
+		// case 0x11 deletes and rebuilds the StanceListBox and then calls FUN_14044f160 on the new
+		// selection unconditionally, and FUN_14044f160 sends 0x0b22. Answering that echo with another
+		// 0x59b7 closes the loop: on this server on 2026-10-19 the pair ran 6874 times in 219 seconds
+		// (docs/mercenary.md section 15). A request that repeats the stance the server already holds is
+		// therefore a no-op and gets no reply at all; the client wrote the stance into its own record in
+		// FUN_14044f160 before sending, so it is already consistent.
+		if (stance_id == static_cast<int32>(GetMercInfo().Stance) &&
+			(!merc || stance_id == static_cast<int32>(merc->GetStance()))) {
+			LogMercenariesDetail("Ignoring repeat stance request (%d) for %s: stance already set.",
+				stance_id, GetName());
+			return;
+		}
+
+		GetMercInfo().Stance = static_cast<uint32>(stance_id);
+
+		if (merc) {
+			merc->SetStance(static_cast<uint8>(stance_id));
+			merc->Save();
+		}
+
+		Log(Logs::General, Logs::Mercenaries, "Set Stance: %d for %s (%s)", stance_id,
+			merc ? merc->GetName() : "<none>", GetName());
+
+		// Laurion's own confirmation for this opcode is the 4-byte S->C arm at 0x1402af12c, which
+		// raises UI event 0x10 with the stance id. That is the only reply this request needs. The
+		// owned list is deliberately not resent, because 0x59b7 is exactly what makes the client ask
+		// again.
+		SendMercenaryStanceNotificationLaurion(stance_id);
+		return;
+	}
 
 	if (GetMercenaryID())
 	{
@@ -12533,12 +12628,24 @@ void Client::Handle_OP_MercenarySwitch(const EQApplicationPacket *app)
 
 	if (target_slot < 0) {
 		Log(Logs::General, Logs::Mercenaries, "Switch request denied — UI index %u has no corresponding merc for %s.", merc_ui_index, GetName());
-		SendMercResponsePackets(0);
+		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			// Laurion reads the reply as {unk0, suspend_remaining_ms, result}; result 3 is the
+			// client's own "you have lost access to that slot." line.
+			SendMercenarySwitchResultLaurion(0, LaurionSwitchLostSlotAccess);
+		} else {
+			SendMercResponsePackets(0);
+		}
 		return;
 	}
 
 	if (target_slot == GetMercSlot()) {
 		Log(Logs::General, Logs::Mercenaries, "Switch request ignored — already on slot %i for %s.", target_slot, GetName());
+		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			// FUN_1402b2030 refuses this locally and prints "Already using that mercenary!" without
+			// sending anything, so reaching here means a desync. Answer with the client's own
+			// "cannot switch right now" code rather than staying silent.
+			SendMercenarySwitchResultLaurion(0, LaurionSwitchNotAllowedNow);
+		}
 		return;
 	}
 
@@ -12559,7 +12666,39 @@ void Client::Handle_OP_MercenarySwitch(const EQApplicationPacket *app)
 
 	SetMercSlot(static_cast<uint8>(target_slot));
 
+	// The client carries the previous mercenary's stance selection across a switch and sends it for
+	// the new one, which the server then has to reject -- the "Stance 5 rejected ... not in the stance
+	// list of mercenary template 362" pair in the 2026-10-19 capture (docs/mercenary.md 15.8).
+	// Normalise this slot's stance to one its own template actually has before anything is pushed.
+	{
+		const int32_t clamped = ClampLaurionStance(
+			GetMercInfo().MercTemplateID, static_cast<int32_t>(GetMercInfo().Stance));
+		if (clamped != static_cast<int32_t>(GetMercInfo().Stance)) {
+			Log(Logs::General, Logs::Mercenaries,
+				"Stance %u is not in the stance list of mercenary template %u; switching to stance %d for %s.",
+				GetMercInfo().Stance, GetMercInfo().MercTemplateID, clamped, GetName());
+			GetMercInfo().Stance = static_cast<uint32>(clamped);
+			if (GetMerc()) {
+				GetMerc()->SetStance(static_cast<uint8>(clamped));
+			}
+		}
+	}
+
 	Log(Logs::General, Logs::Mercenaries, "Switched active merc slot to %i (UI index %u) for %s.", target_slot, merc_ui_index, GetName());
+
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		// The owned list first, then the switch result -- the order is the fix.
+		//
+		// FUN_1402ae8e0 (the 0x72b6 arm) repaints the Manage window, and FUN_14044e3a0 case 0x11
+		// deletes and rebuilds the StanceListBox from whatever MercenaryClientData currently holds,
+		// then calls FUN_14044f160 on the new selection unconditionally -- and FUN_14044f160 sends
+		// 0x0b22. If the list has not arrived yet, that selection still belongs to the mercenary that
+		// was just switched away from. Pushing 0x59b7 first means the stance the client asks for is
+		// already the one this server holds, so the request is swallowed as a repeat rather than
+		// rejected and re-pushed.
+		SendMercPersonalInfo();
+		SendMercenarySwitchResultLaurion(0, LaurionSwitchOk);
+	}
 
 	// Unsuspend the target merc
 	SuspendMercCommand();
@@ -12579,6 +12718,32 @@ void Client::Handle_OP_MercenaryTimerRequest(const EQApplicationPacket *app)
 	Log(Logs::General, Logs::Mercenaries, "Timer Request received for %s.", GetName());
 
 	if (!RuleB(Mercs, AllowMercs)) {
+		return;
+	}
+
+	// Laurion sends 0x7172 from the 0x4c40 arm at 0x1402af0f0. The full guard is:
+	//
+	//   cVar2 = FUN_14007edb0(mgr + 0x140);                  // MercenaryClientData+0x00, has-mercenary
+	//   iVar3 = *(int *)(mgr + 0x144);                       // MercenaryClientData+0x04, state
+	//   if (((cVar2 == 0) && (*param_3 != 0)) ||            // I had no mercenary, this one says I do
+	//       ((iVar3 == 3 || iVar3 < 0 || iVar3 > 5) && param_3[3] != 6))
+	//       send 0x7172;
+	//
+	// and only then does it apply the push:
+	//
+	//   FUN_1402a9170(mgr + 0x140, *param_3);               // has-mercenary byte
+	//   FUN_1402a9190(mgr + 0x140, param_3[3]);             // state
+	//   FUN_140081e70(mgr + 0x140, *(int64 *)(param_3 + 4));// restoration time
+	//   mgr + 0x278 = param_3[1];  mgr + 0x27c = param_3[2];// init/warning ms
+	//
+	// The state the client already holds has therefore been overwritten by the very packet that
+	// triggered this request, so 0x7172 is a request for the *timers*, not for another state push.
+	// Answering it with SendMercAssignStateLaurion() is a loop: an active mercenary leaves the client
+	// at state 3 (the only value in 0..5 that makes __GetLabelFromEQ paint the Merc tab, see
+	// docs/mercenary.md 4.8.3), and state 3 with a pushed state other than 6 re-arms the guard on
+	// every subsequent 0x4c40. On 2026-10-21 that ping-ponged 0x4c40 <-> 0x7172 indefinitely.
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		SendMercenaryTimerLaurion(GetMercInfo().MercTimerRemaining);
 		return;
 	}
 

@@ -1,6 +1,14 @@
 #ifndef LAURION_STRUCTS_H_
 #define LAURION_STRUCTS_H_
 
+#include "laurion_limits.h"
+
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace Laurion {
 		// EqGuid is a 8-byte GUID used for character/world identification
 		struct EqGuid {
@@ -2165,6 +2173,377 @@ namespace Laurion {
 #pragma pack()
 
 	};	//end namespace structs
+
+	// ---------------------------------------------------------------------------
+	// Mercenary record -- docs/mercenary.md 4.1
+	//
+	// The record shared by 0x59b7 (owned mercenary list) and 0x689c (merchant shop list).
+	// The client's reader is FUN_1402b2140: it reads every field sequentially with NO
+	// alignment padding and bounds-checks each read against the remaining size. A packed
+	// struct cannot express a 1-byte field sitting between 4-byte fields plus a
+	// variable-length name, so the record is written and read through a cursor.
+	//
+	// Wire order, verified field by field against FUN_1402b2140:
+	//
+	//   0x00 int32  id
+	//   0x04 int32  type_string_id      dbstr category 21 (eMercenaryCategory)
+	//   0x08 int32  subtype_string_id   dbstr categories 22 and 23 share one id
+	//   0x0C int32  initial_cost
+	//   0x10 int32  upkeep_cost
+	//   0x14 uint8  required_membership_level   <- a BYTE, not a uint32
+	//   0x15 int32  alt_initial_cost
+	//   0x19 int32  alt_upkeep_cost
+	//   0x1D int32  alt_currency_id
+	//   0x21 uint8  alt_currency_only
+	//   0x22 int32  time_remaining
+	//   0x26 int32  stance_group_id
+	//   0x2A int32  stance_id
+	//   0x2E int32  num_stances
+	//   0x32 int32  unsuspended_time    (the client sign-extends it to int64)
+	//   0x36 uint8  auto_assist
+	//   0x37 int32  type                <- dbstr category 36 role id, Laurion::MercRole (1..5).
+	//      FUN_140452450 formats each MMTW_MercListBox row as
+	//      "%s - %s%s" with GetString(rec.type, 36) first, so a 0 here is what the player reads as
+	//      "Unknown DB String 0-36 - Apprentice" in the available mercenaries list.
+	//   0x3B char*  name                null terminated, strlen+1 consumed
+	//   ....     num_stances x { int32 stance_id, int32 stance_string_id }
+	//
+	// Two things that are easy to get wrong, and both fail silently:
+	//   * required_membership_level is one byte. EQEmu's RoF MercenaryData_Struct puts a
+	//     uint32 Status at 0x14 and has no type field at all; reusing it shifts every later
+	//     field by 3 bytes.
+	//   * the stance pairs are INTERLEAVED (id, dbstr, id, dbstr), not two runs. The client
+	//     loop is param_1[i*2 + 0x22] = read(); param_1[i*2 + 0x23] = read();
+	//
+	// Fixed prefix = 59 bytes, then the name, then 8 * num_stances.
+	// ---------------------------------------------------------------------------
+	struct MercenaryRecord {
+		int32_t  id;
+		int32_t  type_string_id;
+		int32_t  subtype_string_id;
+		int32_t  initial_cost;
+		int32_t  upkeep_cost;
+		uint8_t  required_membership_level;
+		int32_t  alt_initial_cost;
+		int32_t  alt_upkeep_cost;
+		int32_t  alt_currency_id;
+		uint8_t  alt_currency_only;
+		int32_t  time_remaining;
+		int32_t  stance_group_id;
+		int32_t  stance_id;
+		int32_t  num_stances;
+		int32_t  unsuspended_time;
+		uint8_t  auto_assist;
+		int32_t  type;   // Laurion::MercRole -- dbstr category 36 (1 General .. 5 Caster DPS)
+		std::string name;
+		std::vector<std::pair<int32_t, int32_t>> stances;  // {stance_id, stance dbstr id}
+
+		MercenaryRecord()
+		{
+			id = 0;
+			type_string_id = 0;
+			subtype_string_id = 0;
+			initial_cost = 0;
+			upkeep_cost = 0;
+			required_membership_level = 0;
+			alt_initial_cost = 0;
+			alt_upkeep_cost = 0;
+			alt_currency_id = 0;
+			alt_currency_only = 0;
+			time_remaining = 0;
+			stance_group_id = 0;
+			stance_id = 0;
+			num_stances = 0;
+			unsuspended_time = 0;
+			auto_assist = 0;
+			type = 0;
+		}
+	};
+
+	// Bytes before the name: 5*4 + 1 + 3*4 + 1 + 4*4 + 1 + 4 = 59.
+	static const uint32 MERCENARY_RECORD_FIXED_SIZE = 59;
+
+	// The client's MercenaryInfo holds stanceData as a FIXED array at 0x88..0xD8 (0x50 bytes,
+	// 8 per stance). FUN_1402b2140 loops `i < num_stances` and writes param_1[i*2 + 0x22] with
+	// no bound check against that array, so a num_stances above 10 writes past the end of the
+	// record the client just allocated. 10 is also MAX_MERC_STANCES in MacroQuestLS and the
+	// stance dbstr categories (24/25) only define ids 1..9. Never send more than this.
+	static const uint32 MERCENARY_MAX_STANCES = 10;
+
+	inline uint32 MercenaryRecordWireSize(const MercenaryRecord &r)
+	{
+		return MERCENARY_RECORD_FIXED_SIZE
+			+ static_cast<uint32>(r.name.size()) + 1
+			+ 8u * static_cast<uint32>(r.stances.size());
+	}
+
+	// Drop any stances beyond the client's fixed array and keep num_stances in step with the
+	// vector, so a record built from a database list can never overflow the client's struct.
+	inline void ClampMercenaryRecordStances(MercenaryRecord &r)
+	{
+		if (r.stances.size() > MERCENARY_MAX_STANCES) {
+			r.stances.resize(MERCENARY_MAX_STANCES);
+		}
+		r.num_stances = static_cast<int32_t>(r.stances.size());
+	}
+
+	// Sequential unaligned writer. Mirrors the read order of FUN_1402b2140 exactly.
+	// Overflow is latched rather than asserted: an oversized record must not walk off the end
+	// of the allocated packet, and the caller checks Ok() before queueing.
+	class MercenaryRecordWriter {
+	public:
+		MercenaryRecordWriter(unsigned char *buffer, uint32 capacity)
+			: m_buffer(buffer), m_capacity(capacity), m_offset(0), m_overflow(false) {}
+
+		void Int32(int32_t v) { Put(&v, 4); }
+		void UInt8(uint8_t v) { Put(&v, 1); }
+		void String(const char *s)
+		{
+			const uint32 len = static_cast<uint32>(strlen(s)) + 1;   // include the NUL
+			Put(s, len);
+		}
+
+		uint32 Offset() const { return m_offset; }
+		bool Ok() const { return !m_overflow; }
+
+	private:
+		void Put(const void *src, uint32 len)
+		{
+			if (m_offset + len > m_capacity) {
+				m_overflow = true;
+				return;
+			}
+			memcpy(m_buffer + m_offset, src, len);
+			m_offset += len;
+		}
+
+		unsigned char *m_buffer;
+		uint32 m_capacity;
+		uint32 m_offset;
+		bool m_overflow;
+	};
+
+	inline void WriteMercenaryRecord(MercenaryRecordWriter &w, const MercenaryRecord &r)
+	{
+		w.Int32(r.id);
+		w.Int32(r.type_string_id);
+		w.Int32(r.subtype_string_id);
+		w.Int32(r.initial_cost);
+		w.Int32(r.upkeep_cost);
+		w.UInt8(r.required_membership_level);
+		w.Int32(r.alt_initial_cost);
+		w.Int32(r.alt_upkeep_cost);
+		w.Int32(r.alt_currency_id);
+		w.UInt8(r.alt_currency_only);
+		w.Int32(r.time_remaining);
+		w.Int32(r.stance_group_id);
+		w.Int32(r.stance_id);
+		w.Int32(r.num_stances);
+		w.Int32(r.unsuspended_time);
+		w.UInt8(r.auto_assist);
+		w.Int32(r.type);
+		w.String(r.name.c_str());
+
+		// Interleaved, matching the client's i*2 + 0x22 / i*2 + 0x23 loop.
+		for (const auto &s : r.stances) {
+			w.Int32(s.first);
+			w.Int32(s.second);
+		}
+	}
+
+	// Sequential unaligned reader for the DECODE side. Bounds-checked the way the client
+	// bounds-checks: a truncated record stops early instead of reading past the end.
+	class MercenaryRecordReader {
+	public:
+		MercenaryRecordReader(const unsigned char *buffer, uint32 size)
+			: m_buffer(buffer), m_size(size), m_offset(0) {}
+
+		bool Int32(int32_t &v)
+		{
+			if (m_offset + 4 > m_size) return false;
+			memcpy(&v, m_buffer + m_offset, 4);
+			m_offset += 4;
+			return true;
+		}
+
+		bool UInt8(uint8_t &v)
+		{
+			if (m_offset + 1 > m_size) return false;
+			v = m_buffer[m_offset];
+			m_offset += 1;
+			return true;
+		}
+
+		bool String(std::string &s)
+		{
+			const char *start = reinterpret_cast<const char *>(m_buffer + m_offset);
+			const uint32 available = m_size - m_offset;
+			const uint32 len = static_cast<uint32>(strnlen(start, available));
+			if (m_offset + len + 1 > m_size) return false;   // unterminated
+			s.assign(start, len);
+			m_offset += len + 1;                              // consume the NUL
+			return true;
+		}
+
+		uint32 Offset() const { return m_offset; }
+		uint32 Remaining() const { return m_size - m_offset; }
+
+	private:
+		const unsigned char *m_buffer;
+		uint32 m_size;
+		uint32 m_offset;
+	};
+
+	inline bool ReadMercenaryRecord(MercenaryRecordReader &r, MercenaryRecord &out)
+	{
+		if (!r.Int32(out.id)) return false;
+		if (!r.Int32(out.type_string_id)) return false;
+		if (!r.Int32(out.subtype_string_id)) return false;
+		if (!r.Int32(out.initial_cost)) return false;
+		if (!r.Int32(out.upkeep_cost)) return false;
+		if (!r.UInt8(out.required_membership_level)) return false;
+		if (!r.Int32(out.alt_initial_cost)) return false;
+		if (!r.Int32(out.alt_upkeep_cost)) return false;
+		if (!r.Int32(out.alt_currency_id)) return false;
+		if (!r.UInt8(out.alt_currency_only)) return false;
+		if (!r.Int32(out.time_remaining)) return false;
+		if (!r.Int32(out.stance_group_id)) return false;
+		if (!r.Int32(out.stance_id)) return false;
+		if (!r.Int32(out.num_stances)) return false;
+		if (!r.Int32(out.unsuspended_time)) return false;
+		if (!r.UInt8(out.auto_assist)) return false;
+		if (!r.Int32(out.type)) return false;
+		if (!r.String(out.name)) return false;
+
+		// num_stances comes from an untrusted buffer, and the client itself does not bound it.
+		// Reject anything the client's fixed stanceData array could not hold.
+		const int32_t count = out.num_stances;
+		if (count < 0 || static_cast<uint32>(count) > MERCENARY_MAX_STANCES) {
+			return false;
+		}
+
+		out.stances.clear();
+		out.stances.reserve(static_cast<size_t>(count));
+		for (int32_t i = 0; i < count; ++i) {
+			std::pair<int32_t, int32_t> s{};
+			if (!r.Int32(s.first)) return false;
+			if (!r.Int32(s.second)) return false;
+			out.stances.push_back(s);
+		}
+
+		return true;
+	}
+
+	// Mercenary AA ability definition record, opcode 0x78e8.
+	//
+	// Parsed by FUN_1401a7090, which reads ten u32 fields and then calls FUN_1401a6ea0 for the
+	// {lo, hi} array tail. The 0x78e8 arm of FUN_1401a5fa0 copies the parsed record into a node of
+	// the definition container at mgr+0x48 (buckets at mgr+0x68, hashed by ability_id & 0x3f), so
+	// these offsets map 1:1 onto what every later accessor reads back.
+	//
+	// The meanings come from the two places that actually consume them.
+	//
+	// FUN_14033cd80 builds one cell of AAW_MercAAList from the node payload (call it f[]):
+	//   column 0  GetString(f[1], 0x25)                            -> category 37, ability name
+	//   column 1  "%d/%d" from f[5] and GetMercMaxRank             -> f[5] is the rank of this ability
+	//   column 2  DAT_14081c65c formatted with f[3]                -> the cost column
+	//   column 3  f[6] > 0 ? GetString(f[6], 0x24) : empty string  -> category 36, ability type
+	// A cell whose ability fails FUN_1401a53f0 is drawn in 0xffc0c0c0 (grey).
+	//
+	// FUN_1401a53f0 is the buy gate, same node layout:
+	//   (int)f[3] <= *(int *)(pinstLocalPC + 0x2738)  -> cost against the AA point pool, which
+	//                                                  0x50e6 action 1 writes from its payload
+	//   (int)f[7] <= <player level getter, vtable + 0xe8> -> level requirement
+	//   FUN_1401251e0(mgr + 0x488, f[8])              -> alternate currency container lookup
+	//   a prerequisite needs (int)prereq_rank <= (int)f[5] of this ability
+	//
+	// f[3] is the purchase cost, not a rank count. The maximum rank the client enforces comes from
+	// CAltAbilityData__GetMercMaxRank, which returns the member count of the group FUN_1401a4ff0
+	// builds from f[4]; f[3] never feeds it.
+	struct MercenaryAAAbilityRecord {
+		int32_t ability_id = 0;   // f0  [PROVEN] hash key, BuyAbility argument, first u32 of 0x3861
+		int32_t name_sid = 0;     // f1  [PROVEN] dbstr category 37 eMercenaryAbilityName
+		int32_t desc_sid = 0;     // f2  [CANDIDATE] dbstr category 38 eMercenaryAbilityDescription
+		int32_t cost = 0;         // f3  [PROVEN] AA point cost: cost column and the FUN_1401a53f0 gate
+		int32_t group_id = 0;     // f4  [PROVEN] key of the granted-ability container (mgr+0x6d0)
+		int32_t rank_index = 0;   // f5  [PROVEN] rank this ability represents inside group_id
+		int32_t aa_type = 0;      // f6  [PROVEN] dbstr category 36 eMercenaryAbilityType (1..5)
+		int32_t level_req = 0;    // f7  [PROVEN] minimum player level, compared against the PC level
+		int32_t currency_id = 0;  // f8  [PROVEN] alternate currency id checked at mgr+0x488
+		int32_t flags = 0;        // f9  unresolved: no consumer found, sent as zero
+
+		// FUN_1401a6ea0 reads array_count, then array_count pairs. Each pair becomes one u64 entry
+		// with the first u32 in the low half, so entry.first is the u32 that appears first on the wire.
+		std::vector<std::pair<int32_t, int32_t>> ranks;
+	};
+
+	// Ten fields + the array_count dword.
+	static const uint32 MERCENARY_AA_RECORD_FIXED_SIZE = 44;
+
+	// The client clears both the definition container (mgr+0x48) and the group index (mgr+0x268) at
+	// the top of the 0x78e8 arm -- FUN_1401a6ce0 and FUN_1401a6c40 -- so this packet is a full
+	// replacement and re-sending it on every zone-in is correct rather than duplicating rows.
+	inline uint32 MercenaryAARecordWireSize(const MercenaryAAAbilityRecord &r)
+	{
+		return MERCENARY_AA_RECORD_FIXED_SIZE
+			+ static_cast<uint32>(r.ranks.size()) * 8;
+	}
+
+	inline void WriteMercenaryAAAbility(MercenaryRecordWriter &w, const MercenaryAAAbilityRecord &r)
+	{
+		w.Int32(r.ability_id);
+		w.Int32(r.name_sid);
+		w.Int32(r.desc_sid);
+		w.Int32(r.cost);
+		w.Int32(r.group_id);
+		w.Int32(r.rank_index);
+		w.Int32(r.aa_type);
+		w.Int32(r.level_req);
+		w.Int32(r.currency_id);
+		w.Int32(r.flags);
+
+		w.Int32(static_cast<int32_t>(r.ranks.size()));
+		for (const auto &p : r.ranks) {
+			w.Int32(p.first);
+			w.Int32(p.second);
+		}
+	}
+
+	inline bool ReadMercenaryAAAbility(MercenaryRecordReader &r, MercenaryAAAbilityRecord &out)
+	{
+		if (!r.Int32(out.ability_id)) return false;
+		if (!r.Int32(out.name_sid)) return false;
+		if (!r.Int32(out.desc_sid)) return false;
+		if (!r.Int32(out.cost)) return false;
+		if (!r.Int32(out.group_id)) return false;
+		if (!r.Int32(out.rank_index)) return false;
+		if (!r.Int32(out.aa_type)) return false;
+		if (!r.Int32(out.level_req)) return false;
+		if (!r.Int32(out.currency_id)) return false;
+		if (!r.Int32(out.flags)) return false;
+
+		int32_t count = 0;
+		if (!r.Int32(count)) {
+			return false;
+		}
+		// Each entry is 8 bytes, so a count larger than the remaining buffer cannot be satisfied.
+		// Reject it instead of looping against the bounds checks.
+		if (count < 0 || static_cast<uint32>(count) > (r.Remaining() / 8)) {
+			return false;
+		}
+
+		out.ranks.clear();
+		out.ranks.reserve(static_cast<size_t>(count));
+		for (int32_t i = 0; i < count; ++i) {
+			std::pair<int32_t, int32_t> p{};
+			if (!r.Int32(p.first)) return false;
+			if (!r.Int32(p.second)) return false;
+			out.ranks.push_back(p);
+		}
+
+		return true;
+	}
+
 };	//end namespace laurion
 
 #endif /*LAURION_STRUCTS_H_*/

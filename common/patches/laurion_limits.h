@@ -29,6 +29,24 @@ namespace Laurion
 	const int16 IINVALID = -1;
 	const int16 INULL = 0;
 
+	// dbstr_us.txt category 36 (eMercenaryAbilityType): the mercenary role. Laurion's mercenary
+	// packets carry this id in MercenaryRecord::type and MercenaryAAAbilityRecord::aa_type, and the
+	// client renders it with CDBStr__GetString(id, 36) -- the merchant window's available-mercenary
+	// list, the AA window's merc-type filter (FUN_14033a5d0 at 0x14033b2e9) and the AA list type
+	// column. Category 36 only defines 1..5, and CDBStr__GetString returns its own error buffer as
+	// the label when the pair is missing, so a 0 or an ability id shows up verbatim in the window as
+	// "Unknown DB String 0-36".
+	//
+	// This is a different numbering from EQEmu's TANK / HEALER / MELEEDPS / CASTERDPS constants,
+	// which are merc_subtypes.class_id values.
+	enum MercRole : int32_t {
+		MercRoleGeneral   = 1, // dbstr 1^36^General
+		MercRoleTank      = 2, // dbstr 2^36^Tank
+		MercRoleHealer    = 3, // dbstr 3^36^Healer
+		MercRoleMeleeDPS  = 4, // dbstr 4^36^Melee DPS
+		MercRoleCasterDPS = 5, // dbstr 5^36^Caster DPS
+	};
+
 	namespace inventory {
 		inline EQ::versions::ClientVersion GetInventoryRef() { return EQ::versions::ClientVersion::Laurion; }
 

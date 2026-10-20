@@ -2013,7 +2013,8 @@ const NPCType* ZoneDatabase::GetMercenaryType(uint32 merc_npc_type_id, uint16 ra
 			m_stats.Accuracy,
 			m_stats.statscale,
 			m_stats.spellscale,
-			m_stats.healscale
+			m_stats.healscale,
+			m_stats.Avoidance
 			FROM merc_stats m_stats
 			INNER JOIN merc_armorinfo m_armorinfo
 			ON m_stats.merc_npc_type_id = m_armorinfo.merc_npc_type_id
@@ -2154,6 +2155,10 @@ const NPCType* ZoneDatabase::GetMercenaryType(uint32 merc_npc_type_id, uint16 ra
 	t->scalerate        = Strings::ToInt(row[43]);
 	t->spellscale       = Strings::ToInt(row[44]);
 	t->healscale        = Strings::ToInt(row[45]);
+	// merc_stats.Avoidance is the mercenary equivalent of npc_types.avoidance: a flat bonus that
+	// NPC::NPC() copies into NPC::avoidance_rating and Mob::compute_defense() adds under IsNPC().
+	// Appended last so the positional indices above keep their meaning.
+	t->avoidance_rating = Strings::ToInt(row[46]);
 	t->skip_global_loot = true;
 	t->skip_auto_scale  = true;
 
@@ -2247,7 +2252,14 @@ bool ZoneDatabase::LoadCurrentMercenary(Client* c)
 	m.MercTimerRemaining = e.TimerRemaining;
 	m.Gender             = e.Gender;
 	m.MercSize           = e.MercSize;
-	m.State              = e.StanceID;
+	m.Stance             = e.StanceID;
+	// m.State is the Laurion MercenaryClientData state (see LaurionMercState in zone/merc.h), not a
+	// stance. Copying StanceID into it made every loaded mercenary report state 1..9, and the 0x4c40
+	// arm treats a state outside 0..5 combined with a contradictory has-mercenary byte as a corrupt
+	// transition and answers with a 0x7172 re-sync request. The real state is derived from whether
+	// the mercenary is spawned and whether it is suspended, which is what LaurionStateForClient does.
+	m.State              = 0;
+	m.AutoAssist         = e.AutoAssist != 0;
 	m.hp                 = e.HP;
 	m.mana               = e.Mana;
 	m.endurance          = e.Endurance;
@@ -2286,6 +2298,7 @@ bool ZoneDatabase::SaveMercenary(Merc* m)
 		e.Gender           = m->GetGender();
 		e.MercSize         = m->GetSize();
 		e.StanceID         = m->GetStance();
+		e.AutoAssist       = c->GetMercInfo().AutoAssist ? 1 : 0;
 		e.HP               = m->GetHP();
 		e.Mana             = m->GetMana();
 		e.Endurance        = m->GetEndurance();
@@ -2327,6 +2340,7 @@ bool ZoneDatabase::SaveMercenary(Merc* m)
 	e.Gender           = m->GetGender();
 	e.MercSize         = m->GetSize();
 	e.StanceID         = m->GetStance();
+	e.AutoAssist       = c->GetMercInfo().AutoAssist ? 1 : 0;
 	e.HP               = m->GetHP();
 	e.Mana             = m->GetMana();
 	e.Endurance        = m->GetEndurance();

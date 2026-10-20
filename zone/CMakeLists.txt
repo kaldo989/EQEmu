@@ -58,6 +58,7 @@ set(zone_sources
     main.cpp
     map.cpp
     merc.cpp
+    merc_laurion.cpp
     mob.cpp
     mob_ai.cpp
     mob_appearance.cpp

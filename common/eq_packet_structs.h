@@ -6294,6 +6294,7 @@ struct MercenaryDataUpdate_Struct {
 /*0008*/	MercenaryData_Struct MercData[MAX_MERC];	// Data for individual mercenaries in the Merchant List
 };
 
+
 // [OPCode: 0x6537] On Live as of April 2 2012 [Server->Client]
 // Size 12 and sent on Zone-In if no mercenary is currently hired and when merc is dismissed
 // (Same packet as MercAssign_Struct?)
@@ -6331,6 +6332,213 @@ struct MercenaryCommand_Struct {
 /*0008*/
 };
 
+// Mercenary Alternate Advancement id/value pair.
+// The client treats Value as an opaque u32: FUN_14061e0c0(player, aa_id, value) stores it
+// verbatim, and for a rank-based ability it happens to be the current rank.
+struct MercenaryAAPair_Struct {
+/*0000*/	uint32	AAID;
+/*0004*/	uint32	Value;
+/*0008*/
+};
+
+// [Laurion 0x0516] OP_MercenaryAAGrant [Server->Client] [Variable length]
+// Handled by FUN_1401a5fa0. The client first clears its granted-ability container (mgr+0x6d0)
+// and the three CAltAdvManager counters (player+0x2740 / +0x2748 / +0x2750), then applies every
+// pair through FUN_14061e0c0 and registers it with FUN_1401a71f0. That makes this packet the
+// authoritative full state, so it must list every granted ability, not just a delta.
+struct MercenaryAAGrant_Struct {
+/*0000*/	uint32	Count;
+/*0004*/	struct	MercenaryAAPair_Struct Pairs[0]; // Count entries
+/*0004 + 8*Count*/
+};
+
+// [Laurion 0x3e8c] OP_MercenaryAARanks [Server->Client] [Variable length]
+// Handled by FUN_1401a5fa0. Ids and values are sent as two separate runs, NOT interleaved:
+//   u32 n | u32 ids[n] | u32 m | u32 values[m]
+// The client only applies the update when n == m; otherwise it discards the packet with no
+// error and no log, so a mismatch is silent. Always emit n == m.
+struct MercenaryAARanks_Struct {
+/*0000*/	uint32	IDCount;	// n
+/*0004*/	uint32	IDs[0];	// n u32, then a u32 m, then m u32
+/*0004 + 4*n + 4 + 4*m*/
+};
+
+// [Laurion 0x3861] OP_MercenaryAABuy [Client->Server] [Size: 20]
+// Built by FUN_1401a6db0 and sent as CConnection__sendPacket(__gWorld, 4, buf, 22), i.e. a
+// 2 byte opcode plus exactly these 20 bytes. AbilityID is the value the client got from
+// CListWnd__GetItemData(AAW_MercAAList), which is field f0 of the 0x78e8 record and the hash key
+// of its definition node (FUN_14033a4d0 matches on it). ModeOrRank is 2 for a normal purchase;
+// when the caller forces a rank it becomes (rank + 9). The server answers with 0x50e6.
+struct MercenaryAABuy_Struct {
+/*0000*/	uint32	AbilityID;
+/*0004*/	uint32	Zero0;
+/*0008*/	uint64	Zero1;
+/*0016*/	uint32	ModeOrRank;
+/*0020*/
+};
+
+// [Laurion 0x50e6] OP_MercenaryAAAction [Server->Client] [Size: 20]
+// The only mercenary AA packet with a real sub-command field. FUN_1401a5fa0 switches on Action:
+//   0  Arg2 -> AA point pool
+//   1  Arg2 -> pool, Arg0 -> assigned, Arg1 -> available
+//   2  grant rank: FUN_14061e0c0(player, Arg0, Arg1) then FUN_1401a71f0(mgr, Arg0)
+//   3  clear rank: FUN_14062f920(player, Arg0) then FUN_1401a69c0(mgr, Arg0)
+//   4  refund everything: FUN_1401a5690(player) then FUN_1401a69c0(mgr, Arg0)
+//   7  same as 2
+//   8  same as 3
+//   5 and 6 are not handled by the client at all, so sending them does nothing.
+// A grant sent here is dropped unless the ability is already in the 0x78e8 definition container.
+struct MercenaryAAAction_Struct {
+/*0000*/	uint32	Arg0;	// ability id for actions 2/3/7/8, assigned points for action 1
+/*0004*/	uint32	Arg1;	// rank value for actions 2/7, available points for action 1
+/*0008*/	uint64	Arg2;	// point pool for actions 0/1
+/*0016*/	uint32	Action;
+/*0020*/
+};
+
+// [Laurion 0x4c40] OP_MercenaryAssign [Server->Client] [Size: 24]
+// The active mercenary state push. Every field is a dword aligned read; disassembly at
+// 0x1402af701..0x1402af740 reads byte 0x00 with MOVZX, then dwords at +0x04, +0x08, +0x0C and a
+// qword at +0x10. This is NOT MercenaryAssign_Struct: the RoF 12 byte shape would make the client
+// read the entity id as the has-mercenary byte and then a garbage timer triple.
+//
+// The client also reacts to the transition itself: if it had no mercenary and this one says it
+// does, or its state was 3 / out of 0..5 and State is not 6, it sends OP_MercenaryTimerRequest
+// (0x7172) back to ask the server to re-sync. If it had a mercenary, this one has none, and
+// State == 6, it runs its own local dismiss.
+struct MercenaryAssignLaurion_Struct {
+/*0000*/	uint32	HasMercenary;	// only the low byte is read -> MercenaryClientData+0x00
+/*0004*/	uint32	InitTimeMS;	// -> mgr+0x278, the Manage window's initial warning window
+/*0008*/	uint32	WarningTimeMS;	// -> mgr+0x27C, how long before expiry the client warns
+/*0012*/	uint32	State;		// -> MercenaryClientData+0x04: 0 none, 1 ready, 2 suspended,
+						// 4 dead, 5 active, 6 transient (dismissed / just unsuspended)
+/*0016*/	uint64	RestorationTime;	// -> MercenaryClientData+0x08, unix time the mercenary is usable again
+/*0024*/
+};
+
+// [Laurion 0x72b6] OP_MercenarySwitch [Server->Client] [Size: 12]
+// FUN_1402ae8e0. The client only acts on Result; SuspendRemainingMS is the cooldown it renders
+// for result 2 and the unsuspend delay it applies for result 0.
+struct MercenarySwitchResult_Struct {
+/*0000*/	uint32	Unk0;	// never read by the client
+/*0004*/	uint32	SuspendRemainingMS;	// result 0: applied as now + this; result 2: formatted as a duration
+/*0008*/	uint32	Result;	// 0 ok, 1 not in fast regen, 2 cannot unsuspend yet,
+						// 3 lost access to that slot, 4 current mercenary dead, 5 cannot switch now
+/*0012*/
+};
+
+// [Laurion 0x0b22] OP_MercenaryDataUpdateRequest [Client->Server] [Size: 8]
+// FUN_14044f160, the StanceListBox handler. It resolves the selection through
+// FUN_1402b19b0(mgr, stance_id) locally and then sends the current MercenaryInfo stance pair.
+// Older clients sent this opcode with no payload, which is why the handler accepts 0 or 8.
+struct MercenaryStanceChange_Struct {
+/*0000*/	int32	StanceGroupID;	// MercenaryInfo+0x28
+/*0004*/	int32	StanceID;	// MercenaryInfo+0x2C, and the dbstr id for categories 24 and 25
+/*0008*/
+};
+
+// [Laurion 0x4135] OP_MercenaryCostUpdate [Server->Client] [Size: 16]
+// Reprices the currently selected mercenary in place, without resending the whole owned list.
+// FUN_1402af060 arm at 0x1402af33e loads payload+4/+8/+0xC into EBX/EDI/ESI and writes them to
+// MercenaryInfo +0x0C, +0x14, +0x10 and +0x18 in that order, then raises UI event 0x1A.
+// Costs are in 1/10 plat units: the client prints plat = value/10 and gold = value%10.
+struct MercenaryCostUpdate_Struct {
+/*0000*/	uint32	InitialCost;	// MercenaryInfo+0x0C
+/*0004*/	uint32	AltInitialCost;	// MercenaryInfo+0x14
+/*0008*/	uint32	UpkeepCost;	// MercenaryInfo+0x10
+/*0012*/	uint32	AltUpkeepCost;	// MercenaryInfo+0x18
+/*0016*/
+};
+
+// [Laurion 0x33e0] OP_MercenarySpawnLink [Server->Client] [Size: 8]
+// Ties the mercenary NPC to its owner in the client's spawn table. The arm at 0x1402af3a0 does
+// spawn(OwnerSpawnID)->0x1348 = MercenarySpawnID and spawn(MercenarySpawnID)->0x134C =
+// OwnerSpawnID, then FUN_1402e2050(spawn). Without this the client has no idea the NPC is your
+// mercenary: no pet bar, no ownership, and the Manage window cannot follow it.
+struct MercenarySpawnLink_Struct {
+/*0000*/	int32	MercenarySpawnID;
+/*0004*/	int32	OwnerSpawnID;
+/*0008*/
+};
+
+// [Laurion 0xd966 offer / 0x452c result] OP_MercenaryTransferOffer, OP_MercenaryTransferResult
+// [Server->Client and Client->Server] [Size: 28]
+// One record shape serves both directions. FUN_1402ad4e0 stores the incoming offer verbatim at
+// mgr+0x2D8..0x2F4 and, when an offer is already pending, sends the same 28 bytes back on 0x452c
+// with Result set to 4 (denied). FUN_1402ad730 reads the target spawn id at +0x04 and the result
+// at +0x18, which is the same offset the client used for Result when it echoed the offer.
+struct MercenaryTransfer_Struct {
+/*0000*/	int32	SourceSpawnID;	// offer: who is transferring. result: unused by the client
+/*0004*/	int32	TargetSpawnID;	// resolved through SpawnManager and named in the result text
+/*0008*/	int32	GoldCost;
+/*0012*/	int32	AltCurrencyCost;
+/*0016*/	int32	AltCurrencyID;	// -1 means "no alt currency option"
+/*0020*/	int32	AltCurrencyOnly;	// read as a byte by the client to pick the message variant
+/*0024*/	int32	Result;	// 0 accepted, 1 denied, 2 not in group, 3 target at max, 4 already
+						// pending, 5 target does not meet requirements, 6 target lacks membership,
+						// 7 not in fast regeneration mode, 8 cannot transfer to that player
+/*0028*/
+};
+
+// [Laurion 0x466d] OP_MercenaryCurrencyMessage [Server->Client] [Size: 8 + strlen(Text) + 1]
+// FUN_1402af060 arm at 0x1402af4fa:
+//   MOVZX EDX, byte ptr [R15]      -> FUN_1402ab900 param_2, the use-alt-currency flag
+//   MOV   R8D, dword ptr [R8+0x4]  -> FUN_1402ab900 param_3, the currency id
+//   FUN_1402ab900 resolves it: FUN_140665fb0(pinstLocalPC+0x2188, currency_id, 1) gives the dbstr
+//     id, then CDBStr__GetString(id, 0x11) when the flag is 0 or CDBStr__GetString(id, 0x12) when
+//     it is set. Categories 17 and 18 are the regular and alternate currency name tables.
+//     param_3 == 0 falls back to MercenaryInfo.altCurrencyId (MercenaryClientData+0x1C).
+//   LEA R8, [R15 + 0x8]            -> the message text, formatted as "%s%s." with (text, currency name)
+//   printed on chat channel 0x0F
+// The currency name is appended by the client, so the server sends the leading half of the sentence.
+struct MercenaryCurrencyMessage_Struct {
+/*0000*/	uint8	UseAltCurrency;
+/*0001*/	uint8	Pad[3];
+/*0004*/	int32	CurrencyID;
+/*0008*/	// char Text[]; // NUL terminated, variable length
+};
+
+// [Laurion 0x4a03] OP_MercenaryLevelUpgrade [Server->Client] [Size: 120]
+// FUN_1402af060 arm at 0x1402af570 calls FUN_1402aeda0 with the payload pointer and no size check.
+// That handler reads only five dwords and one string, then copies the whole payload verbatim into
+// mgr+0x2F4..0x36B (exactly 120 bytes) for the popup manager to use when the player answers:
+//   +0x00 cost in 1/10 plat units; printed as (cost/10) plat and (cost%10) gold when the
+//          mercenary's altCurrencyId is 0
+//   +0x04 alt currency cost; used instead of +0x00 when MercenaryClientData+0x20 (altCurrencyOnly)
+//          is set, formatted as "%d %s" with the currency name of MercenaryClientData+0x1C
+//   +0x08 current mercenary level
+//   +0x0C level the upgrade goes to
+//   +0x14 mercenary name, read as %s
+// The popup is built with FUN_140489da0(..., 0xe, 40000, mgr+0x2F4, 0) and gets two buttons,
+// "Upgrade" (0) and "Dismiss" (1). Only the first 20 bytes and the name are understood; the rest of
+// the block is opaque storage, so it is carried as raw bytes rather than invented fields.
+struct MercenaryLevelUpgrade_Struct {
+/*0000*/	int32	PlatCost;
+/*0004*/	int32	AltCurrencyCost;
+/*0008*/	int32	FromLevel;
+/*0012*/	int32	ToLevel;
+/*0016*/	int32	Unknown10;
+/*0020*/	char	MercenaryName[100];	// read as %s at payload+0x14; the remainder is opaque
+/*0120*/
+};
+
+// [Laurion 0x2d48] OP_MercenaryRecordDump [Server->Client] [Size: variable]
+// FUN_1402ad900 reads:
+//   +0x00 u64 echo   copied verbatim to the front of the 0x5783 reply
+//   +0x08 u32 count  number of length prefixed strings that follow
+//   then count x { u32 length; char[length] } via FUN_1405646e0, which reads a u32 length and then
+//     that many bytes
+// For each string the client searches for "RecordId=" and then the next "!", atoi()s the text
+// between them, resolves that index through FUN_1402abee0 (which builds "Race: ...<br>Type: ..."
+// out of the category 23 subtype description) and logs
+//   "\nIndex: %d - Record Id: %d - List Name: %s\n - Save String: %s\n"
+// The accumulated text plus the 8 echo bytes is sent back on OP_MercenaryRecordDumpReply (0x5783).
+struct MercenaryRecordDump_Struct {
+/*0000*/	uint64	Echo;
+/*0008*/	uint32	Count;
+/*0012*/	// uint32 Length; char Text[Length]; repeated Count times
+};
+
 // [OPCode: 0x1a79] On Live as of April 2 2012 [Client->Server] [Size: 1]
 // Requesting to suspend or unsuspend merc
 struct SuspendMercenary_Struct {
@@ -6354,10 +6562,14 @@ struct SuspendMercenaryResponse_Struct {
 // [OPCode: 0x5e78 (OP_MercenaryHire?)] On Live as of April 2 2012
 // Sent by client when requesting to view Mercenary info or Hire a Mercenary
 struct MercenaryMerchantRequest_Struct {
-/*0000*/	uint32	MercID;			// Seen 399 and 400 for merc ID
-/*0004*/	uint32	MercUnk01;		// Seen 1
-/*0008*/	uint32	MercMerchantID;	// Entity ID for Mercenary Merchant
-/*0012*/	uint32	MercUnk02;		// Seen 65302016 (00 6e e4 03) - (probably actually individual uint8 fields), but seen as DWORD in Seeds client.
+/*0000*/	uint32	MercID;	// Seen 399 and 400 for merc ID. Laurion: FUN_1402afb60 sends the id field of
+						// the selected shop MercenaryInfo (mgr+0x60), which is the record id the server put
+						// into 0x689c. EQEmu sends MercTemplateID there, so this round-trips back to a template.
+/*0004*/	uint32	MercUnk01;	// Seen 1. Laurion: CListWnd__GetItemData of the merchant window combo the
+						// Buy button reads (FUN_1404522a0 event 0x11), i.e. the selected type/grade entry, not
+						// a random value. EQEmu ignores it because the shop list already keys everything off MercID.
+/*0008*/	uint32	MercMerchantID;	// Entity ID for Mercenary Merchant. Laurion: mgr+0x26C (currentMerchantId).
+/*0012*/	uint32	MercUnk02;	// Seen 65302016 (00 6e e4 03) - (probably actually individual uint8 fields), but seen as DWORD in Seeds client. Laurion: FUN_1402afb60 always writes 0 here.
 /*0016*/
 };
 

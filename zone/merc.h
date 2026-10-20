@@ -17,6 +17,7 @@
 */
 #pragma once
 
+#include "common/patches/laurion_limits.h"
 #include "zone/npc.h"
 
 class Client;
@@ -42,6 +43,118 @@ constexpr int MAXMERCS = 11;
 #define NO_MERC_ID 0
 #define MERC_STATE_NORMAL 5
 #define MERC_STATE_SUSPENDED 1
+
+// Laurion (SoF x64) protocol constants. These are the values the client's own packet arms compare
+// against, so they are deliberately kept separate from the RoF MERC_STATE_* pair above.
+
+// MercenaryClientData+0x04, written by FUN_1402a9190 from the 0x4c40 state push and from the state
+// notification opcodes. See docs/mercenary.md 4.6.
+//
+// FUN_1402ac790 is the client's own classifier for this field:
+//   state == 3 || state < 0 || state >= 6  ->  returns false ("mercenary is in the world")
+//   state in {0, 1, 2, 4, 5}               ->  returns true  ("no active mercenary")
+// __GetLabelFromEQ refuses to paint any LABELTYPE_MERCENARY_* label (ids 338..358, 404..412) while
+// that classifier is true, so 3 is the only value in 0..5 that makes the Merc tab show numbers.
+// 5 was wrong here before: it is in the "no active mercenary" group, which is why every stat read
+// as 0 even though 0x1f38 carried real values.
+enum LaurionMercState : uint32_t {
+	LaurionMercStateNone      = 0, // 0x4cff
+	LaurionMercStateReady     = 1, // 0x6c4b, and a successful 0x72b6 switch
+	LaurionMercStateSuspended = 2, // 0x4815, unless the state was already 0, 1, 4 or 5
+	LaurionMercStateActive    = 3, // the only 0..5 value the client treats as "mercenary in world"
+	LaurionMercStateDead      = 4, // 0x0d70
+	LaurionMercStateReserved5 = 5, // grouped with 0/1/2/4 by FUN_1402ac790; nothing sets it
+	LaurionMercStateTransient = 6, // 0x4ec9, 0x184e, 0x421c; also the value the 0x4c40 arm uses to
+	                              // mean "do not treat this as a corrupt transition"
+};
+
+// dbstr_us.txt category 36 (eMercenaryAbilityType): the mercenary role, carried in
+// MercenaryRecord::type and MercenaryAAAbilityRecord::aa_type. The enum lives in
+// common/patches/laurion_limits.h next to the other Laurion wire constants.
+//
+// Note this is a different numbering from EQEmu's TANK / HEALER / MELEEDPS / CASTERDPS constants,
+// which are merc_subtypes.class_id values.
+constexpr int32_t LaurionMercRoleGeneral   = Laurion::MercRoleGeneral;
+constexpr int32_t LaurionMercRoleTank      = Laurion::MercRoleTank;
+constexpr int32_t LaurionMercRoleHealer    = Laurion::MercRoleHealer;
+constexpr int32_t LaurionMercRoleMeleeDPS  = Laurion::MercRoleMeleeDPS;
+constexpr int32_t LaurionMercRoleCasterDPS = Laurion::MercRoleCasterDPS;
+
+// Map EQEmu's merc_subtypes.class_id role onto the dbstr category 36 id the client expects.
+inline int32_t LaurionMercRoleForClassID(uint32 class_id)
+{
+	switch (class_id) {
+		case TANK:      return Laurion::MercRoleTank;
+		case HEALER:    return Laurion::MercRoleHealer;
+		case MELEEDPS:  return Laurion::MercRoleMeleeDPS;
+		case CASTERDPS: return Laurion::MercRoleCasterDPS;
+		default:        return Laurion::MercRoleGeneral;
+	}
+}
+
+// Clamp a persisted stance id to the stance list of a mercenary template. Defined in zone/merc.cpp;
+// the reason the client needs the record to be self-consistent is spelled out there and in
+// docs/mercenary.md 15.8.
+int32_t ClampLaurionStance(uint32 merc_template_id, int32_t stance_id);
+
+// 0x72b6 reply codes, from the switch in FUN_1402ae8e0. Every non-zero value has its own localized
+// client string, so the server sends a number and never text alongside it.
+enum LaurionSwitchResult : uint32_t {
+	LaurionSwitchOk              = 0,
+	LaurionSwitchNotFastRegen    = 1,
+	LaurionSwitchCannotUnsuspend = 2,
+	LaurionSwitchLostSlotAccess  = 3,
+	LaurionSwitchCurrentMercDead = 4,
+	LaurionSwitchNotAllowedNow   = 5,
+};
+
+// 0x50e6 action codes, from the switch in FUN_1401a5fa0. 5 and 6 have no arm at all and must never
+// be sent.
+enum LaurionAAAction : uint32_t {
+	LaurionAAActionSetPool     = 0,
+	LaurionAAActionSetCounters = 1,
+	LaurionAAActionGrant       = 2,
+	LaurionAAActionClear       = 3,
+	LaurionAAActionRefundAll   = 4,
+	LaurionAAActionGrantAlt    = 7,
+	LaurionAAActionClearAlt    = 8,
+};
+
+// 0x5193 reply codes, from FUN_1402ae5f0. The client owns the whole vocabulary (0 through 0x15) and
+// prints its own localized line for each one, so a Laurion mercenary failure is a number and never
+// server-side text. Client::SendMercResponsePackets already maps EQEmu's internal response codes
+// onto exactly these values for RoF and later, which is why the hire path needs no Laurion branch.
+enum LaurionHireResult : int32_t {
+	LaurionHireOk                = 0,  // success: UI event 0x12 and timeRemaining <- mgr+0x278
+	LaurionHireInsufficientFunds = 1,  // "You do not have enough funds to make that purchase!"
+	LaurionHireNoSuchMerc        = 2,  // "Mercenary does not exist!"
+	LaurionHireSpawnFailed       = 3,  // "Mercenary failed to spawn!"
+	LaurionHireNoRaids           = 4,  // "Mercenaries are not allowed in raids!"
+	LaurionHireRequestPending    = 5,  // "You already have a pending mercenary purchase!"
+	LaurionHireMaxMercs          = 6,  // "You have the maximum number of mercenaries..."
+	LaurionHireGroupFull         = 7,  // "You can not purchase a mercenary because your group is full!"
+	LaurionHireInCombat          = 8,  // "You can not purchase a mercenary because you are in combat!"
+	LaurionHireRecentDismiss     = 9,  // "You have recently dismissed a mercenary and must wait..."
+	LaurionHireCreateError       = 10, // "An error occurred created your mercenary!"
+	LaurionHireUpkeepCharged     = 11, // FUN_1402ac7e0(mgr, 0): "You have been charged a mercenary
+	                                   // upkeep cost of %d plat, and %d gold and your mercenary upkeep
+	                                   // cost timer has been reset to %s."
+	LaurionHireUpkeepChargedAlt  = 12, // FUN_1402ac7e0(mgr, 1): same line with "%d %s" for the alt
+	                                   // currency, named from db_str category 17 or 18
+	LaurionHireRanOutOfFunds     = 13, // "You ran out of funds..." + "Your mercenary has been
+	                                   // suspended!" + UI event 2
+	LaurionHireUpkeepWaived      = 14, // FUN_1402aca20(): "Your mercenary waived an upkeep cost of..."
+	LaurionHireAboutToSuspend    = 15, // "Your mercenary is about to be suspended due to insufficient
+	                                   // funds!"
+	LaurionHireNoLiaison         = 16, // "There is no mercenary liaison nearby!"
+	LaurionHireTooFar            = 17, // "You are too far from the liaison!"
+	LaurionHireNotQualified      = 18, // "You do not meet the requirements for that mercenary!"
+	LaurionHireCannotInteract    = 19, // "You are unable to interact with the liaison!"
+	LaurionHireMembershipLow     = 20, // "You do not have a high enough membership level to purchase
+	                                   // this mercenary!"
+	LaurionHireAllAccessRequired = 21, // "Your purchase has failed because this mercenary requires an
+	                                   // All Access membership!"
+};
 #define NOT_SUSPENDED_TIME 0
 
 const int MercAISpellRange = 100; // TODO: Write a method that calcs what the merc's spell range is based on spell, equipment, AA, whatever and replace this
@@ -202,10 +315,51 @@ public:
 	virtual void ScaleStats(int scalepercent, bool setmax = false);
 	virtual void CalcBonuses();
 	int64 GetEndurance() const {return cur_end;} //This gets our current endurance
+	int64 GetMaxEndurance() const {return max_end;} //This gets our endurance from the last CalcMaxEndurance() call
 	inline uint8 GetEndurancePercent() { return (uint8)((float)cur_end / (float)max_end * 100.0f); }
 	inline virtual int32 GetATK() const { return ATK; }
 	inline virtual int32 GetATKBonus() const { return itembonuses.ATK + spellbonuses.ATK; }
 	int32 GetRawACNoShield(int &shield_ac) const;
+
+	// The Merc tab's Combat HP / Combat Mana / Combat Endurance Regen rows (0x1f38 keys 29..34).
+	// The client's own tooltip for the player-side equivalents says it plainly:
+	// "The number of hit points you will regenerate while in combat" (IWS_CurrentCombatHPRegen,
+	// EQUI_Inventory.xml) -- so these are the in-combat regen rates, the same Calc* values
+	// Merc::Process() adds on its six second tic, not the RestRegen* fast-regen bonus, which has no
+	// row on the window.
+	//
+	// None of the Mob accessors are usable here. Mob::GetEnduranceRegen() is a stub that returns 0
+	// ("not implemented", zone/attack.cpp), and Mob::GetHPRegen() / Mob::GetManaRegen() return the
+	// raw npc_types columns without the item, spell, AA and group-lead bonuses that Calc* applies or
+	// the class gate that zeroes mana regen for a mercenary with no mana pool.
+	int64 GetCombatHPRegen() { return CalcHPRegen(); }
+	int64 GetCombatManaRegen() { return CalcManaRegen(false); }
+	int64 GetCombatEnduranceRegen() { return CalcEnduranceRegen(); }
+
+	// The Merc tab's Mitigation / Evasion / Offense / Accuracy rows (0x1f38 keys 6..13).
+	//
+	// The Merc tab is the mercenary's copy of the player's Inventory window. EQUI_Inventory.xml labels
+	// the two paired rows IWM_ArmorClassScreen and IWM_AttackScreen, and their tooltips name the four
+	// terms outright:
+	//   "Mitigation and Evasion components of your mercenary's Armor Class"
+	//   "Mitigation: Chance to take less melee damage"
+	//   "Evasion: Chance to avoid melee damage"
+	//   "Offense and Accuracy components of your mercenary's melee attacks"
+	//   "Offense: Chance to deal more damage"
+	//   "Accuracy: Chance to land a hit"
+	// Those are the same four numbers Mob::CheckHitChance() and the mitigation roll use when the
+	// mercenary actually fights, and zone/mob_info.cpp already publishes them under the names
+	// "mitigation_ac", "total_defense", "offense" and "tohit". See the block comment on the
+	// definitions in merc.cpp for why reporting them is the only honest way to fill these rows.
+	int32 GetDisplayMitigation();
+	int32 GetDisplayEvasion();
+	int32 GetDisplayOffense();
+	int32 GetDisplayAccuracy();
+
+	// The melee skill this mercenary actually swings with: NPCType::prim_melee_type, from
+	// merc_weaponinfo.prim_melee_type, because Merc::Attack() forwards to NPC::Attack() which sets the
+	// attack skill from GetPrimSkill(). See the block comment on the definitions in merc.cpp.
+	EQ::skills::SkillType GetMeleeSkill() const;
 
 	inline virtual int32 GetSTR() const { return STR; }
 	inline virtual int32 GetSTA() const { return STA; }
@@ -241,7 +395,18 @@ public:
 	inline virtual int32 GetStunResist() const { return itembonuses.StunResist; }
 	inline virtual int32 GetStrikeThrough() const { return itembonuses.StrikeThrough; }
 	inline virtual int32 GetAvoidance() const { return itembonuses.AvoidMeleeChance; }
-	inline virtual int32 GetAccuracy() const { return itembonuses.HitChance; }
+	// The Merc tab's Accuracy row (0x1f38 key 13, label 345), and the mercenary's to-hit rating.
+	//
+	// Client and Bot both define this as `itembonuses.HitChance` alone, because a player has no base
+	// accuracy rating -- mod2 accuracy is the whole story for them. A mercenary does have one:
+	// merc_stats.Accuracy, which ZoneDatabase::GetMercenaryType() puts into NPCType::accuracy_rating
+	// and NPC::NPC() copies into accuracy_rating, where Mob::compute_tohit() adds it under IsNPC().
+	// Merc is an NPC (class Merc : public NPC), so the combat half was already wired; what was missing
+	// was the display half, which showed only the mod2 bonus and therefore always read 0.
+	//
+	// This mirrors the paired Offense row (key 11), which is GetATK() + GetATKBonus(): base value plus
+	// bonuses.
+	inline virtual int32 GetAccuracy() const { return accuracy_rating + itembonuses.HitChance; }
 	inline virtual int32 GetCombatEffects() const { return itembonuses.ProcChance; }
 	inline virtual int32 GetDS() const { return itembonuses.DamageShield; }
 	// Mod3
@@ -327,12 +492,14 @@ private:
 	int64 CalcHPRegenCap();
 	int64 CalcMaxMana();
 	int64 CalcBaseMana();
-	int64 CalcManaRegen();
+	// fade_sit_modifiers is false only for the Merc tab stat readout (GetCombatManaRegen): the
+	// sitting branch of CalcManaRegen() calls Mob::BuffFadeBySitModifier(), which cancels buffs, and
+	// a packet encoder must not have that side effect. The AI tic keeps the default true.
+	int64 CalcManaRegen(bool fade_sit_modifiers = true);
 	int64 CalcBaseManaRegen();
 	int64 CalcManaRegenCap();
 	void CalcMaxEndurance(); //This calculates the maximum endurance we can have
 	int64 CalcBaseEndurance(); //Calculates Base End
-	int64 GetMaxEndurance() const {return max_end;} //This gets our endurance from the last CalcMaxEndurance() call
 	int64 CalcEnduranceRegen(); //Calculates endurance regen used in DoEnduranceRegen()
 	int64 CalcEnduranceRegenCap();
 	void SetEndurance(int32 newEnd); //This sets the current endurance to the new value
@@ -362,6 +529,8 @@ private:
 	uint32 _baseWIS;
 	uint32 _baseCHA;
 	uint32 _baseATK;
+	int32  _baseAccuracy;   // merc_stats.Accuracy -> NPCType::accuracy_rating, before Mercs:ScaleRate
+	int32  _baseAvoidance;  // merc_stats.Avoidance -> NPCType::avoidance_rating, before Mercs:ScaleRate
 	uint32 _baseRace; // Necessary to preserve the race otherwise mercs get their race updated in the db when they get an illusion.
 	uint8 _baseGender; // Merc gender. Necessary to preserve the original value otherwise it can be changed by illusions.
 	uint32 _baseMR;

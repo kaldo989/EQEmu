@@ -24,6 +24,11 @@
  *
  * @generator ./utils/scripts/generators/repository-generator.pl
  * @docs https://docs.eqemu.dev/developer/repositories
+ * @note Hand-edited for the manual import
+ *       utils/sql/git/optional/2026_10_19_merc_dbstring_ids.sql: `dbstring`
+ *       varchar(12) became `dbstring_id` INT UNSIGNED. The column always held a
+ *       numeric dbstr_us.txt id, so the generator will reproduce this file once
+ *       that file has been imported. There is no manifest entry for it.
  */
 
 #pragma once
@@ -41,7 +46,7 @@ public:
 		uint32_t    merc_type_id;
 		uint32_t    merc_subtype_id;
 		uint32_t    merc_npc_type_id;
-		std::string dbstring;
+		uint32_t    dbstring_id;
 		int8_t      name_type_id;
 		uint32_t    clientversion;
 	};
@@ -58,7 +63,7 @@ public:
 			"merc_type_id",
 			"merc_subtype_id",
 			"merc_npc_type_id",
-			"dbstring",
+			"dbstring_id",
 			"name_type_id",
 			"clientversion",
 		};
@@ -71,7 +76,7 @@ public:
 			"merc_type_id",
 			"merc_subtype_id",
 			"merc_npc_type_id",
-			"dbstring",
+			"dbstring_id",
 			"name_type_id",
 			"clientversion",
 		};
@@ -118,7 +123,7 @@ public:
 		e.merc_type_id     = 0;
 		e.merc_subtype_id  = 0;
 		e.merc_npc_type_id = 0;
-		e.dbstring         = "";
+		e.dbstring_id      = 0;
 		e.name_type_id     = 0;
 		e.clientversion    = 0;
 
@@ -161,7 +166,7 @@ public:
 			e.merc_type_id     = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.merc_subtype_id  = static_cast<uint32_t>(strtoul(row[2], nullptr, 10));
 			e.merc_npc_type_id = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.dbstring         = row[4] ? row[4] : "";
+			e.dbstring_id      = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
 			e.name_type_id     = static_cast<int8_t>(atoi(row[5]));
 			e.clientversion    = static_cast<uint32_t>(strtoul(row[6], nullptr, 10));
 
@@ -200,7 +205,7 @@ public:
 		v.push_back(columns[1] + " = " + std::to_string(e.merc_type_id));
 		v.push_back(columns[2] + " = " + std::to_string(e.merc_subtype_id));
 		v.push_back(columns[3] + " = " + std::to_string(e.merc_npc_type_id));
-		v.push_back(columns[4] + " = '" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(columns[4] + " = " + std::to_string(e.dbstring_id));
 		v.push_back(columns[5] + " = " + std::to_string(e.name_type_id));
 		v.push_back(columns[6] + " = " + std::to_string(e.clientversion));
 
@@ -228,7 +233,7 @@ public:
 		v.push_back(std::to_string(e.merc_type_id));
 		v.push_back(std::to_string(e.merc_subtype_id));
 		v.push_back(std::to_string(e.merc_npc_type_id));
-		v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(std::to_string(e.dbstring_id));
 		v.push_back(std::to_string(e.name_type_id));
 		v.push_back(std::to_string(e.clientversion));
 
@@ -264,7 +269,7 @@ public:
 			v.push_back(std::to_string(e.merc_type_id));
 			v.push_back(std::to_string(e.merc_subtype_id));
 			v.push_back(std::to_string(e.merc_npc_type_id));
-			v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+			v.push_back(std::to_string(e.dbstring_id));
 			v.push_back(std::to_string(e.name_type_id));
 			v.push_back(std::to_string(e.clientversion));
 
@@ -304,7 +309,7 @@ public:
 			e.merc_type_id     = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.merc_subtype_id  = static_cast<uint32_t>(strtoul(row[2], nullptr, 10));
 			e.merc_npc_type_id = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.dbstring         = row[4] ? row[4] : "";
+			e.dbstring_id      = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
 			e.name_type_id     = static_cast<int8_t>(atoi(row[5]));
 			e.clientversion    = static_cast<uint32_t>(strtoul(row[6], nullptr, 10));
 
@@ -335,7 +340,7 @@ public:
 			e.merc_type_id     = static_cast<uint32_t>(strtoul(row[1], nullptr, 10));
 			e.merc_subtype_id  = static_cast<uint32_t>(strtoul(row[2], nullptr, 10));
 			e.merc_npc_type_id = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.dbstring         = row[4] ? row[4] : "";
+			e.dbstring_id      = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
 			e.name_type_id     = static_cast<int8_t>(atoi(row[5]));
 			e.clientversion    = static_cast<uint32_t>(strtoul(row[6], nullptr, 10));
 
@@ -416,7 +421,7 @@ public:
 		v.push_back(std::to_string(e.merc_type_id));
 		v.push_back(std::to_string(e.merc_subtype_id));
 		v.push_back(std::to_string(e.merc_npc_type_id));
-		v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+		v.push_back(std::to_string(e.dbstring_id));
 		v.push_back(std::to_string(e.name_type_id));
 		v.push_back(std::to_string(e.clientversion));
 
@@ -445,7 +450,7 @@ public:
 			v.push_back(std::to_string(e.merc_type_id));
 			v.push_back(std::to_string(e.merc_subtype_id));
 			v.push_back(std::to_string(e.merc_npc_type_id));
-			v.push_back("'" + Strings::Escape(e.dbstring) + "'");
+			v.push_back(std::to_string(e.dbstring_id));
 			v.push_back(std::to_string(e.name_type_id));
 			v.push_back(std::to_string(e.clientversion));
 
