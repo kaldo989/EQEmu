@@ -18,6 +18,7 @@
 #include "groups.h"
 
 #include "common/eqemu_logsys.h"
+#include "common/serialize_buffer.h"
 #include "zone/advloot.h"
 #include "common/events/player_event_logs.h"
 #include "common/repositories/character_expedition_lockouts_repository.h"
@@ -360,6 +361,11 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 	// A member joined: everyone's Advanced Loot authority may have changed with them.
 	RefreshAdvLootAuthority();
 
+	// The GroupJoin_Struct packets above only describe the member who just joined. Laurion rebuilds its
+	// whole roster from every group update, so push the full roster to every Laurion client afterwards -
+	// sent last, it replaces whatever the single member packet left behind.
+	SendLaurionRosters();
+
 	safe_delete(outapp);
 
 	if (RuleB(Bots, Enabled)) {
@@ -475,6 +481,105 @@ void Group::SendEndurancePacketFrom(Mob* member)
 	}
 }
 
+// Laurion's roster deserializer FUN_140637630 clears all six member slots and then rebuilds them only
+// from the entries in the packet - it can add, never merge. Every group update therefore has to carry the
+// whole roster, and it has to include the viewer: __GetGaugeValueFromEQ looks the local player's own entry
+// up by name (FUN_1402946f0) before it can index anyone else, so a roster without you resolves nothing.
+//
+// EQEmu's join and leave paths send GroupJoin_Struct, which carries one member name. ENCODE(OP_GroupUpdate)
+// reads five member slots and a leader name out of it, but in GroupJoin_Struct those bytes are leader_aas,
+// unknown196 and NPCMarkerID - so the client got a one entry roster with an empty leader and no slot for
+// the viewer. That is why the group window showed no names and no mana, stamina or pet bars for anybody,
+// mercenary or player. docs/mercenary.md 4.8.5 has the client side of this.
+//
+// The carrier is the shape ENCODE(OP_GroupUpdateB) already parses, which is the only group packet in the
+// tree that can express a full roster.
+void Group::SendLaurionRoster(Client *to)
+{
+	if (!to) {
+		return;
+	}
+
+	Mob  *roster[MAX_GROUP_MEMBERS] = {nullptr};
+	uint8 roles[MAX_GROUP_MEMBERS]  = {0};
+	uint32 count = 0;
+
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS && count < MAX_GROUP_MEMBERS; ++i) {
+		if (!members[i]) {
+			continue;
+		}
+		roster[count] = members[i];
+		roles[count]  = MemberRoles[i];
+		++count;
+	}
+
+	if (!count) {
+		return;
+	}
+
+	SerializeBuffer buffer;
+
+	buffer.WriteUInt32(0);   // group id - EQEmu does not carry one on this path
+	buffer.WriteUInt32(count);
+
+	Mob *leader = GetLeader();
+	buffer.WriteString(leader ? leader->GetCleanName() : "");
+
+	for (uint32 i = 0; i < count; ++i) {
+		Mob *m = roster[i];
+
+		// The client stores the entry at slot + 1, and the group window gauges index the members that are
+		// not you with gauge_type - 31, so the slots have to be dense and cover the viewer too.
+		buffer.WriteUInt32(i);
+		buffer.WriteString(m->GetCleanName());
+
+		// This is the field Client::SendGroupCreatePacket already labels "merc flag".
+		buffer.WriteUInt16(m->IsMerc() ? 1 : 0);
+
+		// Laurion keeps an owner name on every entry; for a player it is the entry itself.
+		if (m->IsMerc()) {
+			Client *owner = m->CastToMerc()->GetMercenaryOwner();
+			buffer.WriteString(owner ? owner->GetCleanName() : m->GetCleanName());
+		}
+		else {
+			buffer.WriteString(m->GetCleanName());
+		}
+
+		buffer.WriteUInt32(m->GetLevel());
+
+		// FUN_140637630 reads five role bytes and derives the role mask from the first three at entry+0x2d,
+		// +0x2e and +0x2f. EQEmu only tracks three.
+		buffer.WriteUInt8((roles[i] & RoleTank)   ? 1 : 0);
+		buffer.WriteUInt8((roles[i] & RoleAssist) ? 1 : 0);
+		buffer.WriteUInt8((roles[i] & RolePuller) ? 1 : 0);
+		buffer.WriteUInt8(0);
+		buffer.WriteUInt8(0);
+
+		buffer.WriteUInt32(0);   // offline
+		buffer.WriteUInt32(0);   // online timestamp
+
+		// ENCODE(OP_ZoneEntry) writes emu->spawnId as the HashKey the client resolves through
+		// PlayerManagerClient::GetPlayerFromHashKey, so this is the only handle the client has for binding a
+		// roster entry to a spawn. The old path left it zero.
+		buffer.WriteUInt32(static_cast<uint32>(m->GetID()));
+	}
+
+	auto outapp = new EQApplicationPacket(OP_GroupUpdateB, buffer.size());
+	memcpy(outapp->pBuffer, buffer.buffer(), buffer.size());
+
+	to->FastQueuePacket(&outapp);
+}
+
+void Group::SendLaurionRosters()
+{
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		if (members[i] && members[i]->IsClient() &&
+			members[i]->CastToClient()->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+			SendLaurionRoster(members[i]->CastToClient());
+		}
+	}
+}
+
 //updates a group member's client pointer when they zone in
 //if the group was in the zone already
 bool Group::UpdatePlayer(Mob* update) {
@@ -522,6 +627,12 @@ bool Group::UpdatePlayer(Mob* update) {
 		Bot::UpdateGroupCastingRoles(this);
 	}
 
+	if (updateSuccess && update->IsClient()) {
+		// The client that just zoned in has an empty group window until it is handed the roster, and Laurion
+		// cannot build one incrementally from the join packets.
+		SendLaurionRoster(update->CastToClient());
+	}
+
 	return updateSuccess;
 }
 
@@ -566,6 +677,9 @@ void Group::MemberZoned(Mob* removemob) {
 	if (RuleB(Bots, Enabled)) {
 		Bot::UpdateGroupCastingRoles(this);
 	}
+
+	// The member is gone from this zone's view of the group; everyone still here needs the shortened roster.
+	SendLaurionRosters();
 }
 
 void Group::SendGroupJoinOOZ(Mob* NewMember) {
@@ -791,6 +905,11 @@ bool Group::DelMember(Mob* oldmember, bool ignoresender)
 	// A member left: the group may have just lost its master looter, or dropped under the size where the
 	// server treats the corpse as ungrouped at all.
 	RefreshAdvLootAuthority();
+
+	// Same reason as in AddMember: Laurion replaces its roster wholesale, and the removal packet it gets
+	// here (ENCODE(OP_GroupUpdate) turns groupActLeave into OP_GroupDisbandYou / OP_GroupDisbandOther)
+	// only clears one slot. Push the remaining roster so the window matches the server.
+	SendLaurionRosters();
 
 	return true;
 }
@@ -2362,6 +2481,9 @@ void Group::ChangeLeader(Mob* newleader)
 		}
 	}
 	safe_delete(outapp);
+
+	// The leader name is a field of every Laurion roster entry block, not a separate packet.
+	SendLaurionRosters();
 }
 
 const char *Group::GetClientNameByIndex(uint8 index)

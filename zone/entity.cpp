@@ -4606,6 +4606,12 @@ void EntityList::SendGroupLeave(uint32 gid, const char *name)
 					g->DelMemberOOZ(name);
 					if (g->IsLeader(c) && c->IsLFP())
 						c->UpdateLFP();
+
+					// Laurion's roster deserializer replaces the whole roster, so an out-of-zone removal needs the
+					// remaining members pushed as well.
+					if (c->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+						g->SendLaurionRoster(c);
+					}
 				}
 			}
 		}
@@ -4633,6 +4639,12 @@ void EntityList::SendGroupJoin(uint32 gid, const char *name)
 
 					it->second->QueuePacket(outapp);
 					safe_delete(outapp);
+
+					// groupActJoin through ENCODE(OP_GroupUpdate) cannot express a Laurion roster and is dropped for
+					// Laurion clients; this is the packet that actually updates their group window.
+					if (it->second->ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+						g->SendLaurionRoster(it->second);
+					}
 				}
 			}
 		}

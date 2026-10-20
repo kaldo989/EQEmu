@@ -93,6 +93,13 @@ public:
 	void	SendHPPacketsFrom(Mob* member);
 	void	SendManaPacketFrom(Mob* member);
 	void	SendEndurancePacketFrom(Mob* member);
+
+	// Laurion's group roster deserializer rebuilds the whole roster from every group update, so it needs a
+	// packet that carries every member including the viewer. SendLaurionRoster builds one for a single
+	// client; SendLaurionRosters refreshes everyone in the zone. See the definition in groups.cpp for why
+	// EQEmu's GroupJoin_Struct is not enough.
+	void	SendLaurionRoster(Client *to);
+	void	SendLaurionRosters();
 	bool	UpdatePlayer(Mob* update);
 	void	MemberZoned(Mob* removemob);
 	bool	IsLeader(const char* name);

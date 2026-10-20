@@ -6837,9 +6837,15 @@ void Client::SendGroupCreatePacket()
 	VARSTRUCT_ENCODE_TYPE(uint16, Buffer, 0);	// merc flag
 	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// owner name (if merc)
 	VARSTRUCT_ENCODE_TYPE(uint32, Buffer, GetLevel());	// level
+	// ENCODE(OP_GroupUpdateB) reads five role bytes, because Laurion's FUN_140637630 reads five. Writing
+	// three here made the encoder take the first two bytes of the following offline field as roles and then
+	// run off the end of the packet: "GroupUpdateB entry [0] timestamp truncated at size [36]", and the whole
+	// packet was dropped.
 	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// group tank flag
 	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// group assist flag
 	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// group puller flag
+	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// group marknpc flag
+	VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);	// unused fifth role byte
 	VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0);	// offline flag
 	VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0);	// timestamp
 

@@ -4117,30 +4117,26 @@ namespace Laurion
 			if (gu->membername[i][0] != '\0') ++count;
 		}
 
-		SerializeBuffer buffer;
-		buffer.WriteUInt32(0);                // group id - not carried by EQEmu's struct
-		buffer.WriteUInt32(count);
-		buffer.WriteString(gu->leadersname);  // leader name
+		// Everything that is not a leave or a disband would have to be a complete roster, and no EQEmu
+		// group-update carrier can express one. GroupJoin_Struct - which is what almost every send site here
+		// actually allocates - has a single membername[64]; reading membername[1..4] and leadersname out of it
+		// reads leader_aas, unknown196 and NPCMarkerID. Worse, Laurion's deserializer FUN_140637630 clears all
+		// six member slots before it installs anything, so a partial roster is not merely redundant: it deletes
+		// the roster the client already had. That is what happened in the 2026-10-20 capture, where a
+		// groupActAAUpdate from Group::SendLeadershipAAUpdate landed after the correct full roster and left the
+		// group window with one entry and no bars.
+		//
+		// Group::SendLaurionRoster is the only packet that can carry a Laurion roster, and it goes out on
+		// OP_GroupUpdateB. Leader AAs are not a Laurion concept at all - see the OP_GroupLeadershipAAUpdate
+		// note in patch_Laurion.conf.
+		LogNetcode(
+			"[STRUCTS] Laurion group update action [{}] with [{}] member name(s) cannot express a full roster; "
+			"dropped in favour of Group::SendLaurionRoster",
+			gu->action,
+			count);
 
-		for (uint32 i = 0; i < 5; ++i) {
-			if (gu->membername[i][0] == '\0') continue;
-
-			buffer.WriteUInt32(i);                 // slot
-			buffer.WriteString(gu->membername[i]); // name
-			buffer.WriteUInt16(0);                 // type, MQ EQP_PC
-			buffer.WriteString(gu->membername[i]); // owner name - same as name for a player entry
-			buffer.WriteUInt32(0);                 // level
-			for (uint32 r = 0; r < 5; ++r) buffer.WriteUInt8(0);   // role flags
-			buffer.WriteUInt32(0);                 // offline
-			buffer.WriteUInt64(0);                 // online timestamp
-			buffer.WriteUInt32(0);                 // unique player id
-		}
-
-		in->size = buffer.size();
-		in->pBuffer = new unsigned char[buffer.size()];
-		memcpy(in->pBuffer, buffer.buffer(), buffer.size());
-
-		dest->FastQueuePacket(&in, ack_req);
+		delete in;
+		return;
 	}
 
 	// Client::SendGroupCreatePacket already writes the variable length shape, but with EQEmu's older field
@@ -4266,7 +4262,15 @@ namespace Laurion
 			pos += 4;
 			e.timestamp = ts32;
 
-			e.unique_id = 0;   // not carried by EQEmu's packet
+			// Optional tail. Group::SendLaurionRoster carries it; Client::SendGroupCreatePacket does not,
+			// so it stays 0 for that path. This is the spawn id OP_ZoneEntry writes as the HashKey the client
+			// resolves through PlayerManagerClient::GetPlayerFromHashKey - without it a roster entry cannot be
+			// bound to a spawn.
+			e.unique_id = 0;
+			if (pos + 4 <= in->size) {
+				memcpy(&e.unique_id, in->pBuffer + pos, 4);
+				pos += 4;
+			}
 		}
 
 		SerializeBuffer buffer;
