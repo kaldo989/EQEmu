@@ -1,0 +1,74 @@
+-- 2026_10_28_merc_stance_defaults.sql
+--
+-- Populate merc_stance_entries.isdefault, which shipped as 0 in every row and was never read.
+--
+-- WHAT IS WRONG TODAY
+--
+-- MercStanceInfo::IsDefault is filled in Zone::LoadMercenaryTemplates() (zone/zone.cpp) from this
+-- column and then never read anywhere else in the tree - only the generated repository boilerplate
+-- touches it. The column is dead data.
+--
+-- Meanwhile Merc::Merc() hardcodes SetStance(Stance::Balanced) = 2, and the hire path persists that
+-- without validating it against the template:
+--
+--     Handle_OP_MercenaryHire -> Merc::LoadMercenary -> SpawnMerc -> merc->Save()
+--         -> ZoneDatabase::SaveMercenary -> e.StanceID = m->GetStance();   -- 2
+--
+-- Balanced is not offered to Tanks. merc_stance_entries gives class 1 only Passive (1), Aggressive (5)
+-- and Assist (6). So every newly hired Tank is written to the database with a stance its own template
+-- does not allow, and ClampLaurionStance() silently rewrites it on the first push.
+--
+-- ClampLaurionStance()'s fallback was "the first stance in the list", and the loader is
+--     ORDER BY class_id, proficiency_id, stance_id
+-- so that has always been Passive (1). That is an accident of ordering, not an intent, and it is the
+-- wrong answer: Passive is not the stance a mercenary starts on.
+--
+-- WHY THESE VALUES
+--
+-- The stance lists in merc_stance_entries already match live EverQuest exactly - Apprentice tiers just
+-- carry fewer of them:
+--
+--   Tank        Aggressive, Assist, Passive        Journeyman {1, 5, 6}   Apprentice {1, 5}
+--   Healer      Balanced, Reactive, Efficient, Passive   Journeyman {1, 2, 3, 4}   Apprentice {1, 2}
+--   Melee DPS   Balanced, Burn, Passive            Journeyman {1, 2, 7}   Apprentice {1, 2}
+--   Caster DPS  Balanced, Burn, Burn AE, Passive   Journeyman {1, 2, 7, 9} Apprentice {1, 2}
+--
+-- (stance_id -> name is dbstr category 24: 1 Passive, 2 Balanced, 3 Efficient, 4 Reactive,
+--  5 Aggressive, 6 Assist, 7 Burn, 8 Efficient, 9 Burn AE.)
+--
+-- Live EQ's starting stance is the archetype's normal working stance, not Passive:
+--
+--   "Balanced is the safe middle setting. Start here."
+--   "Aggressive makes a tank grab and hold aggro hard."
+--
+-- Passive is the AFK / no-upkeep stance:
+--
+--   "If your Merc is set on Passive, the cost is zero... at any Level."
+--   "Passive Mercs do not leave your side, they will still follow you around."
+--   plus the client's own "Auto Merc Passive" option, which switches a merc to Passive when you go AFK.
+--
+-- So: Balanced (2) for Healer, Melee DPS and Caster DPS; Aggressive (5) for Tank, because Balanced is
+-- not available to Tanks and Aggressive is the tank's equivalent "normal" stance.
+--
+-- This is also what the live data already says. The two mercenary rows in a working test database sit at
+-- StanceID 2 (a Journeyman Healer) and StanceID 5 (a Journeyman Tank) - the player chose those in game.
+--
+-- GUARDED AND REVERSIBLE
+--
+-- The manifest check is
+--     SELECT merc_stance_entry_id FROM merc_stance_entries WHERE isdefault <> 0 LIMIT 1
+-- with condition "empty", so it only runs while nothing is marked.
+--
+-- Revert with:
+--     UPDATE merc_stance_entries SET isdefault = 0;
+--
+-- Re-tune by zeroing the column and re-running the migration.
+--
+-- The UPDATEs are idempotent: they only touch rows that already exist, and every stance_id used here is
+-- present in the class's own list, so no row is created and no stance is offered that the class cannot use.
+
+UPDATE `merc_stance_entries` SET `isdefault` = 1
+ WHERE `stance_id` = 5 AND `class_id` = 1;
+
+UPDATE `merc_stance_entries` SET `isdefault` = 1
+ WHERE `stance_id` = 2 AND `class_id` IN (2, 9, 12);

@@ -12583,6 +12583,17 @@ void Client::Handle_OP_MercenaryHire(const EQApplicationPacket *app)
 
 		if (merc)
 		{
+			// Merc::Merc() opens with Stance::Balanced, and Balanced is not a stance a Tank template offers -
+			// class 1 gets Passive, Aggressive and Assist. Save() below persists whatever the object is holding,
+			// so every newly hired Tank used to be written to mercs.StanceID with an id its own template does
+			// not allow, and ClampLaurionStance then silently rewrote it on the first push. Start the
+			// mercenary on its template's default instead. Migration 9336.
+			int32_t default_stance = LaurionDefaultStance(merc_template->MercTemplateID);
+			if (default_stance) {
+				merc->SetStance(static_cast<uint8>(default_stance));
+				GetMercInfo().Stance = static_cast<uint32>(default_stance);
+			}
+
 			SpawnMerc(merc, true);
 			merc->Save();
 

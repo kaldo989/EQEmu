@@ -7359,6 +7359,20 @@ WHERE ms.`Accuracy` = 0;
 )",
 		.content_schema_update = false
 	},
+	ManifestEntry{
+		.version = 9336,
+		.description = "2026_10_28_merc_stance_defaults.sql",
+		.check = "SELECT merc_stance_entry_id FROM merc_stance_entries WHERE isdefault <> 0 LIMIT 1",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+UPDATE `merc_stance_entries` SET `isdefault` = 1
+ WHERE `stance_id` = 5 AND `class_id` = 1;
+UPDATE `merc_stance_entries` SET `isdefault` = 1
+ WHERE `stance_id` = 2 AND `class_id` IN (2, 9, 12);
+)",
+		.content_schema_update = false
+	},
 
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{

@@ -6046,6 +6046,28 @@ void Client::SendMercenaryAAState() {
 // back as a stance change the server has to reject. Clamping the record keeps it self-consistent, so
 // the first 0x0b22 the client sends is already the stance the server holds and the exchange is a
 // no-op instead of a rejection plus a re-push. See docs/mercenary.md 15.8.
+
+// The stance a mercenary of this template starts on, taken from merc_stance_entries.isdefault. That column
+// shipped as 0 in every row and was never read; migration 9336 fills it with the archetype's working stance -
+// Aggressive for a Tank, Balanced for Healer / Melee DPS / Caster DPS. Passive is deliberately not the
+// default: on live it is the AFK stance (zero upkeep, the client's "Auto Merc Passive" option), not the one a
+// mercenary is hired into. Returns 0 when the template has no stance list at all.
+int32_t LaurionDefaultStance(uint32 merc_template_id)
+{
+	auto it = zone->merc_stance_list.find(merc_template_id);
+	if (it == zone->merc_stance_list.end() || it->second.empty()) {
+		return 0;   // no stance list at all: the caller should leave the stance alone
+	}
+
+	for (const auto &s : it->second) {
+		if (s.IsDefault) {
+			return static_cast<int32_t>(s.StanceID);
+		}
+	}
+
+	return static_cast<int32_t>(it->second.begin()->StanceID);
+}
+
 int32_t ClampLaurionStance(uint32 merc_template_id, int32_t stance_id)
 {
 	auto it = zone->merc_stance_list.find(merc_template_id);
@@ -6059,7 +6081,8 @@ int32_t ClampLaurionStance(uint32 merc_template_id, int32_t stance_id)
 		}
 	}
 
-	return static_cast<int32_t>(it->second.begin()->StanceID);
+	int32_t fallback = LaurionDefaultStance(merc_template_id);
+	return fallback ? fallback : static_cast<int32_t>(it->second.begin()->StanceID);
 }
 
 static void FillLaurionStances(Laurion::MercenaryRecord &r, uint32 merc_template_id)

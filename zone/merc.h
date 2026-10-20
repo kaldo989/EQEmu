@@ -97,6 +97,11 @@ inline int32_t LaurionMercRoleForClassID(uint32 class_id)
 // docs/mercenary.md 15.8.
 int32_t ClampLaurionStance(uint32 merc_template_id, int32_t stance_id);
 
+// The stance a mercenary of this template starts on, from merc_stance_entries.isdefault. Returns 0 when the
+// template has no stance list, meaning the caller should leave the stance alone. Migration 9336 explains why
+// the default is the archetype's working stance and not Passive.
+int32_t LaurionDefaultStance(uint32 merc_template_id);
+
 // 0x72b6 reply codes, from the switch in FUN_1402ae8e0. Every non-zero value has its own localized
 // client string, so the server sends a number and never text alongside it.
 enum LaurionSwitchResult : uint32_t {
