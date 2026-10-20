@@ -1520,6 +1520,22 @@ void Client::AdvLootRender()
 	QueuePacket(app);
 	delete app;
 
+	// FUN_140153970 wipes the ask table this rebuild just replaced: it clears manager+0x128 (the filter-hash
+	// buckets at manager+0x148[]) and resets the allocator at manager+0x1e8 to zero. Every row is recreated from
+	// the group records with row+0x60 == 0. So every ask key this viewer was holding is now gone from the client,
+	// and a server-side copy of it is worse than nothing: FindAskGroup would answer with a key no client row is
+	// bound to, which is what makes 0x0e / 0x0f / 0x12 / 0x13 miss.
+	//
+	// Clear first, then let the re-issue below put the live asks back. Because the table is empty, each re-issued
+	// key is new to the client and binds cleanly - that is the guarantee ReissueAsks exists to provide, and this
+	// is the half of it that used to be missing.
+	for (uint16_t corpse_id: alive) {
+		Corpse* corpse = entity_list.GetCorpseByID(corpse_id);
+		if (corpse && corpse->GetAdvLootSession()) {
+			corpse->AdvLootSession().ForgetAskKeys(CharacterID());
+		}
+	}
+
 	// Rule R2, and after the rebuild for the same reason Session::Render does it: this 0x03 cleared the ask
 	// table for every corpse in it at once, so the asks that are still outstanding follow it, one corpse at a
 	// time and in the same order the group records were listed.

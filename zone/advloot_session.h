@@ -212,6 +212,26 @@ namespace AdvLoot {
 		uint32_t FindAskKey(uint32_t character_id, uint32_t corpse_key, uint32_t item_id) const;
 		bool FindAskGroup(uint32_t character_id, uint32_t ask_key, AskGroup *out) const;
 
+		// Drop a viewer's whole ask-key registry. A subcmd 0x03 rebuild wipes the client's filter-hash table
+		// (FUN_140153970 clears manager+0x128 and resets the allocator at manager+0x1e8) and recreates every row
+		// with row+0x60 == 0, so every key the server thought that viewer was holding is gone from the client.
+		// Keeping the stale copy makes FindAskGroup resolve keys that no client can answer.
+		void ForgetAskKeys(uint32_t character_id);
+
+		// True when this viewer already has ask_key registered for a different (corpse, item). That is the one
+		// shape the client cannot represent: FUN_140153400 finds an existing record with that key, jumps to its
+		// tail at 0x14015354d and never calls FUN_1400a0480, so no row is ever bound to the key - and every later
+		// 0x0e, 0x0f, 0x12 and 0x13 matches rows on row+0x60 == ask_key.
+		bool AskKeyAlias(uint32_t character_id, uint32_t ask_key, uint32_t corpse_key, uint32_t item_id) const;
+
+	// Any viewer of this corpse for whom ask_key is already bound to a different (corpse, item). Used before
+	// arming a new ask: if even one viewer is in that state, that viewer will discard the binding half of the
+	// 0x0a relay, and the row stays unbound for every later 0x0e / 0x0f / 0x12 / 0x13.
+	bool AnyAskKeyAlias(uint32_t ask_key, uint32_t corpse_key, uint32_t item_id) const;
+
+		// How many players currently have a row on this corpse, for the logs.
+		uint32_t ViewerCount() const { return static_cast<uint32_t>(views.size()); }
+
 		// ---- ask lifecycle ----
 		//
 		// The client owns the ask key and the countdown; the server keeps a copy of the record so it can put

@@ -11474,6 +11474,35 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 					break;
 			}
 
+			// Ask keys are client-owned, and the client can only ever bind one row to one key.
+			// FUN_140153400 searches manager+0x148[ask_key % 0x14] for a record with that key, and when it finds
+			// one it jumps straight to its tail at 0x14015354d: it does not update the record, does not call
+			// FUN_140086220, and above all never calls FUN_1400a0480 - the only writer of row+0x60. A viewer who
+			// already holds ask_key 3 for corpse 12 / item 13005 therefore cannot bind ask_key 3 to corpse 22 /
+			// item 8500, and every later 0x0e, 0x0f, 0x12 and 0x13 keyed 3 misses that row. Both aliasings seen on
+			// 2026-10-17 look like this:
+			//   19:46:31 ask group [3] -> corpse [12] item [13005]   then 19:50:03  ask group [3] -> corpse [22] item [8500]
+			//   21:06:19 ask group [3] -> corpse [12] item [17005]   then 21:08:14  ask group [3] -> corpse [12] item [13006]
+			// and the second one is the free grab that never reached Joka's window: her row was still bound to the
+			// Backpack ask, so the 0x0a state 5 created a record but no binding, the state-5 paint case at
+			// 0x1400a576b never ran for her, and her row kept its Need/Greed selector.
+			//
+			// The fix is to make the key new again, and only one packet does that: a 0x03 rebuild wipes the client's
+			// filter-hash table and recreates every row with row+0x60 == 0. Client::AdvLootRender now also drops the
+			// server-side registry it just invalidated, and ReissueAsks puts the live asks back with keys the client
+			// has never seen - which is what makes them bind.
+			if (corpse->AdvLootSession().AnyAskKeyAlias(update.ask_key, corpse->GetID(), item_id)) {
+				LogLootFilters(
+					"[{}] ask_key [{}] is already bound to another row for at least one viewer of corpse [{}] - rebuilding [{}] window(s) before the ask",
+					GetCleanName(),
+					update.ask_key,
+					corpse->GetID(),
+					corpse->AdvLootSession().ViewerCount()
+				);
+
+				corpse->AdvLootSession().RenderViewers();
+			}
+
 			// Mirror the record onto the rest of the construct - but with the window the server actually armed,
 			// not the value the initiating client sent. FUN_140085c80 writes `record+0x18 - clock`, and when that
 			// client has no deadline installed the subtraction wraps to 2^32 - clock: the 2026-10-16 16:52 run
@@ -11922,17 +11951,29 @@ void Client::Handle_OP_AdvLootManage(const EQApplicationPacket *app)
 				const bool     marked     = grab_roll && grab_roll->state == AdvLoot::StateFreeGrab;
 				const bool     raid_wide  = corpse->AdvLootSession().MayFreeGrab(this);
 				const bool     own_ask    = ask_known && corpse_key == static_cast<uint32_t>(corpse->GetID());
-				const bool     allowed    = corpse->AdvLootSession().MayAct(this);
 
-				if ((!marked && !raid_wide && !own_ask) || !allowed) {
+				// Loot rights, not decision authority. Marking a row Free Grab is an authority act and the 0x0a
+				// handler already gates it with MayAct; the grab itself is what that mark exists to allow. The
+				// client proves the split: FUN_1400a5450's state-5 case at 0x1400a576b disables the row's slot-1
+				// selector and enables the Free Grab control for **every** viewer - nothing on that path reads
+				// manager+0x241 (design §5 C42) - so the client shows the grab to a plain group member and expects
+				// the server to accept it. It did not, and the member got eqstr 0x283 instead:
+				//   22:12:53 [Gunadie] subcmd=0x0a ask_key=4 item_id=8500 state=5 (FreeGrab)      -> marked, relayed
+				//   22:12:53 [Joka]    subcmd=0x0b ask_key=4 ... action [1](Never)                 -> her row IS bound now
+				//   22:13:00 [Joka]    subcmd=0x0f ask_key=4  -> row [marked FreeGrab], ask group [known], authority [locked]
+				//   22:13:00 [Joka]    free grab item [8500] corpse [8] refused - authority [locked], mode [group]
+				//   22:13:00 / 22:13:05 Joka's chat log: "You cannot perform that action right now. Please try again in a moment."
+				const bool     may_loot   = corpse->CanPlayerLoot(CharacterID());
+
+				if ((!marked && !raid_wide && !own_ask) || !may_loot) {
 					LogLootFilters(
-						"[{}] free grab item [{}] corpse [{}] - row [{}], ask group [{}], authority [{}]",
+						"[{}] free grab item [{}] corpse [{}] - row [{}], ask group [{}], loot rights [{}]",
 						GetCleanName(),
 						item_id,
 						corpse->GetID(),
 						marked ? "marked FreeGrab" : "not marked",
 						own_ask ? "known" : "unknown",
-						AdvLoot::AuthorityName(corpse->AdvLootSession().AuthorityFor(this))
+						may_loot ? "yes" : "none"
 					);
 
 					RefuseAdvLootAction("free grab", corpse, ask_key, item_id, corpse_key);

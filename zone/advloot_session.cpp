@@ -706,6 +706,38 @@ void Session::Arm(Roll &roll, uint32_t remaining_ms)
 	roll.ask_deadline = Timer::GetCurrentTime() + remaining_ms;
 	roll.ask_timer.SetTimer(remaining_ms);
 
+	// An answer must be an answer to the ask that is actually running.
+	//
+	// At window open the client sends the row's own filter preference as a subcmd 0x0b with ask_key 0 - that is
+	// not a member opting in to anything, it is the loot filter painting itself onto the row. The 22:12 run shows
+	// all four of them arriving in the same second the corpse opened, before any ask existed:
+	//   22:12:11 [Gunadie] RowUpdate ask_key [0] action [1](Never)  -> looter [Gunadie] added as [Never]
+	//   22:12:11 [Gunadie] RowUpdate ask_key [0] action [2](Greed)  -> looter [Gunadie] added as [Greed]
+	//   22:12:11 [Joka]    RowUpdate ask_key [0] action [1](Never)  -> looter [Joka]    added as [Never]
+	//   22:12:11 [Joka]    RowUpdate ask_key [0] action [2](Greed)  -> looter [Joka]    added as [Greed]
+	// so when the master looter pressed Ask at 22:12:15 the roll already had 2 of 2 participants, RefreshAskState
+	// completed it in the same second, and the roll went through at 22:12:18 with Joka having selected nothing
+	// herself - both windows printed eqstr 11319 "The ask has already completed. Your selection has been changed
+	// from greed back to none." and she was locked out of the row before she ever saw a countdown.
+	//
+	// Clearing at arm is what makes the countdown mean something: the row stays in the state the client keeps its
+	// Need/Greed widgets enabled for (FUN_1400a17e0 runs FUN_1400aa690(window, row, 1) for states 1 and 3), every
+	// member has to answer the running ask, and Ask Completed only lands when they all have. Never counts - it is
+	// a declination, not a silence.
+	const size_t dropped = roll.participants.size();
+	roll.participants.clear();
+
+	if (dropped) {
+		LogLootFilters(
+			"advloot ask opened item [{}] corpse [{}] ask_key [{}] - [{}] pre-ask selection(s) dropped, [{}] looter(s) must answer",
+			roll.item_id,
+			corpse->GetID(),
+			roll.ask.ask_key,
+			dropped,
+			views.size()
+		);
+	}
+
 	// An ask the server started on its own - AdvLootAutoStartTimer arming at the first opt-in, with no 0x0a
 	// on the wire - has no client-allocated key, so there is nothing to re-issue later. Record the shape of
 	// the window anyway so a 0x0a that arrives afterwards fills the key in.
@@ -1163,6 +1195,20 @@ void Session::Resolve(Roll &roll)
 	// Apply Filters is on (`FUN_14009f790`), which is the flow the Personal Loot pane exists for.
 	// docs/advlootpcap.md §12.3.
 	Award(winner_client, roll.item_id, static_cast<uint16_t>(quantity));
+
+	// The award has to be visible in every window, and the client cannot be trusted to move it.
+	//
+	// 0x13 is the client-side award: FUN_1400a7bd0(window, ask_key, winner_is_local) walks the row's LootDetails
+	// entries into the personal store and drops the row from the Shared pane - but it finds that row with
+	// row+0x60 == ask_key, and the 22:12 roll shows Joka's row was not bound. Her dice printed with no item name
+	// (`Gunadie rolled a 832 on .`), which is FUN_1400a2a40 failing the same lookup, and seven seconds later she
+	// sent `subcmd=0x0b ask_key [0] action [2](Greed)` for item 13005 - ask key 0, the signature of an unbound
+	// row. The Iron Ration stayed on her Shared Loot tab although the server had already awarded it to Gunadie.
+	//
+	// A rebuild states the result instead of asking the client to infer it: BuildGroupFor writes each viewer's own
+	// personal_qty and shared_qty, the winner's row lands in their Personal Loot tab, and a row with nothing left
+	// in either pool is skipped entirely.
+	RenderViewers();
 }
 
 void Session::Assign(Roll &roll, Client *target)
@@ -1202,6 +1248,10 @@ void Session::Assign(Roll &roll, Client *target)
 
 	// Same rule as Resolve: the master looter's Give ends at the personal pool, the client claims it with 0x08.
 	Award(target, roll.item_id, static_cast<uint16_t>(quantity));
+
+	// And the same rule as Resolve: state the result in every window rather than hoping the client's row is bound
+	// to ask_key well enough for 0x0e / 0x13 to move it.
+	RenderViewers();
 }
 
 // ML_LeaveOnCorpse: the master looter (or the player the row belongs to) has decided the item stays on the
@@ -1426,10 +1476,20 @@ void Session::RememberAskKey(uint32_t character_id, uint32_t ask_key, uint32_t c
 
 	if (group.corpse_key != corpse_key || group.item_id != item_id) {
 		Client *client = entity_list.GetClientByCharID(character_id);
+
+		// Naming this precisely matters, because the re-point is exactly what the client cannot do. A key that
+		// used to belong to corpse A / item B now belongs to corpse C / item D as far as the server is
+		// concerned, but the viewer's filter-hash record for that key still describes A / B, and FUN_140153400
+		// will not replace it. The 2026-10-17 19:50 run did it live:
+		//   19:46:31 ask group [3] -> corpse [12] item [13005]
+		//   19:50:03 ask group [3] -> corpse [22] item [8500]
+		// and 21:08 did it again with corpse [12] item [17005] -> corpse [12] item [13006].
 		LogLootFilters(
-			"[{}] ask group [{}] -> corpse [{}] item [{}]",
+			"[{}] ask group [{}] re-pointed from corpse [{}] item [{}] to corpse [{}] item [{}] - client record for that key is stale",
 			client ? client->GetCleanName() : "?",
 			ask_key,
+			group.corpse_key,
+			group.item_id,
 			corpse_key,
 			item_id
 		);
@@ -1453,6 +1513,48 @@ uint32_t Session::FindAskKey(uint32_t character_id, uint32_t corpse_key, uint32_
 	}
 
 	return 0;
+}
+
+void Session::ForgetAskKeys(uint32_t character_id)
+{
+	auto it = views.find(character_id);
+	if (it == views.end()) {
+		return;
+	}
+
+	it->second.ask_groups.clear();
+}
+
+bool Session::AskKeyAlias(uint32_t character_id, uint32_t ask_key, uint32_t corpse_key, uint32_t item_id) const
+{
+	auto it = views.find(character_id);
+	if (it == views.end()) {
+		return false;
+	}
+
+	auto group = it->second.ask_groups.find(ask_key);
+	if (group == it->second.ask_groups.end()) {
+		return false;
+	}
+
+	return group->second.corpse_key != corpse_key || group->second.item_id != item_id;
+}
+
+bool Session::AnyAskKeyAlias(uint32_t ask_key, uint32_t corpse_key, uint32_t item_id) const
+{
+	for (const auto &entry : views) {
+		for (const auto &group : entry.second.ask_groups) {
+			if (group.first != ask_key) {
+				continue;
+			}
+
+			if (group.second.corpse_key != corpse_key || group.second.item_id != item_id) {
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 bool Session::FindAskGroup(uint32_t character_id, uint32_t ask_key, AskGroup *out) const
@@ -1485,8 +1587,28 @@ void Session::RecordAsk(Roll &roll, const ItemUpdate &update)
 	roll.ask     = update;
 	roll.has_ask = update.ask_key != 0;
 
-	if (roll.ask.remaining_ms) {
-		roll.ask_deadline = Timer::GetCurrentTime() + roll.ask.remaining_ms;
+	// Only the states that actually run a countdown may set a deadline, and the client's value is not trusted.
+	// The 21:08 capture shows what the client puts on the wire for a Free Grab: remaining_ms = 4264004187
+	// (0xfe9a_c1db), which is FUN_140085c80's `record+0x18 - clock` with record+0x18 == 0 - a wrapped clock, not
+	// a window. Taken at face value it becomes a 49-day deadline, and ReissueAsks then re-issues it verbatim on
+	// every later 0x03 rebuild.
+	//
+	// Armed states are clamped by Arm() with the same rule, which sets ask_deadline itself; everything else gets
+	// no deadline at all.
+	const bool counting_down =
+		update.state == AdvLoot::StateAsk ||
+		update.state == AdvLoot::StateAskAutoRoll ||
+		update.state == AdvLoot::StateFixedAskAutoRoll;
+
+	if (roll.ask.remaining_ms && counting_down) {
+		const uint32_t rule_ms = static_cast<uint32_t>(RuleI(Loot, AdvLootAskTimerSeconds)) * 1000u;
+
+		roll.ask_deadline = Timer::GetCurrentTime() +
+			(roll.ask.remaining_ms > rule_ms ? rule_ms : roll.ask.remaining_ms);
+	}
+	else if (!counting_down) {
+		roll.ask_deadline    = 0;
+		roll.ask.remaining_ms = 0;
 	}
 
 	LogLootFilters(
@@ -1578,6 +1700,12 @@ void Session::ReissueAsks(Client *c)
 
 		c->QueuePacket(app);
 		delete app;
+
+		// The 0x03 that this re-issue follows wiped the viewer's whole ask table, so from the client's side this
+		// key has never been seen: FUN_140153400 takes its create path, FUN_140086220 accepts it, and
+		// FUN_1400a0480 binds it to the row whose row+0x60 is still 0. The server has to register the same fact
+		// or FindAskGroup resolves nothing on the next 0x0d / 0x0f / 0x12 that comes back keyed to it.
+		RememberAskKey(c->CharacterID(), ask.ask_key, corpse->GetID(), roll.item_id);
 	}
 }
 
