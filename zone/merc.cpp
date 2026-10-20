@@ -916,6 +916,23 @@ bool Merc::Process()
 
 	if (send_hp_update_timer.Check()) {
 		SendHPUpdate();
+
+		// The group window's mana and endurance bars, and the Merc tab's Mana and Endurance rows, are all
+		// driven by OP_MobManaUpdate / OP_MobEnduranceUpdate. Nothing else broadcasts those for a
+		// mercenary: Client does it for the owner and Bot::ProcessBot does it for bots, so a mercenary's
+		// percentage never left 0 and the bars stayed empty. The client handler converts the percentage
+		// into spawn+0x23c / +0x2ac and pins the matching maximum to 100, which is what the Merc tab
+		// divides by to turn it back into the absolute value the 0x1f38 table published - so without this
+		// the Merc tab reads 0/713 mana and 0/230 endurance. Same 2 second cadence as the HP update, and
+		// the same one Bot uses. See Client::QueueMobManaPercentUpdate.
+		if (GetRaid()) {
+			GetRaid()->SendManaPacketFrom(this);
+			GetRaid()->SendEndurancePacketFrom(this);
+		}
+		else if (GetGroup()) {
+			GetGroup()->SendManaPacketFrom(this);
+			GetGroup()->SendEndurancePacketFrom(this);
+		}
 	}
 
 	if (endupkeep_timer.Check() && GetHP() > 0){

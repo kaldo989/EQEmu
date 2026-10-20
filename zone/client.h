@@ -934,6 +934,13 @@ public:
 	void CheckManaEndUpdate();
 	void SendManaUpdate();
 	void SendEnduranceUpdate();
+
+	// OP_ManaUpdate / OP_EnduranceUpdate carry this client's own absolute current and maximum. Laurion
+	// reads them as {uint16 spawn_id, uint32 current, uint32 maximum} while every other version uses
+	// ManaUpdate_Struct's {uint32 current, uint32 maximum, uint16 spawn_id}: same 10 packed bytes, the
+	// fields in a different order. These build the record in the layout the receiving client parses.
+	EQApplicationPacket *BuildManaUpdatePacket();
+	EQApplicationPacket *BuildEnduranceUpdatePacket();
 	uint8 GetFace() const { return m_pp.face; }
 	void WhoAll(Who_All_Struct* whom);
 	void FriendsWho(char *FriendsString);
@@ -1993,6 +2000,16 @@ public:
 	// OP_MercenaryRecordDump (0x2d48): u64 echo | u32 count | count x {u32 len, bytes}. Diagnostic.
 	void SendMercenaryRecordDumpLaurion(uint64 echo, const std::vector<std::string> &records);
 	void SendClearMercInfo();
+	// Group / raid mana and endurance bars for one spawn. These exist because Laurion's record is not
+	// the canonical one: OP_MobManaUpdate is 0x6a45 and OP_MobEnduranceUpdate is 0x128e, and each record
+	// is uint16 spawn id + uint32 percentage (6 bytes) instead of uint16 + uint8 (3 bytes). The client
+	// handler FUN_1401ee230 / FUN_1401edfd0 converts that percentage into spawn+0x23c / +0x2ac and pins
+	// spawn+0x41c / +0x4c0 to 100, which is what the Merc tab's Mana and Endurance rows divide by to
+	// turn a percentage back into the absolute 713 / 230 the 0x1f38 table published. With the opcodes
+	// unmapped the client never runs the handler, both percentages stay 0, and the group window's mana
+	// and endurance bars for a mercenary stay empty. See Laurion::structs::MobManaUpdate_Struct.
+	void QueueMobManaPercentUpdate(uint16 spawn_id, uint8 percent);
+	void QueueMobEndurancePercentUpdate(uint16 spawn_id, uint8 percent);
 	// Mercenary AA state push. Sends OP_MercenaryAAGrant (Laurion 0x0516) followed by
 	// OP_MercenaryAARanks (Laurion 0x3e8c). Order matters: 0x0516 clears the client's granted
 	// ability container before repopulating it, so it has to come first.

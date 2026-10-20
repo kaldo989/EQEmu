@@ -2207,6 +2207,57 @@ namespace Laurion {
 			/*016*/
 		};
 
+		// Group / raid mana and endurance bars.
+		//
+		// ZonePacket__dispatchRecv routes four opcodes each to the same handler:
+		//   FUN_1401ee230 (mana)      0x6a45, 0x3b44, 0x0606, 0x246a
+		//   FUN_1401edfd0 (endurance) 0x128e, 0x09cf, 0x46fb, 0x6dbc
+		// Each opcode arm loads the arguments the same way, which fixes the record layout:
+		//
+		//   MOVZX/MOVSX EAX, word ptr [data]      -> param_1 = uint16 spawn id   at +0x00
+		//   MOV   EDX,    dword ptr [data + 0x2]  -> param_2 = current / percent  at +0x02
+		//   MOV   R8D,    dword ptr [data + 0x6]  -> param_3 = maximum            at +0x06
+		//
+		// and the 0x6a45 / 0x3b44 / 0x128e / 0x09cf arms instead do `MOV R8D, 0x64`, so those four carry
+		// no maximum field at all: the record is a bare percentage. The second opcode of each pair sets
+		// param_4, which the handler uses to write spawn+0x1360 = 1; the payload is otherwise identical.
+		//
+		// EQEmu's canonical MobManaUpdate_Struct is { uint16 spawn_id; uint8 percent } (3 bytes). Laurion
+		// widens the percentage to a uint32, so the record is 6 bytes. Sending the 3 byte form on a mapped
+		// opcode leaves param_2 reading two bytes past the end of the packet.
+		struct MobManaUpdate_Struct {
+			/*000*/	uint16	spawn_id;		// Entity ID
+			/*002*/	uint32	mana;			// Mana Percentage
+			/*006*/
+		};
+
+		struct MobEnduranceUpdate_Struct {
+			/*000*/	uint16	spawn_id;		// Entity ID
+			/*002*/	uint32	endurance;		// Endurance Percentage
+			/*006*/
+		};
+
+		// The absolute-value variants of the same two handlers, for OP_ManaUpdate (0x0606) and
+		// OP_EnduranceUpdate (0x46fb). When the spawn id resolves to pinstLocalPlayer the handler stores
+		// param_2 and param_3 straight into spawn+0x23c / +0x41c (and +0x2ac / +0x4c0 for endurance)
+		// instead of converting to a percentage, so these are current + maximum, not a percent.
+		//
+		// Field order is the opposite of EQEmu's ManaUpdate_Struct, which is
+		// { uint32 cur_mana; uint32 max_mana; uint16 spawn_id }. Same 10 byte size, different layout.
+		struct ManaUpdate_Struct {
+			/*000*/	uint16	spawn_id;
+			/*002*/	uint32	cur_mana;
+			/*006*/	uint32	max_mana;
+			/*010*/
+		};
+
+		struct EnduranceUpdate_Struct {
+			/*000*/	uint16	spawn_id;
+			/*002*/	uint32	cur_end;
+			/*006*/	uint32	max_end;
+			/*010*/
+		};
+
 #pragma pack()
 
 	};	//end namespace structs

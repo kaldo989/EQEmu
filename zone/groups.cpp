@@ -402,7 +402,6 @@ void Group::SendHPManaEndPacketsTo(Mob *member)
 {
 	if(member && member->IsClient()) {
 		EQApplicationPacket hpapp;
-		EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
 			if(members[i] && members[i] != member) {
@@ -412,17 +411,10 @@ void Group::SendHPManaEndPacketsTo(Mob *member)
 				hpapp.size = 0;
 
 				if (member->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-					outapp.SetOpcode(OP_MobManaUpdate);
-
-					MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-					mana_update->spawn_id = members[i]->GetID();
-					mana_update->mana = members[i]->GetManaPercent();
-					member->CastToClient()->QueuePacket(&outapp, false);
-
-					MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-					outapp.SetOpcode(OP_MobEnduranceUpdate);
-					endurance_update->endurance = members[i]->GetEndurancePercent();
-					member->CastToClient()->QueuePacket(&outapp, false);
+					member->CastToClient()->QueueMobManaPercentUpdate(
+						static_cast<uint16>(members[i]->GetID()), members[i]->GetManaPercent());
+					member->CastToClient()->QueueMobEndurancePercentUpdate(
+						static_cast<uint16>(members[i]->GetID()), members[i]->GetEndurancePercent());
 				}
 			}
 		}
@@ -436,23 +428,16 @@ void Group::SendHPPacketsFrom(Mob *member)
 		return;
 
 	member->CreateHPPacket(&hp_app);
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 	uint32 i;
 	for(i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if(members[i] && members[i] != member && members[i]->IsClient()) {
 			members[i]->CastToClient()->QueuePacket(&hp_app);
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				outapp.SetOpcode(OP_MobManaUpdate);
-				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-				mana_update->spawn_id = member->GetID();
-				mana_update->mana = member->GetManaPercent();
-				members[i]->CastToClient()->QueuePacket(&outapp, false);
-
-				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-				outapp.SetOpcode(OP_MobEnduranceUpdate);
-				endurance_update->endurance = member->GetEndurancePercent();
-				members[i]->CastToClient()->QueuePacket(&outapp, false);
+				members[i]->CastToClient()->QueueMobManaPercentUpdate(
+					static_cast<uint16>(member->GetID()), member->GetManaPercent());
+				members[i]->CastToClient()->QueueMobEndurancePercentUpdate(
+					static_cast<uint16>(member->GetID()), member->GetEndurancePercent());
 			}
 		}
 	}
@@ -462,17 +447,13 @@ void Group::SendManaPacketFrom(Mob *member)
 {
 	if (!member)
 		return;
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if (members[i] && members[i] != member && members[i]->IsClient()) {
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				outapp.SetOpcode(OP_MobManaUpdate);
-				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-				mana_update->spawn_id = member->GetID();
-				mana_update->mana = member->GetManaPercent();
-				members[i]->CastToClient()->QueuePacket(&outapp, false);
+				members[i]->CastToClient()->QueueMobManaPercentUpdate(
+					static_cast<uint16>(member->GetID()), member->GetManaPercent());
 			}
 		}
 	}
@@ -483,16 +464,12 @@ void Group::SendEndurancePacketFrom(Mob* member)
 	if (!member)
 		return;
 
-	EQApplicationPacket outapp(OP_MobEnduranceUpdate, sizeof(MobManaUpdate_Struct));
-
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
 		if (members[i] && members[i] != member && members[i]->IsClient()) {
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-				endurance_update->spawn_id = member->GetID();
-				endurance_update->endurance = member->GetEndurancePercent();
-				members[i]->CastToClient()->QueuePacket(&outapp, false);
+				members[i]->CastToClient()->QueueMobEndurancePercentUpdate(
+					static_cast<uint16>(member->GetID()), member->GetEndurancePercent());
 			}
 		}
 	}

@@ -2015,7 +2015,6 @@ void Raid::SendHPManaEndPacketsTo(Client *client)
 	uint32 group_id = GetGroup(client);
 
 	EQApplicationPacket hp_packet;
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 	for (const auto& m : members) {
 		if (m.is_bot) {
@@ -2029,16 +2028,10 @@ void Raid::SendHPManaEndPacketsTo(Client *client)
 			hp_packet.size = 0;
 
 			if (client->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				outapp.SetOpcode(OP_MobManaUpdate);
-				auto mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-				mana_update->spawn_id = m.member->GetID();
-				mana_update->mana = m.member->GetManaPercent();
-				client->QueuePacket(&outapp, false);
-
-				outapp.SetOpcode(OP_MobEnduranceUpdate);
-				auto endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-				endurance_update->endurance = m.member->GetEndurancePercent();
-				client->QueuePacket(&outapp, false);
+				client->QueueMobManaPercentUpdate(
+					static_cast<uint16>(m.member->GetID()), m.member->GetManaPercent());
+				client->QueueMobEndurancePercentUpdate(
+					static_cast<uint16>(m.member->GetID()), m.member->GetEndurancePercent());
 			}
 		}
 	}
@@ -2057,7 +2050,6 @@ void Raid::SendHPManaEndPacketsFrom(Mob *mob)
 	}
 
 	EQApplicationPacket hpapp;
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 	mob->CreateHPPacket(&hpapp);
 
@@ -2069,17 +2061,11 @@ void Raid::SendHPManaEndPacketsFrom(Mob *mob)
 		if (m.member && (!mob->IsClient() || ((m.member != mob->CastToClient()) && (m.group_number == group_id)))) {
 			m.member->QueuePacket(&hpapp, false);
 
-			if (m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				outapp.SetOpcode(OP_MobManaUpdate);
-				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-				mana_update->spawn_id = mob->GetID();
-				mana_update->mana = mob->GetManaPercent();
-				m.member->QueuePacket(&outapp, false);
-
-				outapp.SetOpcode(OP_MobEnduranceUpdate);
-				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-				endurance_update->endurance = mob->GetEndurancePercent();
-				m.member->QueuePacket(&outapp, false);
+			if (m.member->IsClient() && m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
+				m.member->CastToClient()->QueueMobManaPercentUpdate(
+					static_cast<uint16>(mob->GetID()), mob->GetManaPercent());
+				m.member->CastToClient()->QueueMobEndurancePercentUpdate(
+					static_cast<uint16>(mob->GetID()), mob->GetEndurancePercent());
 			}
 		}
 	}
@@ -2097,21 +2083,16 @@ void Raid::SendManaPacketFrom(Mob *mob)
 		group_id = GetGroup(mob->CastToClient());
 	}
 
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
-
 	for (const auto& m : members) {
 		if (m.is_bot) {
 			continue;
 		}
 
 		if (m.member && (!mob->IsClient() || ((m.member != mob->CastToClient()) && (m.group_number == group_id))) &&
-			m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD
+			m.member->IsClient() && m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD
 		) {
-			outapp.SetOpcode(OP_MobManaUpdate);
-			MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
-			mana_update->spawn_id = mob->GetID();
-			mana_update->mana = mob->GetManaPercent();
-			m.member->QueuePacket(&outapp, false);
+			m.member->CastToClient()->QueueMobManaPercentUpdate(
+				static_cast<uint16>(mob->GetID()), mob->GetManaPercent());
 		}
 	}
 }
@@ -2128,21 +2109,16 @@ void Raid::SendEndurancePacketFrom(Mob *mob)
 		group_id = GetGroup(mob->CastToClient());
 	}
 
-	EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
-
 	for (const auto& m : members) {
 		if (m.is_bot) {
 			continue;
 		}
 
 		if (m.member && (!mob->IsClient() || ((m.member != mob->CastToClient()) && (m.group_number == group_id))) &&
-			m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD
+			m.member->IsClient() && m.member->ClientVersion() >= EQ::versions::ClientVersion::SoD
 		) {
-			outapp.SetOpcode(OP_MobEnduranceUpdate);
-			auto endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
-			endurance_update->spawn_id = mob->GetID();
-			endurance_update->endurance = mob->GetEndurancePercent();
-			m.member->QueuePacket(&outapp, false);
+			m.member->CastToClient()->QueueMobEndurancePercentUpdate(
+				static_cast<uint16>(mob->GetID()), mob->GetEndurancePercent());
 		}
 	}
 }

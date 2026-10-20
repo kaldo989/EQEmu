@@ -2471,11 +2471,7 @@ void Client::CheckManaEndUpdate() {
 				group->SendManaPacketFrom(this);
 			}
 
-			auto mana_packet = new EQApplicationPacket(OP_ManaUpdate, sizeof(ManaUpdate_Struct));
-			ManaUpdate_Struct* mana_update = (ManaUpdate_Struct*)mana_packet->pBuffer;
-			mana_update->cur_mana = GetMana();
-			mana_update->max_mana = GetMaxMana();
-			mana_update->spawn_id = GetID();
+			auto mana_packet = BuildManaUpdatePacket();
 			if ((ClientVersionBit() & EQ::versions::ClientVersionBitmask::maskSoDAndLater) != 0)
 				QueuePacket(mana_packet); // do we need this with the OP_ManaChange packet above?
 			entity_list.QueueClientsByXTarget(this, mana_packet, false, EQ::versions::ClientVersionBitmask::maskSoDAndLater);
@@ -2496,11 +2492,7 @@ void Client::CheckManaEndUpdate() {
 				group->SendEndurancePacketFrom(this);
 			}
 
-			auto endurance_packet = new EQApplicationPacket(OP_EnduranceUpdate, sizeof(EnduranceUpdate_Struct));
-			EnduranceUpdate_Struct* endurance_update = (EnduranceUpdate_Struct*)endurance_packet->pBuffer;
-			endurance_update->cur_end = GetEndurance();
-			endurance_update->max_end = GetMaxEndurance();
-			endurance_update->spawn_id = GetID();
+			auto endurance_packet = BuildEnduranceUpdatePacket();
 			if ((ClientVersionBit() & EQ::versions::ClientVersionBitmask::maskSoDAndLater) != 0)
 				QueuePacket(endurance_packet); // do we need this with the OP_ManaChange packet above?
 			entity_list.QueueClientsByXTarget(this, endurance_packet, false, EQ::versions::ClientVersionBitmask::maskSoDAndLater);
@@ -2514,14 +2506,48 @@ void Client::CheckManaEndUpdate() {
 	}
 }
 
+// The record is 10 packed bytes in both layouts; only the field order differs, so the allocation size
+// is the same whichever way the recipient reads it.
+EQApplicationPacket *Client::BuildManaUpdatePacket()
+{
+	EQApplicationPacket *mana_app = new EQApplicationPacket(OP_ManaUpdate, sizeof(ManaUpdate_Struct));
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		Laurion::structs::ManaUpdate_Struct *laurion = (Laurion::structs::ManaUpdate_Struct *) mana_app->pBuffer;
+		laurion->spawn_id = GetID();
+		laurion->cur_mana  = GetMana();
+		laurion->max_mana  = GetMaxMana();
+	}
+	else {
+		ManaUpdate_Struct *mana_update = (ManaUpdate_Struct *) mana_app->pBuffer;
+		mana_update->cur_mana = GetMana();
+		mana_update->max_mana = GetMaxMana();
+		mana_update->spawn_id = GetID();
+	}
+	return mana_app;
+}
+
+EQApplicationPacket *Client::BuildEnduranceUpdatePacket()
+{
+	EQApplicationPacket *end_app = new EQApplicationPacket(OP_EnduranceUpdate, sizeof(EnduranceUpdate_Struct));
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		Laurion::structs::EnduranceUpdate_Struct *laurion = (Laurion::structs::EnduranceUpdate_Struct *) end_app->pBuffer;
+		laurion->spawn_id = GetID();
+		laurion->cur_end  = GetEndurance();
+		laurion->max_end  = GetMaxEndurance();
+	}
+	else {
+		EnduranceUpdate_Struct *endurance_update = (EnduranceUpdate_Struct *) end_app->pBuffer;
+		endurance_update->cur_end = GetEndurance();
+		endurance_update->max_end = GetMaxEndurance();
+		endurance_update->spawn_id = GetID();
+	}
+	return end_app;
+}
+
 // sends mana update to self
 void Client::SendManaUpdate()
 {
-	auto mana_app = new EQApplicationPacket(OP_ManaUpdate, sizeof(ManaUpdate_Struct));
-	ManaUpdate_Struct* mana_update = (ManaUpdate_Struct*)mana_app->pBuffer;
-	mana_update->cur_mana = GetMana();
-	mana_update->max_mana = GetMaxMana();
-	mana_update->spawn_id = GetID();
+	auto mana_app = BuildManaUpdatePacket();
 	QueuePacket(mana_app);
 	safe_delete(mana_app);
 }
@@ -2529,11 +2555,7 @@ void Client::SendManaUpdate()
 // sends endurance update to self
 void Client::SendEnduranceUpdate()
 {
-	auto end_app = new EQApplicationPacket(OP_EnduranceUpdate, sizeof(EnduranceUpdate_Struct));
-	EnduranceUpdate_Struct* endurance_update = (EnduranceUpdate_Struct*)end_app->pBuffer;
-	endurance_update->cur_end = GetEndurance();
-	endurance_update->max_end = GetMaxEndurance();
-	endurance_update->spawn_id = GetID();
+	auto end_app = BuildEnduranceUpdatePacket();
 	QueuePacket(end_app);
 	safe_delete(end_app);
 }
@@ -8252,6 +8274,61 @@ void Client::SendClearMercInfo()
 	nmhs->MercCount = 0;
 	nmhs->MercID = 1;
 	FastQueuePacket(&outapp);
+}
+
+// Group / raid mana bar for one spawn.
+//
+// Laurion routes OP_MobManaUpdate (0x6a45) to FUN_1401ee230 with
+//   param_1 = uint16 spawn id at +0x00, param_2 = uint32 percentage at +0x02, param_3 = 100 (immediate).
+// For a spawn that is not pinstLocalPlayer the handler stores the percentage at spawn+0x23c and pins
+// spawn+0x41c to 100. The Merc tab's Mana row is then
+//   spawn+0x23c * stat_table[MAX_MANA] / spawn+0x41c
+// so the percentage is what turns the 0x1f38 maximum back into an absolute number. Both the Merc tab
+// and the group window's mana bar read those two fields.
+//
+// Every other client EQEmu supports uses uint16 spawn id + uint8 percentage (3 bytes).
+void Client::QueueMobManaPercentUpdate(uint16 spawn_id, uint8 percent)
+{
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_MobManaUpdate, sizeof(Laurion::structs::MobManaUpdate_Struct));
+		auto update = (Laurion::structs::MobManaUpdate_Struct *) outapp->pBuffer;
+		update->spawn_id = spawn_id;
+		update->mana = percent;
+		QueuePacket(outapp, false);
+		safe_delete(outapp);
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
+	auto update = (MobManaUpdate_Struct *) outapp->pBuffer;
+	update->spawn_id = spawn_id;
+	update->mana = percent;
+	QueuePacket(outapp, false);
+	safe_delete(outapp);
+}
+
+// Group / raid endurance bar for one spawn. Same shape as QueueMobManaPercentUpdate: Laurion routes
+// OP_MobEnduranceUpdate (0x128e) to FUN_1401edfd0, which writes the percentage to spawn+0x2ac and pins
+// spawn+0x4c0 to 100, and the Merc tab's Endurance row divides the percentage by that 100 against
+// stat_table[MAX_END].
+void Client::QueueMobEndurancePercentUpdate(uint16 spawn_id, uint8 percent)
+{
+	if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
+		auto outapp = new EQApplicationPacket(OP_MobEnduranceUpdate, sizeof(Laurion::structs::MobEnduranceUpdate_Struct));
+		auto update = (Laurion::structs::MobEnduranceUpdate_Struct *) outapp->pBuffer;
+		update->spawn_id = spawn_id;
+		update->endurance = percent;
+		QueuePacket(outapp, false);
+		safe_delete(outapp);
+		return;
+	}
+
+	auto outapp = new EQApplicationPacket(OP_MobEnduranceUpdate, sizeof(MobEnduranceUpdate_Struct));
+	auto update = (MobEnduranceUpdate_Struct *) outapp->pBuffer;
+	update->spawn_id = spawn_id;
+	update->endurance = percent;
+	QueuePacket(outapp, false);
+	safe_delete(outapp);
 }
 
 
