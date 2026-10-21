@@ -760,6 +760,52 @@ namespace Laurion {
 			/*032*/
 		};
 
+		// [Laurion 0x01d0] OP_AltCurrency [Server->Client] [variable length]
+		// Handler: ZonePacket__dispatchRecv case 0x01d0 -> FUN_1401f3eb0, which branches on the u32
+		// at +0 (7 = balance update, 8 = definition populate).
+		//
+		// mode 8 -> FUN_140666240(pinstLocalPC + 0x2188, {ptr, size, cursor = 4}) reads `count` entries
+		// of 7 x u32 + 1 x u8 and pushes each into the currency definition vector (FUN_140665e40 skips a
+		// duplicate {currency_number, kind} pair, so re-sending is safe). FUN_140665fb0(PC + 0x2188,
+		// currency_id, kind) then scans that vector for {+0x00, +0x04} and returns +0x08, the dbstr id
+		// used with category 17 (singular name) or 18 (plural name). A miss returns 0, and
+		// CDBStr__GetString(0, 17) renders the literal text "Unknown DB String 0-17".
+		struct AltCurrencyPopulateEntry_Struct {
+			/*000*/ uint32 currency_number; // FUN_140665fb0 key
+			/*004*/ uint32 kind;            // FUN_140665fb0 sub-key, always 1
+			/*008*/ uint32 dbstr_id;        // dbstr index; equals currency_number in practice
+			/*012*/ uint32 item_id;         // matched by FUN_1406660a0 on the reclaim path
+			/*016*/ uint32 item_icon;
+			/*020*/ uint32 stack_size;
+			/*024*/ uint32 unknown024;      // Laurion only: RoF2's entry is 25 bytes, this one is 29
+			/*028*/ uint8  display;         // 0 hides the currency from the alternate currency window
+			/*029*/
+		};
+
+		struct AltCurrencyPopulate_Struct {
+			/*000*/ uint32 opcode; // AlternateCurrencyMode::Populate = 8
+			/*004*/ uint32 count;
+			/*008*/ AltCurrencyPopulateEntry_Struct entries[0];
+			/*008*/
+		};
+
+		// mode 7 -> FUN_1401f3eb0 reads +0x44 currency_number, +0x48 kind, +0x4c amount (only used by
+		// the optional chat line) and +0x50 new_balance, which FUN_14063d770 stores as the absolute
+		// balance in the PlayerPointManager table at pinstLocalPC + 0x2158. RoF2 stops at +0x54; Laurion
+		// additionally reads a byte at +0x58: non-zero prints eqstr 0x3426 ("%d %s") with the currency
+		// name and plays sound 0x8a. The packet is 92 bytes so that read stays inside the payload.
+		struct AltCurrencyUpdate_Struct {
+			/*000*/ uint32 opcode;          // AlternateCurrencyMode::Update = 7
+			/*004*/ char   name[64];
+			/*068*/ uint32 currency_number;
+			/*072*/ uint32 kind;            // 1
+			/*076*/ uint32 amount;          // chat amount
+			/*080*/ uint32 new_balance;     // absolute balance the client stores
+			/*084*/ uint32 unknown084;
+			/*088*/ uint32 announce;        // low byte read as a flag
+			/*092*/
+		};
+
 		struct BeginCast_Struct
 		{
 			/*000*/	uint32 spell_id;

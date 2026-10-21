@@ -536,13 +536,26 @@ void Group::SendLaurionRoster(Client *to)
 		// This is the field Client::SendGroupCreatePacket already labels "merc flag".
 		buffer.WriteUInt16(m->IsMerc() ? 1 : 0);
 
-		// Laurion keeps an owner name on every entry; for a player it is the entry itself.
+		// The owner name is the client's player/merc discriminator, not a display field. Laurion's
+		// FUN_1406371e0 walks the six member slots and buckets each entry by it: an entry with a non-empty
+		// owner name counts as a mercenary, an entry with an empty one counts as a player. MacroQuest
+		// implements the same test in CGroup::GetNumberOfPlayerMembers (src/eqlib/PcClient.cpp:196), and
+		// Client::SendGroupCreatePacket has always written a bare 0 here for a player.
+		//
+		// Writing the entry's own name for a player made every roster entry look like a mercenary, so the
+		// buckets came out 0 players / 2 mercenaries instead of 1 / 1. FUN_1406371e0 returns true only when
+		// the counts are exactly one and one, and FUN_1402c3f50 reports that as "this group is effectively
+		// solo". CAdvancedLootWnd uses it in FUN_1400a5d10 and FUN_1400a6170 to decide whether to show
+		// ADLW_CLLWnd: a solo-ish group hides the Shared Loot pane. With the wrong owner name the predicate
+		// was false, so the pane stayed visible, empty, and squeezed the Personal Loot pane into a strip even
+		// though the server had already opened the corpse in solo mode (advloot_session.cpp Session::Open ->
+		// "treated as solo").
 		if (m->IsMerc()) {
 			Client *owner = m->CastToMerc()->GetMercenaryOwner();
 			buffer.WriteString(owner ? owner->GetCleanName() : m->GetCleanName());
 		}
 		else {
-			buffer.WriteString(m->GetCleanName());
+			buffer.WriteString("");
 		}
 
 		buffer.WriteUInt32(m->GetLevel());

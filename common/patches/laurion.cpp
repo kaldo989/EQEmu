@@ -219,6 +219,98 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_AltCurrency)
+	{
+		// Laurion 0x01d0. Client: ZonePacket__dispatchRecv case 0x01d0 -> FUN_1401f3eb0.
+		//
+		// This is what fills pinstLocalPC + 0x2188, the alternate-currency definition table. Without it
+		// every FUN_140665fb0(PC + 0x2188, currency_id, 1) lookup returns 0 and the caller renders
+		// CDBStr__GetString(0, 17) as the literal label "Unknown DB String 0-17". The merchant Recover
+		// tab hits this directly: its page handler (FUN_1404570e0) hardcodes currency 20 (Tokens of
+		// Reclamation) and prints eqstr 4620/4621, "<merchant> told you, 'That'll be 1 <currency name>
+		// to recover the <item>.'", with the balance check PlayerPointManager(PC + 0x2158, 20, 1) >= 1.
+		EQApplicationPacket *in = *p;
+		*p = nullptr;
+
+		if (in->size < sizeof(uint32)) {
+			LogNetcode("Wrong size on outbound [OP_AltCurrency]: Got [{}], expected at least [4]", in->size);
+			safe_delete(in);
+			return;
+		}
+
+		const uint32 mode = *reinterpret_cast<uint32 *>(in->pBuffer);
+
+		if (mode == AlternateCurrencyMode::Populate) {
+			if (in->size < sizeof(AltCurrencyPopulate_Struct)) {
+				LogNetcode("Wrong size on outbound [OP_AltCurrency populate]: Got [{}], expected at least [{}]", in->size, sizeof(AltCurrencyPopulate_Struct));
+				safe_delete(in);
+				return;
+			}
+
+			AltCurrencyPopulate_Struct *emu = reinterpret_cast<AltCurrencyPopulate_Struct *>(in->pBuffer);
+			const uint32 count = emu->count;
+
+			if (in->size < sizeof(AltCurrencyPopulate_Struct) + sizeof(AltCurrencyPopulateEntry_Struct) * count) {
+				LogNetcode("Wrong size on outbound [OP_AltCurrency populate]: Got [{}], expected at least [{}]", in->size, sizeof(AltCurrencyPopulate_Struct) + sizeof(AltCurrencyPopulateEntry_Struct) * count);
+				safe_delete(in);
+				return;
+			}
+
+			// Laurion's entry record is 29 bytes against RoF2's 25, so the payload grows with the
+			// currency count: 8 + 29 * 63 = 1835 bytes for the current PEQ table.
+			auto outapp = new EQApplicationPacket(
+				OP_AltCurrency,
+				sizeof(structs::AltCurrencyPopulate_Struct) + sizeof(structs::AltCurrencyPopulateEntry_Struct) * count
+			);
+			auto eq = reinterpret_cast<structs::AltCurrencyPopulate_Struct *>(outapp->pBuffer);
+
+			eq->opcode = AlternateCurrencyMode::Populate;
+			eq->count = count;
+			for (uint32 i = 0; i < count; ++i) {
+				eq->entries[i].currency_number = emu->entries[i].currency_number;
+				eq->entries[i].kind            = emu->entries[i].unknown00;
+				eq->entries[i].dbstr_id        = emu->entries[i].currency_number2;
+				eq->entries[i].item_id         = emu->entries[i].item_id;
+				eq->entries[i].item_icon       = emu->entries[i].item_icon;
+				eq->entries[i].stack_size      = emu->entries[i].stack_size;
+				eq->entries[i].unknown024      = 0;
+				eq->entries[i].display         = 1;
+			}
+
+			dest->FastQueuePacket(&outapp, ack_req);
+		}
+		else if (mode == AlternateCurrencyMode::Update) {
+			if (in->size < sizeof(AltCurrencyUpdate_Struct)) {
+				LogNetcode("Wrong size on outbound [OP_AltCurrency update]: Got [{}], expected at least [{}]", in->size, sizeof(AltCurrencyUpdate_Struct));
+				safe_delete(in);
+				return;
+			}
+
+			AltCurrencyUpdate_Struct *emu = reinterpret_cast<AltCurrencyUpdate_Struct *>(in->pBuffer);
+
+			auto outapp = new EQApplicationPacket(OP_AltCurrency, sizeof(structs::AltCurrencyUpdate_Struct));
+			auto eq = reinterpret_cast<structs::AltCurrencyUpdate_Struct *>(outapp->pBuffer);
+
+			eq->opcode = AlternateCurrencyMode::Update;
+			memcpy(eq->name, emu->name, sizeof(eq->name));
+			eq->currency_number = emu->currency_number;
+			eq->kind            = emu->unknown072;
+			// EQEmu only carries the new total. Laurion wants the total at +0x50 and keeps +0x4c for the
+			// chat line, so both get the total and the announce flag stays clear: the zone already prints
+			// its own currency messages.
+			eq->amount       = emu->amount;
+			eq->new_balance  = emu->amount;
+			eq->announce     = 0;
+
+			dest->FastQueuePacket(&outapp, ack_req);
+		}
+		else {
+			LogNetcode("Unknown OP_AltCurrency mode [{}]", mode);
+		}
+
+		safe_delete(in);
+	}
+
 	ENCODE(OP_Animation)
 	{
 		ENCODE_LENGTH_EXACT(Animation_Struct);
