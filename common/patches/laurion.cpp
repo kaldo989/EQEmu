@@ -38,6 +38,7 @@
 #include "../path_manager.h"
 #include "../classes.h"
 #include "../races.h"
+#include "../bodytypes.h"
 #include "../raid.h"
 
 #include <iostream>
@@ -3686,12 +3687,23 @@ namespace Laurion
 			u8 PropertyCount;
 			u32 Properties[PropertyCount];
 			*/
-			//We don't actually support multiple body types yet, but we should consider it in the future
+			// The client stores this list as a per-spawn property set (Character + 0x138) and
+			// gates spells against it: CharacterZoneClient::CastSpell -> PlayerBase::HasProperty.
+			// The property IDs it tests are the same numeric IDs as our BodyType IDs, but a single
+			// body type can imply more than one property, so a 1:1 copy is not enough. Sending only
+			// the body type makes the client reject the cast locally (eqstr 219 "This spell only
+			// works on the undead.") and never send OP_CastSpell at all.
+			// See BodyType::GetClientProperties and docs/mend-bones-undead-target.md.
 
 			if (!emu->DestructibleObject)
 			{
-				buffer.WriteUInt8(1);
-				buffer.WriteUInt32(emu->bodytype);
+				const std::vector<uint8_t> properties = BodyType::GetClientProperties(emu->bodytype);
+
+				buffer.WriteUInt8(static_cast<uint8_t>(properties.size()));
+				for (const uint8_t &property : properties)
+				{
+					buffer.WriteUInt32(property);
+				}
 			}
 			else
 			{

@@ -21,6 +21,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 // body types above 64 make the mob invisible
 namespace BodyType {
@@ -66,6 +67,16 @@ namespace BodyType {
 
 	std::string GetName(uint8 body_type_id);
 	bool IsValid(uint8 body_type_id);
+
+	// The client keeps a per-spawn property set (Character + 0x138) that it fills straight from
+	// the "u8 PropertyCount / u32 Properties[]" field of the spawn packet, and it gates spells
+	// against that set in CharacterZoneClient::CastSpell via PlayerBase::HasProperty. The property
+	// IDs it tests are numerically the same IDs as the body types above, but one body type can
+	// satisfy several gates, so the list we send cannot just be the body type.
+	//
+	// Returns the body type itself first, then every extra property ID it implies.
+	// See docs/mend-bones-undead-target.md for the reverse-engineered gate table.
+	std::vector<uint8_t> GetClientProperties(uint8 body_type_id);
 }
 
 static std::map<uint8, std::string> body_type_names = {
