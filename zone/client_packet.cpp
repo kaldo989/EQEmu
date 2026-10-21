@@ -114,6 +114,7 @@ void MapOpcodes()
 	// RE SoF x64: 0x0ede xtarget single slot update, resolved.
 	ConnectedOpcodes[OP_0x0ede] = &Client::Handle_0x0ede;
 	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
+	ConnectedOpcodes[OP_0x447e] = &Client::Handle_0x447e;
 	ConnectedOpcodes[OP_0x59bd] = &Client::Handle_0x59bd;
 	ConnectedOpcodes[OP_0x5e4a] = &Client::Handle_0x5e4a;
 	ConnectedOpcodes[OP_0x6b80] = &Client::Handle_0x6b80;
@@ -1979,6 +1980,30 @@ void Client::Handle_0x0193(const EQApplicationPacket *app)
 
 // SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names.
 // These are all zero payload requests, so there is nothing to parse yet.
+
+void Client::Handle_0x447e(const EQApplicationPacket *app)
+{
+	// FUN_1404ee7a0, the TaskWnd refresh method. It asks FUN_1404ede30 for the record id of the row
+	// currently selected in window+0x2d8, falls back to window+0x2e0, and returns 0 when neither list
+	// exists or nothing is selected. It looks that id up in the progression record cache 0x140eb45f0
+	// with FUN_1403212b0 and only sends this packet on a cache miss.
+	//
+	// Payload 12: uint64 at +0..+7 is stack garbage the sender never writes, uint32 at +8..+11 is the
+	// requested record id. Every request seen so far carried id 0, i.e. nothing was selected.
+	//
+	// The client reads the answer on the same opcode: FUN_1403212e0 parses a '^' separated record
+	// (id, name, description, class, level, 12 numbers, item id + CDBStr key pairs, then id + text
+	// pairs) into a 0x1058 byte cache record and re-renders the window. Nothing in EQEmu stores that
+	// shape yet, so this stays a logged no-op rather than a guessed reply.
+	if (app->size == 12) {
+		uint32 record_id = *(uint32*)(app->pBuffer + 8);
+		LogNetcodeDetail("OP_0x447e [{}] record request, id [{}]", GetCleanName(), record_id);
+	}
+	else {
+		LogNetcodeDetail("OP_0x447e [{}] size [{}]", GetCleanName(), app->size);
+		DumpPacket(app);
+	}
+}
 
 void Client::Handle_0x59bd(const EQApplicationPacket *app)
 {
