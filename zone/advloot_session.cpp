@@ -66,7 +66,7 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 	// NPC:CorpseUnlockTimer cleared m_allowed_looters - see AuthorityFor and docs/advlootpcap.md §10.2.
 	group.present_at_kill  = corpse->CanPlayerLoot(c->CharacterID()) ? 1 : 0;
 
-	const bool solo = !c->HasGroup() && !c->HasRaid();
+	const bool solo = !c->AdvLootSharesLoot();
 
 	std::set<uint32_t> added;
 
@@ -105,6 +105,22 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 		entry.personal_qty = PersonalQty(c->CharacterID(), item->ID);
 		entry.shared_qty   = solo ? 0 : SharedQty(item->ID);
 
+		// "Don't want" means this viewer is not offered the item at all. The client's own name for the preference
+		// is `NeverLoot`, and `FUN_14009e460` copies it from the stored filter record into the row's saved-filter
+		// bytes (+0x91 AlwaysNeed, +0x92 AlwaysGreed, +0x93 NeverLoot) - "Always", on purpose.
+		//
+		// The server used to ignore it and re-offer the item on every corpse that rolled the same loot table, so
+		// marking an item, leaving it on the corpse, and killing the next mob put the row straight back: 68 Leave
+		// On Corpse presses across 24 corpses in the 2026-10-21 17:20 run. Skipping the row is what makes the mark
+		// mean something; the item stays on the corpse for anyone else who does want it.
+		//
+		// A row this viewer already owns is not dropped: personal_qty is non-zero only because they won it or
+		// grabbed it, and stranding a won item in a pool nobody can see is worse than showing a row they marked
+		// afterwards.
+		if ((entry.filter_bits & AdvLoot::FilterBitNeverLoot) && !entry.personal_qty) {
+			continue;
+		}
+
 		// AddCorpse only builds a row for a pool that is non-zero, so a record with nothing in either pool
 		// draws nothing and would make the pending-row count disagree with the rows on screen.
 		if (!entry.personal_qty && !entry.shared_qty) {
@@ -125,11 +141,20 @@ CorpseGroup Session::BuildGroupFor(Client *c) const
 // shared row to act on, so everything still on the corpse is theirs until they hand it back.
 CorpseGroup Session::RenderGroupFor(Client *c)
 {
-	if (c && !c->HasGroup() && !c->HasRaid()) {
+	// The same "is there another player to share with" test BuildGroupFor uses for the pool split: a group whose
+	// only client is this one is a solo kill for loot purposes, so its loot is awarded to the killer's personal
+	// pool up front instead of sitting in a Shared Loot pane waiting for a roll nobody else can answer.
+	if (c && !c->AdvLootSharesLoot()) {
 		std::set<uint32_t> seen;
 
 		for (const auto &i : corpse->GetLootItems()) {
 			if (!seen.insert(i->item_id).second) {
+				continue;
+			}
+
+			// Same rule as BuildGroupFor: an item this player marked "don't want" is not put in their personal
+			// pool either, or the row would come back the moment the pool was seeded.
+			if (c->AdvLootFilterBits(i->item_id) & AdvLoot::FilterBitNeverLoot) {
 				continue;
 			}
 
@@ -274,12 +299,34 @@ void Session::Open()
 		}
 
 		if (Group *group = c->GetGroup()) {
-			mode = AdvLoot::ModeGroup;
-			// A group always has a master looter: Group::GetMasterLooter() falls back to the group leader when
-			// nobody has been named. Treating an empty name as "every member may act" was the server's rule, but
-			// the client has no way to know it - its own master-looter flag comes from OP_MasterLooter alone - so
-			// the window showed every member as the master looter and let every member change settings.
-			authority = AuthorityMasterLooter;
+			// A group of one player plus their mercenaries is not a loot group. Mercenaries are group members -
+			// Client::AddMerc -> Group::AddMember(..., is_merc = true), which even stores the owner's character id
+			// in the slot - but they are not clients: no loot filters, no Advanced Loot window, no answer to an ask.
+			// Counting them as members made every merc kill a group kill, so the loot went to the Shared Loot pane
+			// and needed an Ask, a 60 second countdown and a roll the killer had to win against herself:
+			//   17:20:01 Mercenary joined new group: Tabrinoph (Joka).
+			//   17:20:11 advloot session opened corpse [54] mode [group] authority [master looter only] kill credit [1]
+			//   17:24:49 advloot ask opened item [9307] corpse [83] ... [1] looter(s) must answer
+			//   17:25:24 advloot resolve item [9307] corpse [83] tier [Greed] winner [Joka] roll [371]
+			// AdvLoot::Session::RenderGroupFor uses the same test for the pool split, so mode, authority and pools
+			// now agree. docs/advlootdesignV2.md C53.
+			if (group->PlayerMemberCount() > 1) {
+				mode = AdvLoot::ModeGroup;
+				// A group always has a master looter: Group::GetMasterLooter() falls back to the group leader when
+				// nobody has been named. Treating an empty name as "every member may act" was the server's rule, but
+				// the client has no way to know it - its own master-looter flag comes from OP_MasterLooter alone - so
+				// the window showed every member as the master looter and let every member change settings.
+				authority = AuthorityMasterLooter;
+			}
+			else {
+				LogLootFilters(
+					"advloot corpse [{}] group [{}] has [{}] player member(s) and [{}] merc member(s) - treated as solo",
+					corpse->GetID(),
+					group->GroupCount(),
+					group->PlayerMemberCount(),
+					group->GroupCount() - group->PlayerMemberCount()
+				);
+			}
 		}
 	}
 
@@ -342,6 +389,11 @@ uint32_t Session::AuthorityFor(Client *c) const
 	}
 
 	if (Group *group = c->GetGroup()) {
+		// A merc-only group is solo (see Open): the player is the only looter, so they are their own authority.
+		if (group->PlayerMemberCount() <= 1) {
+			return AuthorityMasterLooter;
+		}
+
 		// Same rule as Open(): the group leader is the master looter until /advloot mol names someone else.
 		return group->GetMasterLooter() == c ? AuthorityMasterLooter : AuthorityNone;
 	}
@@ -975,8 +1027,10 @@ Roll &Session::RecordChoice(Client *c, uint32_t item_id, uint32_t choice)
 		participant->choice = choice;
 	}
 
-	// Solo never arms a timer - there is no competition, so the choice resolves immediately.
-	if (!c->HasGroup() && !c->HasRaid()) {
+	// Solo never arms a timer - there is no competition, so the choice resolves immediately. "Solo" means no
+	// other player, not no group: a mercenary is a group member but cannot answer an ask, so a player with only
+	// mercs in the group has no competition either. Same test as Open() and BuildGroupFor. C53.
+	if (!c->AdvLootSharesLoot()) {
 		Resolve(roll);
 		return roll;
 	}

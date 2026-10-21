@@ -1429,6 +1429,27 @@ std::string Client::AdvLootMasterLooterName()
 // said mode [group]. The client stores it at record+0x28e648 and nothing in FUN_140153970 reads it, so this is
 // for consistency and for the logs rather than for a gate - but a 0x03 that disagrees with the session is a
 // capture that has to be re-read before it can be believed.
+bool Client::AdvLootSharesLoot()
+{
+	if (GetRaid()) {
+		return true;
+	}
+
+	// Mercs are group members and they are not players. A group whose only client is this one shares loot with
+	// nobody, and the 2026-10-21 17:20 run shows what treating it as a group cost: Joka hired Tabrinoph
+	// (`Mercenary joined new group: Tabrinoph (Joka).`), and every corpse after that opened as
+	//   17:20:11 advloot session opened corpse [54] mode [group] authority [master looter only] kill credit [1]
+	//   17:24:30 advloot session opened corpse [83] mode [group] authority [master looter only] kill credit [1]
+	// - kill credit [1], one viewer, and still a Shared Loot pane, an Ask button, a 60 second countdown and a
+	// roll she had to win against herself:
+	//   17:24:49 advloot ask opened item [9307] corpse [83] ask_key [3] - [1] pre-ask selection(s) dropped, [1] looter(s) must answer
+	//   17:25:22 advloot ask completed item [9307] corpse [83] ask_key [3] - [1] of [1] looter(s) answered
+	//   17:25:24 advloot resolve item [9307] corpse [83] tier [Greed] winner [Joka] roll [371]
+	// Ungrouped, the same kill puts the item straight in her Personal Loot tab.
+	Group *group = GetGroup();
+	return group && group->PlayerMemberCount() > 1;
+}
+
 uint32_t Client::AdvLootModeForViewer()
 {
 	if (!advloot_enabled) {
@@ -1439,8 +1460,9 @@ uint32_t Client::AdvLootModeForViewer()
 		return AdvLoot::ModeRaid;
 	}
 
-	if (Group *group = GetGroup()) {
-		return group->GetMasterLooter() == this ? AdvLoot::ModeMasterLooter : AdvLoot::ModeGroup;
+	if (AdvLootSharesLoot()) {
+		Group *group = GetGroup();
+		return group && group->GetMasterLooter() == this ? AdvLoot::ModeMasterLooter : AdvLoot::ModeGroup;
 	}
 
 	return AdvLoot::ModeSolo;

@@ -1106,6 +1106,12 @@ public:
 	std::string AdvLootMasterLooterName();
 	// The mode a subcmd 0x03 record must carry, derived the same way the subcmd 0x13 loot-mode list derives it.
 	uint32_t AdvLootModeForViewer();
+	// Is there another *player* to share loot with? A raid always counts. A group counts only when it holds a
+	// second client: mercenaries are group members (Group::AddMember with is_merc, storing the owner's character
+	// id) but they are not clients, they have no loot filters, no Advanced Loot window and no answer to give, so a
+	// player grouped with only their mercs is looting alone. AdvLoot's pool split, its mode and its authority all
+	// ask this one question. docs/advlootdesignV2.md C53.
+	bool AdvLootSharesLoot();
 	void SendAdvLootFilterSet();
 	uint32_t AdvLootFilterBits(uint32_t item_id) const;
 	// Re-render every corpse this client has rows for, as ONE subcmd 0x03, and the only path allowed to send a

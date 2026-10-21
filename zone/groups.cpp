@@ -1237,6 +1237,30 @@ uint8 Group::GroupCount() {
 	return MemberCount;
 }
 
+// Group members that are players present in this zone.
+//
+// A mercenary is a group member: Client::AddMerc -> Group::AddMember(new_member, name, 0, true), and AddMember
+// detects it from Mob::IsMerc, sets is_merc, and stores the OWNER's character id in the slot. So members[]
+// mixes Clients and Mercs, and GroupCount() counts membername[] slots - mercs included, out-of-zone members
+// included, because those keep a name with no Mob behind them.
+//
+// Anything that asks "who else is there to share this with?" has to count people instead: a Merc is not a
+// Client, and a Bot is an NPC (zone/bot.h:230 `class Bot : public NPC`), so IsClient() is exactly the filter.
+// This is also the test Corpse::SetKillCreditLooters already uses when it expands a group into the kill-credit
+// list, which is why the two now agree.
+int Group::PlayerMemberCount() const
+{
+	int count = 0;
+
+	for (int i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		if (members[i] && members[i]->IsClient()) {
+			++count;
+		}
+	}
+
+	return count;
+}
+
 uint32 Group::GetHighestLevel()
 {
 	uint32 level = 1;

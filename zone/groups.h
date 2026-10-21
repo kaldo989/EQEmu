@@ -111,6 +111,11 @@ public:
 	void SetMasterLooter(Client* c);
 	std::string GetMasterLooterName() const { return master_looter_name; }
 	uint8	GroupCount();
+	// Group members that are players present in this zone. Mercenaries live in the same members[] array
+	// (Group::AddMember sets is_merc from Mob::IsMerc and records the owner's character id), and bots are NPCs,
+	// so this is the number of *people* the group can share loot with. GroupCount() counts membername[] slots,
+	// which includes mercs and out-of-zone members, and is not that number.
+	int		PlayerMemberCount() const;
 	uint32	GetHighestLevel();
 	uint32	GetLowestLevel();
 	void	QueuePacket(const EQApplicationPacket *app, bool ack_req = true);

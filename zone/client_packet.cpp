@@ -11421,6 +11421,54 @@ void Client::Handle_OP_AdvLoot(const EQApplicationPacket *app)
 					AdvLoot::ClientActionToChoice(action)
 				);
 
+				// A row's Need / Greed / Never dropdown writes the character's **stored** filter, not just this
+				// corpse's answer, and the client proves it in its own row layout: `FUN_14009e460` fills the row's
+				// saved-filter bytes `+0x91 AlwaysNeed`, `+0x92 AlwaysGreed`, `+0x93 NeverLoot` verbatim from
+				// `LootFiltersManager__GetItemFilterData(manager, item_id)->Types`, i.e. from the filter record the
+				// dropdown just wrote. Those are the only three names the client has for a per-item preference, and
+				// "Always" is the whole point: it is supposed to survive the corpse.
+				//
+				// Nothing on the server side did that. The only writer of `character_loot_filters` was subcmd `0x04`
+				// (the Loot Settings window's searchable list) and the `/advloot need|greed|never` command, and this
+				// capture contains **zero** `0x04` packets: 252 `RowUpdate ... action [1](Never)` and 5 Greed, all of
+				// them from row dropdowns, and `SELECT * FROM character_loot_filters` still returns rows for Avhu
+				// only - nothing for Joka. So every Never the client painted was thrown away, and the next mob that
+				// rolled the same loot table served the same rows straight back: 68 Leave On Corpse presses across 24
+				// corpses in 14 minutes for one player and a mercenary.
+				//
+				// `1 << choice` lands on the same bit the client uses (Need 1<<1, Greed 1<<2, Never 1<<3), which is
+				// the mapping `/advloot never` already relies on.
+				if (own_answer) {
+					const uint32_t choice = AdvLoot::ClientActionToChoice(action);
+
+					if (choice != AdvLoot::ChoiceNone) {
+						if (const auto *item = database.GetItem(resolved_item_id)) {
+							SaveAdvLootFilter(resolved_item_id, 1u << choice, item->Icon, item->Name);
+
+							LogLootFilters(
+								"[{}] filter saved item [{}] bits [{}] from the row dropdown",
+								GetCleanName(),
+								resolved_item_id,
+								1u << choice
+							);
+						}
+					}
+					else if (AdvLootFilterBits(resolved_item_id)) {
+						// action 0 is ClientChoiceClear: "need and greed cleared, never cleared". It is how a
+						// preference is taken back off an item, and without this the only way to undo a Never would
+						// be the Loot Settings window or /advloot need.
+						if (const auto *item = database.GetItem(resolved_item_id)) {
+							SaveAdvLootFilter(resolved_item_id, 0, item->Icon, item->Name);
+
+							LogLootFilters(
+								"[{}] filter cleared item [{}] from the row dropdown",
+								GetCleanName(),
+								resolved_item_id
+							);
+						}
+					}
+				}
+
 				// Nobody else can learn a row-dropdown answer any other way: it arrived unnamed, and the client
 				// only paints a looter's choice when a 0x0b names them. Relay the named form to every other viewer
 				// of this corpse so all windows agree before the roll runs.
