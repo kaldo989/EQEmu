@@ -4914,8 +4914,13 @@ namespace Laurion
 	DECODE(OP_SpawnAppearance) {
 		DECODE_LENGTH_EXACT(structs::SpawnAppearance_Struct);
 		SETUP_DIRECT_DECODE(SpawnAppearance_Struct, structs::SpawnAppearance_Struct);
+		static_assert(sizeof(structs::SpawnAppearance_Struct) == 24, "OP_0x4eb0 SpawnAppearance payload is 24 bytes");
 
 		IN(spawn_id);
+		// eq->type is the low 16 bits only. The client builds spawn_id+type+parameter with a single
+		// 16 byte MOVUPS off its stack frame, so the two bytes above the type are stack residue.
+		// Reading them as part of the type made every packet that happened to have a dirty stack slot
+		// log as "unmapped Laurion type [1952645156]" when the real type was 36.
 		emu->type = LaurionToServerSpawnAppearanceType(eq->type, eq->parameter);
 		IN(parameter);
 

@@ -223,6 +223,15 @@ namespace AdvLoot {
 		switch (subcmd) {
 			case SubFilterSetSync: {
 				// FUN_1400874d0
+				if (reader.remaining() == 0) {
+					// Bare sub-command: the client is asking for its filter set, which is exactly what
+					// Handle_OP_AdvLoot answers with SendAdvLootFilterSet(). There is nothing after the
+					// sub-command to read, so marking this [TRUNCATED] made a normal request look like a
+					// size error in the log.
+					out += " (bare request - server answers with the filter set)";
+					break;
+				}
+
 				uint32_t    mode  = reader.read_u32();
 				std::string name  = reader.read_string(64);
 				uint32_t    count = reader.read_u32();

@@ -321,7 +321,14 @@ namespace Laurion {
 		struct SpawnAppearance_Struct
 		{
 			/*0000*/ uint32 spawn_id;		// ID of the spawn
-			/*0004*/ uint32 type;			// Values associated with the type
+			/*0004*/ uint16 type;			// LaurionAppearance. 16 bit: CharacterZoneClient__MakeMeVisible
+										// writes it with "MOV word ptr [RBP-0x14], AX", so the upper half of
+										// this dword is not part of the type.
+			/*0006*/ uint16 unknown06;	// stack residue. The client copies spawn_id+type+parameter with one
+										// 16 byte MOVUPS off the stack frame, so these two bytes are whatever
+										// sat at RBP-0x12. Modelling type as a uint32 turns that residue into a
+										// bogus high half - 0x74630024 instead of 36 - and every such packet
+										// collapsed to "unmapped Laurion type" in the zone log.
 			/*0008*/ uint64 parameter;		// Type of data sent
 			/*0016*/ uint64 lock_id; //the only place client uses this as far as I can tell is when you send 0x2c as type in which case it sets LockID = this
 			/*0024*/

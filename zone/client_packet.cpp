@@ -114,12 +114,16 @@ void MapOpcodes()
 	// RE SoF x64: 0x0ede xtarget single slot update, resolved.
 	ConnectedOpcodes[OP_0x0ede] = &Client::Handle_0x0ede;
 	// SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names
+	ConnectedOpcodes[OP_0x06e0] = &Client::Handle_0x06e0;
+	ConnectedOpcodes[OP_0x1bdd] = &Client::Handle_0x1bdd;
+	ConnectedOpcodes[OP_0x2b7c] = &Client::Handle_0x2b7c;
 	ConnectedOpcodes[OP_0x447e] = &Client::Handle_0x447e;
 	ConnectedOpcodes[OP_0x59bd] = &Client::Handle_0x59bd;
 	ConnectedOpcodes[OP_0x5e4a] = &Client::Handle_0x5e4a;
 	ConnectedOpcodes[OP_0x6b80] = &Client::Handle_0x6b80;
 	ConnectedOpcodes[OP_0x7340] = &Client::Handle_0x7340;
 	ConnectedOpcodes[OP_0x798e] = &Client::Handle_0x798e;
+	ConnectedOpcodes[OP_0x7a45] = &Client::Handle_0x7a45;
 	ConnectedOpcodes[OP_AAAction] = &Client::Handle_OP_AAAction;
 	ConnectedOpcodes[OP_AcceptNewTask] = &Client::Handle_OP_AcceptNewTask;
 	ConnectedOpcodes[OP_AdvLoot] = &Client::Handle_OP_AdvLoot;
@@ -1980,6 +1984,56 @@ void Client::Handle_0x0193(const EQApplicationPacket *app)
 
 // SoF x64 (Laurion) zone opcodes still unresolved by RE - raw hex names.
 // These are all zero payload requests, so there is nothing to parse yet.
+
+void Client::Handle_0x06e0(const EQApplicationPacket *app)
+{
+	// No immediate for 0x06e0 anywhere in /eqgame.exe, so the opcode is loaded from a table or
+	// variable at the send site. Payload 20 seen on the wire:
+	//   00 01 00 00  01 00 00 01  01 01 01 01  01 01 00 00  0e 00 00 00
+	// Sixteen single byte values that are only ever 0 or 1, then a trailing uint32 - looks like a
+	// settings or feature flag vector rather than a request.
+	LogNetcodeDetail("OP_0x06e0 [{}] size [{}]", GetCleanName(), app->size);
+	DumpPacket(app);
+}
+
+void Client::Handle_0x1bdd(const EQApplicationPacket *app)
+{
+	// FUN_140163210, also called from CDisplay__RealRender_World. It only sends when its third
+	// argument has bit 0 or bit 2 set, and the whole payload is one uint64 copied from *param_4:
+	//   DAT_140e35fa0 = CPacketScrambler__hton(scrabbler, 0x1bdd, 0);
+	//   if (param_4) _DAT_140e35fa2 = *param_4;
+	// When param_4 is null the eight bytes are whatever the staging buffer already held. Observed
+	// value was the same uint32 twice (0x952758c6_952758c6), so it is a pair of ids or a hash.
+	LogNetcodeDetail("OP_0x1bdd [{}] size [{}]", GetCleanName(), app->size);
+	DumpPacket(app);
+}
+
+void Client::Handle_0x2b7c(const EQApplicationPacket *app)
+{
+	// One of six senders in the 0x14019e610 .. 0x14019f310 block. FUN_14019e610 is the Krono item
+	// action path: its failure branches print "The Krono was not successfully transferred from your
+	// Krono slot", "... transferred into your Krono slot" and "The Krono was not successfully
+	// consumed", and its action 7 path sends 0x200 (payload 72), 0x2b7c (payload 336) and 0x90b9
+	// (payload 148) back to back. Every field the client writes into the 0x2b7c payload is zero
+	// except the uint32 at +4, which it sets to 1 - confirmed on the wire.
+	LogNetcodeDetail("OP_0x2b7c [{}] size [{}]", GetCleanName(), app->size);
+	DumpPacket(app);
+}
+
+void Client::Handle_0x7a45(const EQApplicationPacket *app)
+{
+	// Five senders, one of them CharacterZoneClient__CastSpell (0x1400d27e9), the rest in the
+	// combat/ability block 0x140149cf0 / 0x14035b170 / 0x14036a190 / 0x14037b090. There is no case
+	// for 0x7a45 in ZonePacket__dispatchRecv, so this is a client to server only report.
+	//
+	// The payload is 41 uint32 slots built from the vector at this+0x196d8..0x196e0, copied back to
+	// front into the staging buffer, with the rest left at 0xFFFFFFFF. Observed on the wire:
+	//   35 00 00 00 | 39 x ff ff ff ff | 43 00 00 00
+	// so it is a fixed capacity id list, not a struct. CastSpell sets the trailing dword to 0x3e at
+	// 0x1400d27cf before filling the list, which is where the last slot comes from.
+	LogNetcodeDetail("OP_0x7a45 [{}] size [{}]", GetCleanName(), app->size);
+	DumpPacket(app);
+}
 
 void Client::Handle_0x447e(const EQApplicationPacket *app)
 {
@@ -5989,9 +6043,14 @@ void Client::Handle_OP_DeleteSpawn(const EQApplicationPacket *app)
 	auto outapp = new EQApplicationPacket(OP_LogoutReply);
 	FastQueuePacket(&outapp);
 
-	outapp = new EQApplicationPacket(OP_DeleteSpawn, sizeof(EntityId_Struct));
-	EntityId_Struct* eid = (EntityId_Struct*)outapp->pBuffer;
-	eid->entity_id = GetID();
+	outapp = new EQApplicationPacket(OP_DeleteSpawn, sizeof(DeleteSpawn_Struct));
+	DeleteSpawn_Struct* ds = (DeleteSpawn_Struct*)outapp->pBuffer;
+	ds->spawn_id = GetID();
+	// A player who zoned or dropped is not a corpse: 0 makes the spawn vanish immediately.
+	// This used to be built as sizeof(EntityId_Struct) (4 bytes), which is one short of the
+	// five byte DeleteSpawn_Struct every patch encodes, so ENCODE_LENGTH_EXACT deleted the packet
+	// and nobody else in the zone was ever told the spawn was gone.
+	ds->Decay = 0;
 
 	entity_list.QueueClients(this, outapp, false);
 	safe_delete(outapp);
