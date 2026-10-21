@@ -372,6 +372,8 @@ public:
 		m_loot_request_type         = LootRequestType::Forbidden;
 	}
 	inline bool IsBeingLooted() { return (m_being_looted_by_entity_id != 0xFFFFFFFF); }
+	inline bool CursorResyncAttempted() const { return m_cursor_resync_attempted; }
+	inline void MarkCursorResyncAttempted() { m_cursor_resync_attempted = true; }
 	inline bool IsBeingLootedBy(Client *c) { return m_being_looted_by_entity_id == c->GetID(); }
 
 	/* Mob */
@@ -438,6 +440,14 @@ private:
 	EQ::TintProfile          m_item_tint;
 	uint32                   m_remaining_rez_time;
 	bool                     m_is_owner_online;
+	// The server cursor is a FIFO queue but a Laurion/RoF+ client renders a single cursor item, and
+	// PutLootInInventory deliberately sends nothing for the overflow. When the queue holds an item the
+	// client never received, Character/CheckCursorEmptyWhenLooting refuses every later loot against a
+	// cursor the player can see is empty. One resync per corpse re-sends the queue front so the item
+	// becomes visible instead of blocking loot until the player relogs. It is deliberately not cleared by
+	// ResetLooter: a refused loot calls ResetLooter, which would otherwise re-arm it on every click.
+	// See docs/cursor-queue.md.
+	bool                     m_cursor_resync_attempted = false;
 	std::vector<std::string> m_consented_player_names;
 	LootRequestType          m_loot_request_type;
 	uint32                   m_account_id;

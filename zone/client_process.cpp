@@ -977,6 +977,13 @@ void Client::BulkSendInventoryItems()
 
 	QueuePacket(outapp);
 	safe_delete(outapp);
+
+	// The loop above skips canonical slot 33 because the cursor is a queue rather than a slot. Without a
+	// separate send, a cursor item persisted by SaveCursor (inventory.slot_id = 33, restored by
+	// SharedDatabase::LoadInventory into the queue) is loaded on zone entry, sits at the front of the queue,
+	// and is never drawn - the player sees an empty cursor while Character/CheckCursorEmptyWhenLooting
+	// refuses every loot with "cursor check failed - queue size [1], front item [9990]".
+	SendCursorSlotPacket();
 }
 
 void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {

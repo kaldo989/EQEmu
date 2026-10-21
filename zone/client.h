@@ -1285,6 +1285,7 @@ public:
 	bool FindNumberOfFreeInventorySlotsWithSizeCheck(std::vector<BuyerLineTradeItems_Struct> items);
 	bool PushItemOnCursor(const EQ::ItemInstance& inst, bool client_update = false);
 	void SendCursorBuffer();
+	void SendCursorSlotPacket();
 	void DeleteItemInInventory(int16 slot_id, int16 quantity = 0, bool client_update = false, bool update_db = true);
 	uint32 CountItem(uint32 item_id);
 	void ResetItemCooldown(uint32 item_id);

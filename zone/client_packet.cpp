@@ -1874,13 +1874,14 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 
 		BulkSendInventoryItems();
 		/* Send stuff on the cursor which isn't sent in bulk */
-		for (auto iter = m_inv.cursor_cbegin(); iter != m_inv.cursor_cend(); ++iter) {
-			/* First item cursor is sent in bulk inventory packet */
-			if (iter == m_inv.cursor_cbegin())
-				continue;
-			const EQ::ItemInstance *inst = *iter;
-			SendItemPacket(EQ::invslot::slotCursor, inst, ItemPacketLimbo);
-		}
+		// BulkSendInventoryItems now ends with SendCursorSlotPacket(), which draws the front of the cursor
+		// queue. The loop that used to sit here skipped cursor_cbegin() on the assumption that the bulk packet
+		// carried it - it does not; that loop explicitly continues on slotCursor - and then sent every *later*
+		// queue entry to slotCursor one after another, each overwriting the previous. A client with a two-item
+		// queue therefore showed the second item while the server's cursor front was the first, and a client
+		// with a one-item queue showed nothing at all while the server held Skin of Milk. Entries past the
+		// front surface through SendCursorBuffer() as the player consumes the front, so there is nothing left
+		// to send here.
 
 		// this is kinda hackish atm..this process needs to be realigned to allow a contiguous flow
 		m_inv.SetGMInventory((bool)m_pp.gm); // reset back to current gm state

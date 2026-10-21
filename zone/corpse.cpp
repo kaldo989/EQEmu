@@ -1546,9 +1546,9 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allo
 
 	/* To prevent item loss for a player using 'Loot All' who doesn't have inventory space for all their items. */
 	if (RuleB(Character, CheckCursorEmptyWhenLooting) && !c->GetInv().CursorEmpty()) {
-		// The server cursor is a FIFO queue, but the Laurion client only renders one cursor item, so the
-		// two can diverge: a stack merge onto canonical slot 33 (the cursor) or a second PushCursor leaves
-		// entries in the queue the client never shows. Log the queue so a desync is visible.
+		// The server cursor is a FIFO queue (InventoryProfile::m_cursor), but a Laurion client renders one
+		// cursor item, so the two diverge whenever a push is made without a client update. Log the queue so a
+		// desync is visible instead of looking like a phantom item on the player's cursor.
 		const EQ::ItemInstance* cursor_item = c->GetInv().GetCursorItem();
 		LogLootFilters(
 			"[{}] cursor check failed - queue size [{}], front item [{}]",
@@ -1556,6 +1556,23 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app, bool allo
 			c->GetInv().CursorSize(),
 			cursor_item ? cursor_item->GetItem()->ID : 0
 		);
+
+		// The queue can hold an item the client was never told about: PutLootInInventory suppresses the
+		// client update for a RoF+ cursor push when the cursor is not empty, and SaveCursor persists the
+		// whole queue while only slot 33 is ever rendered. In that state the player sees an empty cursor and
+		// this check rejects every loot for the rest of the session - the 2026-10-21 run logged
+		// "cursor check failed - queue size [1], front item [9990]" (Skin of Milk) 22 times over eleven
+		// minutes with nothing on screen. Re-send the queue front once per corpse so the item becomes
+		// visible and can be dragged into a bag or dropped.
+		if (!m_cursor_resync_attempted) {
+			MarkCursorResyncAttempted();
+			LogLootFilters(
+				"[{}] resending cursor queue front to the client (queue size [{}])",
+				c->GetCleanName(),
+				c->GetInv().CursorSize()
+			);
+			c->SendCursorBuffer();
+		}
 
 		c->Message(Chat::Red, "You may not loot an item while you have an item on your cursor.");
 		c->QueuePacket(app);
@@ -2707,16 +2724,17 @@ uint16_t Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint16_t quantity
 	// invisible and FindFreeSlot falls through to the cursor queue - which is what makes the cursor error
 	// stick, because the server cursor is a queue while the client renders a single cursor item.
 	const auto* item_data = database.GetItem(item_id);
+	int16 free_slot = INVALID_INDEX;
 	if (item_data) {
-		const int16 free_slot = c->GetInv().FindFreeSlot(item_data->IsClassBag(), false, item_data->Size, false);
-		LogLootFilters(
-			"[{}] slot space check - slot_version [{}] general_end [{}] free_slot [{}]",
-			c->GetCleanName(),
-			static_cast<int>(c->GetInv().SlotVersion()),
-			c->GetInv().GeneralEnd(),
-			free_slot
-		);
+		free_slot = c->GetInv().FindFreeSlot(item_data->IsClassBag(), false, item_data->Size, false);
 	}
+	LogLootFilters(
+		"[{}] slot space check - slot_version [{}] general_end [{}] free_slot [{}]",
+		c->GetCleanName(),
+		static_cast<int>(c->GetInv().SlotVersion()),
+		c->GetInv().GeneralEnd(),
+		free_slot
+	);
 
 	LogLootFilters(
 		"[{}] advloot transaction item [{}] slot [{}] quantity [{}] corpse [{}] slot count [{}] cursor queue [{}]",
@@ -2795,14 +2813,22 @@ uint16_t Corpse::AdvLootTransaction(Client *c, uint32 item_id, uint16_t quantity
 		// PutLootInInventory(slotCursor) only when FindFreeSlot had nothing to give.
 		const bool cursor_empty = c->GetInv().CursorSize() == 0;
 
-		if (cursor_empty) {
-			LogLootFilters(
-				"[{}] advloot cursor fallback armed for item [{}] corpse [{}] - no free inventory slot",
-				c->GetCleanName(),
-				item_id,
-				GetID()
-			);
-		}
+		// This is a permission, not a verdict. AutoPutLootInInventory still tries auto-equip, then
+		// TryStacking, then FindFreeSlot, and only reaches the cursor when all three come up empty. The old
+		// wording claimed "no free inventory slot" on every loot while the cursor happened to be empty, which
+		// made this line look like the cause of the cursor error: the 2026-10-21 transactions at 11:45:56,
+		// 11:46:26, 11:46:29 and 11:47:20 all logged it while the slot space check directly above reported
+		// free_slot [27], [31], [31] and [35], and all four delivered into the bags without touching the
+		// cursor. Report the permission together with the real free slot.
+		LogLootFilters(
+			"[{}] advloot cursor fallback {} for item [{}] corpse [{}] - free_slot [{}] cursor queue [{}]",
+			c->GetCleanName(),
+			cursor_empty ? "allowed" : "blocked",
+			item_id,
+			GetID(),
+			free_slot,
+			c->GetInv().CursorSize()
+		);
 
 		// Only the first slot respects the loot cooldown.
 		m_being_looted_by_entity_id = c->GetID();

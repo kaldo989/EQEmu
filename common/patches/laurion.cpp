@@ -4363,18 +4363,35 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	static_assert(sizeof(structs::CastSpell_Struct) == 39, "OP_0x325b CastSpell payload is 39 bytes");
+
 	DECODE(OP_CastSpell)
 	{
 		DECODE_LENGTH_EXACT(structs::CastSpell_Struct);
 		SETUP_DIRECT_DECODE(CastSpell_Struct, structs::CastSpell_Struct);
 
-		emu->slot = static_cast<uint32>(LaurionToServerCastingSlot(static_cast<spells::CastingSlot>(eq->slot)));
+		const EQ::spells::CastingSlot server_slot =
+			LaurionToServerCastingSlot(static_cast<spells::CastingSlot>(eq->slot));
+		emu->slot = static_cast<uint32>(server_slot);
 
 		IN(spell_id);
-		emu->inventoryslot = -1;
+		// Handle_OP_CastSpell only consults inventoryslot for CastingSlot::Item casts: it looks the item up,
+		// compares item->Click.Effect against spell_id, fires the click-cast quest events and burns a charge.
+		// It was pinned to -1 here, so SupportsClickCasting(-1) was always false and every cast from an
+		// inventory item fell into the "inventoryslot >= slotCursor" error branch - clicky items could not be
+		// used. The encoder at ENCODE(OP_CastSpell) already converts the other direction, so the wire record
+		// is real; only the decode was dropping it. For a gem cast the client leaves the record zeroed, and
+		// translating zeros would invent a bag slot out of nothing, so keep 0xFFFF (normal cast) there.
+		if (server_slot == EQ::spells::CastingSlot::Item) {
+			emu->inventoryslot = LaurionToServerSlot(
+				LaurionCastingInventorySlotToInventorySlot(eq->inventory_slot));
+		}
+		else {
+			emu->inventoryslot = 0xFFFF;
+		}
 		IN(target_id);
-		IN(y_pos);
 		IN(x_pos);
+		IN(y_pos);
 		IN(z_pos);
 		FINISH_DIRECT_DECODE();
 	}
@@ -5095,21 +5112,30 @@ namespace Laurion
 		FINISH_DIRECT_DECODE();
 	}
 
+	static_assert(sizeof(structs::Consume_Struct) == 20, "OP_0x5ef7 Consume payload is 20 bytes");
+
 	DECODE(OP_Consume) // 0x5ef7
 	{
-		// Laurion widened the packet to 20 bytes: slot, item global index, uint16, auto_consumed and a
-		// uint32 type (0x100 = food, 0x101 = water).  EQEmu's Consume_Struct is 16 bytes and expects
-		// type 0x01 / 0x02, so map the Laurion values back.
+		// Laurion widened the packet to 20 bytes. FUN_1401d4020 builds it straight out of the twelve byte
+		// InventorySlot_Struct it just handed to CharacterBase__GetItemByGlobalIndex, so the first twelve
+		// bytes are that possessions record verbatim (Type, Padding1, Slot, SubIndex, AugIndex, Padding2),
+		// followed by uint32 auto_consumed (0xFFFFFFFF) and uint32 type (0x100 = food, 0x101 = water).
+		// The previous model had auto_consumed at +0x0A and type at +0x0E, which came to 18 bytes: the size
+		// gate rejected every packet, the opcode became OP_Unknown, and Handle_OP_Consume never ran - the
+		// client ate and drank locally while hunger/thirst only ever moved through OP_Stamina. EQEmu's
+		// Consume_Struct is 16 bytes and expects type 0x01 / 0x02, so map the Laurion values back.
 		DECODE_LENGTH_EXACT(structs::Consume_Struct);
 		SETUP_DIRECT_DECODE(Consume_Struct, structs::Consume_Struct);
 
-		IN(slot);
+		emu->slot = LaurionToServerSlot(eq->slot);
 		emu->auto_consumed = eq->auto_consumed;
 		emu->c_unknown1[0] = 0;
 		emu->c_unknown1[1] = 0;
 		emu->c_unknown1[2] = 0;
 		emu->c_unknown1[3] = 0;
-		emu->type = (eq->type == 0x101) ? 0x02 : 0x01;
+		// Map only the two values the client actually sends. The previous form folded every other value into
+		// food, which would have credited hunger for an unknown item type.
+		emu->type = (eq->type == 0x100) ? 0x01 : (eq->type == 0x101) ? 0x02 : 0;
 		emu->unknown13[0] = 0;
 		emu->unknown13[1] = 0;
 		emu->unknown13[2] = 0;
@@ -6940,9 +6966,20 @@ namespace Laurion
 		}
 	}
 
+	// Every InventorySlot_Struct we hand to the client has two 16-bit holes in it (Padding1 at +2 and
+	// Padding2 at +10). The client does not treat them as spare bytes: it reads the slot record as three
+	// dwords and validates the *whole first dword* (Type | Padding1 << 16) before it will resolve the slot.
+	// CInventory::GetItemByGlobalIndex1 / FUN_140656da0 gate on "(dword0 < 0x2a) && Slot != -1", so a single
+	// stray non-zero byte in Padding1 makes the client refuse to look the slot up at all. That is what the
+	// scroll-learn bug looked like from the player's side: the server scribed the spell and sent the cursor
+	// clear (OP_MoveItem from {possessions, 35} to invalid), the client received it, and then refused to
+	// remove the item from its cursor because from_slot's first dword was not exactly 0 - the scroll stayed
+	// on the cursor and desynced into a corrupted item when it was dragged back. ALLOC_VAR_ENCODE zeroes the
+	// outgoing buffer, but assigning a by-value struct over it re-introduces whatever the local held, so the
+	// helpers that build these records have to value-initialise them.
 	static inline structs::InventorySlot_Struct ServerToLaurionSlot(uint32 server_slot)
 	{
-		structs::InventorySlot_Struct LaurionSlot;
+		structs::InventorySlot_Struct LaurionSlot{};
 		LaurionSlot.Type = invtype::TYPE_INVALID;
 		LaurionSlot.Slot = invslot::SLOT_INVALID;
 		LaurionSlot.SubIndex = invbag::SLOT_INVALID;
@@ -7030,7 +7067,7 @@ namespace Laurion
 
 	static inline structs::InventorySlot_Struct ServerToLaurionCorpseSlot(uint32 server_corpse_slot)
 	{
-		structs::InventorySlot_Struct LaurionSlot;
+		structs::InventorySlot_Struct LaurionSlot{};
 		LaurionSlot.Type = invtype::TYPE_INVALID;
 		LaurionSlot.Slot = ServerToLaurionCorpseMainSlot(server_corpse_slot);
 		LaurionSlot.SubIndex = invbag::SLOT_INVALID;
@@ -7063,7 +7100,7 @@ namespace Laurion
 
 	static inline structs::TypelessInventorySlot_Struct ServerToLaurionTypelessSlot(uint32 server_slot, int16 server_type)
 	{
-		structs::TypelessInventorySlot_Struct LaurionSlot;
+		structs::TypelessInventorySlot_Struct LaurionSlot{};
 		LaurionSlot.Slot = invslot::SLOT_INVALID;
 		LaurionSlot.SubIndex = invbag::SLOT_INVALID;
 		LaurionSlot.AugIndex = invaug::SOCKET_INVALID;
@@ -7381,7 +7418,7 @@ namespace Laurion
 	}
 
 	static inline structs::InventorySlot_Struct LaurionCastingInventorySlotToInventorySlot(structs::CastSpellInventorySlot_Struct laurion_slot) {
-		structs::InventorySlot_Struct ret;
+		structs::InventorySlot_Struct ret{};
 		ret.Type = laurion_slot.type;
 		ret.Slot = laurion_slot.slot;
 		ret.SubIndex = laurion_slot.sub_index;
@@ -7390,7 +7427,7 @@ namespace Laurion
 	}
 
 	static inline structs::CastSpellInventorySlot_Struct LaurionInventorySlotToCastingInventorySlot(structs::InventorySlot_Struct laurion_slot) {
-		structs::CastSpellInventorySlot_Struct ret;
+		structs::CastSpellInventorySlot_Struct ret{};
 		ret.type = laurion_slot.Type;
 		ret.slot = laurion_slot.Slot;
 		ret.sub_index = laurion_slot.SubIndex;

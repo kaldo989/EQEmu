@@ -775,17 +775,24 @@ namespace Laurion {
 			/*10*/
 		};
 
+		// Wire layout from FUN_1400dee50, called by CharacterZoneClient__CastSpell at 0x1400d4a13: three
+		// dwords, a six byte tail that finishes the inventory record, two more dwords, one flag byte, then the
+		// target's x, y and z. The flag is written 1 whenever a target position pointer was present
+		// (0x1400d498c sets it and copies [RAX], [RAX+4], [RAX+8] into the three floats). EQEmu had y_pos at
+		// 26, x_pos at 30, z_pos at 34 and unknown at 38 - the right total size, but one byte late with x and
+		// y swapped, so Client::m_TargetRing was built from misaligned floats and every ST_Ring spell's area
+		// centre and LOS check used garbage coordinates.
 		struct CastSpell_Struct
 		{
 			/*00*/	uint32	slot;
 			/*04*/	uint32	spell_id;
-			/*08*/	CastSpellInventorySlot_Struct inventory_slot; 
+			/*08*/	CastSpellInventorySlot_Struct inventory_slot;
 			/*18*/	uint32	target_id;
-			/*22*/	uint32	spell_crc; 
-			/*26*/  float y_pos;
-			/*30*/  float x_pos;
-			/*34*/  float z_pos;
-			/*38*/	uint8 unknown; //not sure, might also be before y_pos; only ever seen zero for both but should be easy to figure out later
+			/*22*/	uint32	spell_crc;
+			/*26*/	uint8	has_target_position;
+			/*27*/	float	x_pos;
+			/*31*/	float	y_pos;
+			/*35*/	float	z_pos;
 			/*39*/
 		};
 
@@ -1512,12 +1519,10 @@ namespace Laurion {
 		};
 
 		struct Consume_Struct { // OP_0x5ef7, 20 byte payload (FUN_1401d4020)
-			/*00*/	uint32	slot;           // inventory slot of the item being consumed
-			/*04*/	uint32	unknown4;       // item global index
-			/*08*/	uint16	unknown8;
-			/*0A*/	uint32	auto_consumed;  // 0xFFFFFFFF when auto consumed
-			/*0E*/	uint32	type;           // 0x100 = food, 0x101 = water
-			/*12*/
+			/*00*/	InventorySlot_Struct	slot;           // possessions record for the item consumed
+			/*0C*/	uint32				auto_consumed;  // 0xFFFFFFFF when the client ate/drank by itself
+			/*10*/	uint32				type;           // 0x100 = food, 0x101 = water
+			/*14*/
 		};
 
 		struct SkillRankReport_Struct { // OP_0x3fe5, 16 byte payload

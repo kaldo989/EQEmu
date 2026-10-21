@@ -961,6 +961,35 @@ void Client::SendCursorBuffer()
 	}
 }
 
+// Put the item the client is supposed to be holding onto its cursor.
+//
+// BulkSendInventoryItems deliberately skips canonical slot 33 because the cursor is a FIFO queue and not a slot,
+// and the only other cursor send in the codebase is SendCursorBuffer, reached from SwapItem, DropItem and the lore
+// cleanup - never from zone entry. A cursor item therefore survives SaveCursor/LoadInventory, occupies the front of
+// the queue, and is never drawn: the player sees an empty cursor while Character/CheckCursorEmptyWhenLooting
+// rejects every loot against it.
+void Client::SendCursorSlotPacket()
+{
+	if (m_inv.CursorEmpty()) {
+		return;
+	}
+
+	const EQ::ItemInstance* inst = m_inv.GetCursorItem();
+	if (!inst || !inst->GetItem()) {
+		return;
+	}
+
+	LogInventory(
+		"Sending cursor slot packet for [{}]: item [{}] ([{}]), queue size [{}]",
+		GetName(),
+		inst->GetItem()->Name,
+		inst->GetItem()->ID,
+		m_inv.CursorSize()
+	);
+
+	SendItemPacket(EQ::invslot::slotCursor, inst, ItemPacketLimbo);
+}
+
 // Remove item from inventory
 void Client::DeleteItemInInventory(int16 slot_id, int16 quantity, bool client_update, bool update_db) {
 	#if (EQDEBUG >= 5)
@@ -1039,13 +1068,35 @@ void Client::DeleteItemInInventory(int16 slot_id, int16 quantity, bool client_up
 
 bool Client::PushItemOnCursor(const EQ::ItemInstance& inst, bool client_update)
 {
-	LogInventory("Putting item [{}] ([{}]) on the cursor", inst.GetItem()->Name, inst.GetItem()->ID);
+	const int queue_before = m_inv.CursorSize();
 
 	EvolvingItemsManager::Instance()->DoLootChecks(CharacterID(), EQ::invslot::slotCursor, inst);
 	m_inv.PushCursor(inst);
 
+	// Every cursor entry has to be accounted for: a Laurion client renders one cursor item, so a push that
+	// lands on a non-empty queue, or a push made with client_update false, is an item the player cannot see
+	// and therefore cannot clear. Log the queue delta here so any stuck queue names the call that made it.
+	LogInventory(
+		"Putting item [{}] ([{}]) on the cursor - queue [{}] -> [{}], client update [{}]",
+		inst.GetItem()->Name,
+		inst.GetItem()->ID,
+		queue_before,
+		m_inv.CursorSize(),
+		client_update ? "sent" : "none"
+	);
+
 	if (client_update) {
 		SendItemPacket(EQ::invslot::slotCursor, &inst, ItemPacketLimbo);
+	}
+
+	if (queue_before > 0) {
+		LogInventory(
+			"Cursor queue overflow for [{}]: [{}] entry/entries are on the server queue but a {} client only "
+			"renders one cursor item",
+			GetName(),
+			m_inv.CursorSize() - 1,
+			GetInv().SlotVersion() == EQ::versions::ClientVersion::Laurion ? "Laurion" : "RoF+"
+		);
 	}
 
 	auto s = m_inv.cursor_cbegin(), e = m_inv.cursor_cend();
@@ -1108,6 +1159,15 @@ void Client::PutLootInInventory(int16 slot_id, const EQ::ItemInstance &inst, Loo
 		// RoF+ currently has a specialized cursor handler
 		if (ClientVersion() < EQ::versions::ClientVersion::RoF)
 			SendItemPacket(slot_id, &inst, ItemPacketLimbo);
+		else
+			LogInventory(
+				"Cursor desync for [{}]: item [{}] ([{}]) pushed onto a non-empty cursor queue and no client "
+				"update was sent (queue size [{}]) - the client cannot render it",
+				GetName(),
+				inst.GetItem()->Name,
+				inst.GetItem()->ID,
+				m_inv.CursorSize()
+			);
 	}
 	else {
 		SendLootItemInPacket(&inst, slot_id);
