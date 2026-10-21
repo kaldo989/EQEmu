@@ -5116,14 +5116,21 @@ namespace Laurion
 
 	DECODE(OP_Consume) // 0x5ef7
 	{
-		// Laurion widened the packet to 20 bytes. FUN_1401d4020 builds it straight out of the twelve byte
-		// InventorySlot_Struct it just handed to CharacterBase__GetItemByGlobalIndex, so the first twelve
-		// bytes are that possessions record verbatim (Type, Padding1, Slot, SubIndex, AugIndex, Padding2),
-		// followed by uint32 auto_consumed (0xFFFFFFFF) and uint32 type (0x100 = food, 0x101 = water).
+		// Laurion widened the packet to 20 bytes. The first twelve bytes are the twelve byte
+		// InventorySlot_Struct (Type, Padding1, Slot, SubIndex, AugIndex, Padding2) that identifies the item,
+		// followed by uint32 auto_consumed (0xFFFFFFFF) and uint32 type.
 		// The previous model had auto_consumed at +0x0A and type at +0x0E, which came to 18 bytes: the size
 		// gate rejected every packet, the opcode became OP_Unknown, and Handle_OP_Consume never ran - the
-		// client ate and drank locally while hunger/thirst only ever moved through OP_Stamina. EQEmu's
-		// Consume_Struct is 16 bytes and expects type 0x01 / 0x02, so map the Laurion values back.
+		// client ate and drank locally while hunger/thirst only ever moved through OP_Stamina.
+		//
+		// Two client code paths build this packet, and they encode the type field differently:
+		//   FUN_1402ca370  auto eat/drink. Scans possessions slots 0x17..0x22 (the twelve general slots),
+		//                  opens bags, and matches item type 0xe when its param_2 selector is 0 and 0xf
+		//                  when it is 1. It sends that selector straight into the type field: 0 = food,
+		//                  1 = water. This is the path that fires on the hunger/thirst timer, so it is what
+		//                  the server sees in normal play.
+		//   FUN_1401d4020  right-click / use the item. Writes 0x100 for food and 0x101 for water.
+		// EQEmu's Consume_Struct is 16 bytes and expects 0x01 = food, 0x02 = water, so map both encodings.
 		DECODE_LENGTH_EXACT(structs::Consume_Struct);
 		SETUP_DIRECT_DECODE(Consume_Struct, structs::Consume_Struct);
 
@@ -5133,9 +5140,22 @@ namespace Laurion
 		emu->c_unknown1[1] = 0;
 		emu->c_unknown1[2] = 0;
 		emu->c_unknown1[3] = 0;
-		// Map only the two values the client actually sends. The previous form folded every other value into
+		// Map only the values the client actually sends. The previous form folded every other value into
 		// food, which would have credited hunger for an unknown item type.
-		emu->type = (eq->type == 0x100) ? 0x01 : (eq->type == 0x101) ? 0x02 : 0;
+		switch (eq->type) {
+			case 0x00000000:  // FUN_1402ca370, param_2 == 0, item type 0xe
+			case 0x00000100:  // FUN_1401d4020, food
+				emu->type = 0x01;
+				break;
+			case 0x00000001:  // FUN_1402ca370, param_2 == 1, item type 0xf
+			case 0x00000101:  // FUN_1401d4020, water
+				emu->type = 0x02;
+				break;
+			default:
+				LogNetcode("OP_Consume: unrecognized type value, type:[{:08x}]", eq->type);
+				emu->type = 0;
+				break;
+		}
 		emu->unknown13[0] = 0;
 		emu->unknown13[1] = 0;
 		emu->unknown13[2] = 0;

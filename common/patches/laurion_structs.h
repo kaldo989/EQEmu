@@ -1518,11 +1518,11 @@ namespace Laurion {
 			/*08*/
 		};
 
-		struct Consume_Struct { // OP_0x5ef7, 20 byte payload (FUN_1401d4020)
+		struct Consume_Struct { // OP_0x5ef7, 20 byte payload
 			/*00*/	InventorySlot_Struct	slot;           // possessions record for the item consumed
 			/*0C*/	uint32				auto_consumed;  // 0xFFFFFFFF when the client ate/drank by itself
-			/*10*/	uint32				type;           // 0x100 = food, 0x101 = water
-			/*14*/
+			/*10*/	uint32				type;           // 0 or 0x100 = food, 1 or 0x101 = water
+			/*14*/										  // (FUN_1402ca370 sends 0/1, FUN_1401d4020 sends 0x100/0x101)
 		};
 
 		struct SkillRankReport_Struct { // OP_0x3fe5, 16 byte payload
