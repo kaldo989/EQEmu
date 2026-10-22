@@ -640,7 +640,7 @@ namespace Laurion
 
 		int item_count = in->size / sizeof(EQ::InternalSerializedItem_Struct);
 		if (!item_count || (in->size % sizeof(EQ::InternalSerializedItem_Struct)) != 0) {
-			Log(Logs::General, Logs::Netcode, "[STRUCTS] Wrong size on outbound %s: Got %d, expected multiple of %d",
+			LogNetcode("[STRUCTS] Wrong size on outbound {}: Got {}, expected multiple of {}",
 				opcodes->EmuToName(in->GetOpcode()), in->size, sizeof(EQ::InternalSerializedItem_Struct));
 
 			delete in;
@@ -778,7 +778,7 @@ namespace Laurion
 
 	ENCODE(OP_DeleteCharge)
 	{
-		Log(Logs::Detail, Logs::Netcode, "Laurion::ENCODE(OP_DeleteCharge)");
+		LogNetcodeDetail("Laurion::ENCODE(OP_DeleteCharge)");
 
 		ENCODE_FORWARD(OP_MoveItem);
 	}
@@ -1426,7 +1426,7 @@ namespace Laurion
 		ENCODE_LENGTH_EXACT(MoveItem_Struct);
 		SETUP_DIRECT_ENCODE(MoveItem_Struct, structs::MoveItem_Struct);
 
-		Log(Logs::Detail, Logs::Netcode, "Laurion::ENCODE(OP_MoveItem)");
+		LogNetcodeDetail("Laurion::ENCODE(OP_MoveItem)");
 
 		eq->from_slot = ServerToLaurionSlot(emu->from_slot);
 		eq->to_slot = ServerToLaurionSlot(emu->to_slot);
@@ -4854,7 +4854,7 @@ namespace Laurion
 		DECODE_LENGTH_EXACT(structs::MoveItem_Struct);
 		SETUP_DIRECT_DECODE(MoveItem_Struct, structs::MoveItem_Struct);
 
-		Log(Logs::Detail, Logs::Netcode, "Laurion::DECODE(OP_MoveItem)");
+		LogNetcodeDetail("Laurion::DECODE(OP_MoveItem)");
 
 		emu->from_slot = LaurionToServerSlot(eq->from_slot);
 		emu->to_slot = LaurionToServerSlot(eq->to_slot);
@@ -4881,7 +4881,7 @@ namespace Laurion
 			return;
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Laurion::DECODE(OP_MoveMultipleItems) count [{}]", count);
+		LogNetcodeDetail("Laurion::DECODE(OP_MoveMultipleItems) count [{}]", count);
 
 		for (uint32 i = 0; i < count; i++) {
 			if (eq->moves[i].from_slot.Type == invtype::typePossessions) {
@@ -7188,7 +7188,7 @@ namespace Laurion
 			LaurionSlot.Slot = server_slot - EQ::invslot::WORLD_BEGIN;
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Server Slot %i to Laurion Slot [%i, %i, %i, %i]",
+		LogNetcodeDetail("Convert Server Slot {} to Laurion Slot [{}, {}, {}, {}]",
 			server_slot, LaurionSlot.Type, LaurionSlot.Slot, LaurionSlot.SubIndex, LaurionSlot.AugIndex);
 
 		return LaurionSlot;
@@ -7205,7 +7205,7 @@ namespace Laurion
 		if (LaurionSlot.Slot != invslot::SLOT_INVALID)
 			LaurionSlot.Type = invtype::typeCorpse;
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Server Corpse Slot %i to Laurion Corpse Slot [%i, %i, %i, %i]",
+		LogNetcodeDetail("Convert Server Corpse Slot {} to Laurion Corpse Slot [{}, {}, {}, {}]",
 			server_corpse_slot, LaurionSlot.Type, LaurionSlot.Slot, LaurionSlot.SubIndex, LaurionSlot.AugIndex);
 
 		return LaurionSlot;
@@ -7253,7 +7253,7 @@ namespace Laurion
 			}
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Server Slot %i to Laurion Typeless Slot [%i, %i, %i] (implied type: %i)",
+		LogNetcodeDetail("Convert Server Slot {} to Laurion Typeless Slot [{}, {}, {}] (implied type: {})",
 			server_slot, LaurionSlot.Slot, LaurionSlot.SubIndex, LaurionSlot.AugIndex, server_type);
 
 		return LaurionSlot;
@@ -7262,7 +7262,7 @@ namespace Laurion
 	static inline uint32 LaurionToServerSlot(structs::InventorySlot_Struct laurion_slot)
 	{
 		if (laurion_slot.AugIndex < invaug::SOCKET_INVALID || laurion_slot.AugIndex >= invaug::SOCKET_COUNT) {
-			Log(Logs::Detail, Logs::Netcode, "Convert Laurion Slot [%i, %i, %i, %i] to Server Slot %i",
+			LogNetcodeDetail("Convert Laurion Slot [{}, {}, {}, {}] to Server Slot {}",
 				laurion_slot.Type, laurion_slot.Slot, laurion_slot.SubIndex, laurion_slot.AugIndex, EQ::invslot::SLOT_INVALID);
 
 			return EQ::invslot::SLOT_INVALID;
@@ -7382,7 +7382,7 @@ namespace Laurion
 		}
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Laurion Slot [%i, %i, %i, %i] to Server Slot %i",
+		LogNetcodeDetail("Convert Laurion Slot [{}, {}, {}, {}] to Server Slot {}",
 			laurion_slot.Type, laurion_slot.Slot, laurion_slot.SubIndex, laurion_slot.AugIndex, server_slot);
 
 		return server_slot;
@@ -7400,7 +7400,7 @@ namespace Laurion
 			ServerSlot = LaurionToServerCorpseMainSlot(laurion_corpse_slot.Slot);
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Laurion Slot [%i, %i, %i, %i] to Server Slot %i",
+		LogNetcodeDetail("Convert Laurion Slot [{}, {}, {}, {}] to Server Slot {}",
 			laurion_corpse_slot.Type, laurion_corpse_slot.Slot, laurion_corpse_slot.SubIndex, laurion_corpse_slot.AugIndex, ServerSlot);
 
 		return ServerSlot;
@@ -7422,7 +7422,7 @@ namespace Laurion
 	static inline uint32 LaurionToServerTypelessSlot(structs::TypelessInventorySlot_Struct laurion_slot, int16 laurion_type)
 	{
 		if (laurion_slot.AugIndex < invaug::SOCKET_INVALID || laurion_slot.AugIndex >= invaug::SOCKET_COUNT) {
-			Log(Logs::Detail, Logs::Netcode, "Convert Laurion Typeless Slot [%i, %i, %i] (implied type: %i) to Server Slot %i",
+			LogNetcodeDetail("Convert Laurion Typeless Slot [{}, {}, {}] (implied type: {}) to Server Slot {}",
 				laurion_slot.Slot, laurion_slot.SubIndex, laurion_slot.AugIndex, laurion_type, EQ::invslot::SLOT_INVALID);
 
 			return EQ::invslot::SLOT_INVALID;
@@ -7540,7 +7540,7 @@ namespace Laurion
 		}
 		}
 
-		Log(Logs::Detail, Logs::Netcode, "Convert Laurion Typeless Slot [%i, %i, %i] (implied type: %i) to Server Slot %i",
+		LogNetcodeDetail("Convert Laurion Typeless Slot [{}, {}, {}] (implied type: {}) to Server Slot {}",
 			laurion_slot.Slot, laurion_slot.SubIndex, laurion_slot.AugIndex, laurion_type, ServerSlot);
 
 		return ServerSlot;

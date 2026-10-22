@@ -1490,6 +1490,38 @@ bool Client::HandlePacket(const EQApplicationPacket *app) {
 			// they are handled.
 			return true;
 		}
+		case OP_ClientRecord:
+		{
+			// Laurion 0x1ebe: a variable-length client report. Layout is uint32 record type followed by
+			// record data; the client has seven record types (0x30, 0x13, 0x0f, 0x22, 0x36, 0x04, 0x0c) and
+			// only some have a known payload, so this is parsed by length and not by a struct.
+			// Every world session in build/bin/Release/logs/wireshark.pcap sent record 0x04 (66 wire bytes)
+			// right after the three OP_World_Client_CRC* packets: uint32 type, uint64 PlayerClient::HashKey,
+			// then 13 uint32 resource-file hashes that are identical across sessions. Nothing here changes
+			// world state - log it so the record enum can be filled in from live samples.
+			if(app->size >= 4) {
+				uint32 record_type = *reinterpret_cast<uint32 *>(app->pBuffer);
+				LogNetcode("[Laurion] OP_ClientRecord record type [{:#04x}] payload [{}] bytes", record_type, app->size - 4);
+			}
+			else {
+				LogNetcode("[Laurion] OP_ClientRecord with unexpected size [{}]", app->size);
+			}
+			return true;
+		}
+		case OP_AFKStatusReport:
+		{
+			// Laurion 0x552f: 8 byte payload where the client only ever writes the first byte -
+			// 'A' (active) or 'I' (idle: idle flag set, or no client event for 30 minutes). The remaining
+			// seven bytes are uninitialized stack from the sender (live sample: 518131f67f0000) and are
+			// not part of the packet. Read +0 only.
+			if(app->size >= 1 && (app->pBuffer[0] == 'A' || app->pBuffer[0] == 'I')) {
+				LogNetcode("[Laurion] OP_AFKStatusReport status [{}]", (char) app->pBuffer[0]);
+			}
+			else {
+				LogNetcode("[Laurion] OP_AFKStatusReport with unexpected size [{}]", app->size);
+			}
+			return true;
+		}
 		default:
 		{
 			LogNetcode("Received unknown EQApplicationPacket");

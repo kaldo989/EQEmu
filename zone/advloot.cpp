@@ -412,9 +412,20 @@ namespace AdvLoot {
 				uint32_t transaction = reader.read_u32();
 				uint8_t  flag        = reader.read_u8();
 
+				// corpse_key is the client's LootDetails group hash key. Everywhere else in this file it is
+				// treated as the corpse id (Client::RememberAdvLootAskGroup does entity_list.GetCorpseByID(
+				// corpse_key)), so resolve it as one here too. ModeName() was the wrong label: it fed a corpse
+				// id into the loot-mode table, which is why every live corpse logged as "95(UNKNOWN)".
+				const char *corpse_desc = "no-corpse(filter row)";
+				if (corpse_key) {
+					Corpse *corpse = entity_list.GetCorpseByID(static_cast<uint16_t>(corpse_key));
+					corpse_desc = corpse ? (IsPrintableName(corpse->GetName()) ? corpse->GetName() : "unnamed-corpse")
+						: "corpse-not-in-list";
+				}
+
 				out += fmt::format(
 					" item_id={} corpse_key={}({}) quantity={} transaction={} flag={}",
-					item_id, corpse_key, ModeName(corpse_key), quantity, transaction, flag
+					item_id, corpse_key, corpse_desc, quantity, transaction, flag
 				);
 				break;
 			}
