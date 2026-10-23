@@ -5407,7 +5407,9 @@ void EntityList::UpdateFindableNPCState(NPC *n, bool Remove)
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
 		Client *c = it->second;
-		if (c && (c->ClientVersion() >= EQ::versions::ClientVersion::SoD)) {
+		// The same version range as the zone entry send in zone/client_packet.cpp:954. UF through RoF2 are the
+		// clients whose patch file maps OP_SendFindableNPCs; Laurion is served the same NPCs as Find window rows.
+		if (c && (c->ClientVersion() >= EQ::versions::ClientVersion::SoD) && (c->ClientVersion() <= EQ::versions::ClientVersion::RoF2)) {
 			c->QueuePacket(&p);
 		}
 

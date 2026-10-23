@@ -7373,6 +7373,45 @@ UPDATE `merc_stance_entries` SET `isdefault` = 1
 )",
 		.content_schema_update = false
 	},
+	// Ctrl+F Find window point of interest content (docs/findwnd.md Phase 1, 8.1). Loaded by
+	// ZoneDatabase::LoadStaticFindLocations into Zone::zone_find_location_list and sent on
+	// OP_FindLocationsPOIs (0x1aea) by Client::SendFindLocationsPOIs(). `number` is the per-zone Find id the
+	// client echoes back on OP_PlayerPathRequest (0x6fb7), 16 bits on the wire. That id space is shared in bands:
+	// curated rows below Client::kFindNpcPoiIdBase (0xC000), findable NPC rows from there, and the synthetic port
+	// POIs of docs/findwnd.md 7.2 from Client::kFindPortPoiIdBase (0xF000) up. ResolveFindPathGoal reads the request
+	// id in that order, so a curated number outside its band would answer as an NPC or as a port, and 0 is legal in
+	// none of them - LoadStaticFindLocations skips 0 and anything at or above Client::kFindNpcPoiIdBase.
+	// docs/tools/find_locations_seed.py generates curated starter rows from spawn2 + npc_types.
+	ManifestEntry{
+		.version = 9337,
+		.description = "2026_10_22_zone_find_locations.sql",
+		.check = "SHOW TABLES LIKE 'zone_find_locations'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+CREATE TABLE `zone_find_locations` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `zone` varchar(32) NOT NULL,
+  `version` int(11) NOT NULL DEFAULT 0,
+  `number` smallint(5) unsigned NOT NULL,
+  `category` varchar(254) NOT NULL DEFAULT 'Point of Interest',
+  `name` varchar(254) NOT NULL,
+  `x` float NOT NULL DEFAULT 0,
+  `y` float NOT NULL DEFAULT 0,
+  `z` float NOT NULL DEFAULT 0,
+  `min_expansion` tinyint(4) NOT NULL DEFAULT -1,
+  `max_expansion` tinyint(4) NOT NULL DEFAULT -1,
+  `content_flags` varchar(100) DEFAULT NULL,
+  `content_flags_disabled` varchar(100) DEFAULT NULL,
+  `client_version_mask` int(10) unsigned NOT NULL DEFAULT 4294967295,
+  `note` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `zone_version_number` (`zone`, `version`, `number`),
+  KEY `idx_zone` (`zone`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+)",
+		.content_schema_update = false
+	},
 
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{

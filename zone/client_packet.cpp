@@ -18,6 +18,7 @@
 #include "client.h"
 
 #include "merc.h"
+#include <cmath>
 
 #include "common/data_bucket.h"
 #include "common/data_verification.h"
@@ -118,10 +119,8 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_0x1bdd] = &Client::Handle_0x1bdd;
 	ConnectedOpcodes[OP_0x2b7c] = &Client::Handle_0x2b7c;
 	ConnectedOpcodes[OP_0x447e] = &Client::Handle_0x447e;
-	ConnectedOpcodes[OP_0x59bd] = &Client::Handle_0x59bd;
 	ConnectedOpcodes[OP_0x5e4a] = &Client::Handle_0x5e4a;
 	ConnectedOpcodes[OP_0x6b80] = &Client::Handle_0x6b80;
-	ConnectedOpcodes[OP_0x7340] = &Client::Handle_0x7340;
 	ConnectedOpcodes[OP_0x798e] = &Client::Handle_0x798e;
 	ConnectedOpcodes[OP_0x7a45] = &Client::Handle_0x7a45;
 	ConnectedOpcodes[OP_AAAction] = &Client::Handle_OP_AAAction;
@@ -223,6 +222,11 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_FaceChange] = &Client::Handle_OP_FaceChange;
 	ConnectedOpcodes[OP_FeignDeath] = &Client::Handle_OP_FeignDeath;
 	ConnectedOpcodes[OP_FindItemSearch] = &Client::Handle_OP_FindItemSearch;
+	// Find window (Ctrl+F) request pair, see docs/findwnd.md
+	ConnectedOpcodes[OP_FindLocationsRequest] = &Client::Handle_OP_FindLocationsRequest;
+	ConnectedOpcodes[OP_FindLocationsRequest2] = &Client::Handle_OP_FindLocationsRequest2;
+	// Ctrl+F row selected (or any other PlayerPath goal setter), see docs/findwnd.md
+	ConnectedOpcodes[OP_PlayerPathRequest] = &Client::Handle_OP_PlayerPathRequest;
 	ConnectedOpcodes[OP_FindPersonRequest] = &Client::Handle_OP_FindPersonRequest;
 	ConnectedOpcodes[OP_Fishing] = &Client::Handle_OP_Fishing;
 	ConnectedOpcodes[OP_FloatListThing] = &Client::Handle_OP_MovementHistoryList;
@@ -947,8 +951,15 @@ void Client::CompleteConnect()
 	if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 		GuildBanks->SendGuildBank(this);
 
-	if (ClientVersion() >= EQ::versions::ClientVersion::SoD)
+	// The findable NPC list is what fed a Find window before Laurion. OP_SendFindableNPCs is 0x5360 for SoD,
+	// 0x6193 for UF, 0x34c3 for RoF and 0x4613 for RoF2, and 0x0000 for Laurion (its line in
+	// utils/patches/patch_Laurion.conf), where the Ctrl+F window is fed from the same npc_types.findable selection
+	// through Client::SendFindLocationsPOIs instead (docs/findwnd.md 7.12). Sending it to a Laurion client queues
+	// one 114 byte packet per findable NPC carrying opcode 0x0000, which measured 888 log lines for one player
+	// entering poknowledge and reached the client as noise it has no handler for.
+	if (ClientVersion() >= EQ::versions::ClientVersion::SoD && ClientVersion() <= EQ::versions::ClientVersion::RoF2) {
 		entity_list.SendFindableNPCList(this);
+	}
 
 	if (IsInAGuild()) {
 		if (ingame) {
@@ -2059,12 +2070,6 @@ void Client::Handle_0x447e(const EQApplicationPacket *app)
 	}
 }
 
-void Client::Handle_0x59bd(const EQApplicationPacket *app)
-{
-	// FUN_1403b03d0, sent as a pair with 0x7340.
-	LogNetcodeDetail("OP_0x59bd [{}] size [{}]", GetCleanName(), app->size);
-}
-
 void Client::Handle_0x5e4a(const EQApplicationPacket *app)
 {
 	// FUN_1402596d0 / FUN_1404814b0.
@@ -2075,12 +2080,6 @@ void Client::Handle_0x6b80(const EQApplicationPacket *app)
 {
 	// FUN_1401d5140 / FUN_1402c4a50, sent from the UI init block with 0x687b, 0x3c92 and 0x69c3.
 	LogNetcodeDetail("OP_0x6b80 [{}] size [{}]", GetCleanName(), app->size);
-}
-
-void Client::Handle_0x7340(const EQApplicationPacket *app)
-{
-	// FUN_1403b03d0, sent as a pair with 0x59bd.
-	LogNetcodeDetail("OP_0x7340 [{}] size [{}]", GetCleanName(), app->size);
 }
 
 void Client::Handle_0x798e(const EQApplicationPacket *app)
@@ -6776,6 +6775,180 @@ void Client::Handle_OP_FeignDeath(const EQApplicationPacket *app)
 
 	CheckIncreaseSkill(EQ::skills::SkillFeignDeath, nullptr, 5);
 	return;
+}
+
+// Find window (Ctrl+F): CFindLocationWnd::HandleFindBegin (FUN_1403b03d0) sends 0x7340 then 0x59bd back
+// to back with an empty payload, at most once per zone entry (the client gates it on window+0x3a4
+// dataRequested). Neither request carries data and neither reply handler is correlated with a request -
+// 0x1aea and 0x4eea each rebuild their own array - so the pairing is unobservable: the first request of
+// the pair answers both lists and the second stays a logged no-op rather than resending everything.
+// See docs/findwnd.md.
+void Client::Handle_OP_FindLocationsRequest(const EQApplicationPacket *app)
+{
+	if (app->size != 0) {
+		LogNetcodeDetail("OP_FindLocationsRequest [{}] unexpected size [{}]", GetCleanName(), app->size);
+		DumpPacket(app);
+	}
+
+	SendFindLocationsPOIs();
+	SendFindZoneConnections();
+}
+
+void Client::Handle_OP_FindLocationsRequest2(const EQApplicationPacket *app)
+{
+	// Second half of the pair from FUN_1403b03d0 (send site 0x1403b0492); OP_FindLocationsRequest has
+	// already answered with both lists, so there is nothing to do but keep the traffic visible.
+	LogNetcodeDetail("OP_FindLocationsRequest2 [{}] size [{}]", GetCleanName(), app->size);
+}
+
+// Ctrl+F row selected: CFindLocationWnd activation (FUN_1403aeef0) sets a PlayerPath goal by row type and
+// FUN_1402f2e00 sends this 40 byte goal request. We resolve the goal to a position in this zone, build
+// waypoints with the zone navmesh (or a straight line without one) and answer with OP_PlayerPathReply; the
+// client draws the translucent line, hides the Find window and walks the local player along it by itself.
+// Goals that mean nothing here (real estate item/plot guids) get no reply at all, goals we cannot resolve get
+// an empty reply so the player sees the client's own "Mysterious forces..." line instead of silence.
+// See docs/findwnd.md 6.1 - 6.4.
+void Client::Handle_OP_PlayerPathRequest(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(PlayerPath_Request)) {
+		LogNetcodeDetail("OP_PlayerPathRequest [{}] unexpected size [{}]", GetCleanName(), app->size);
+		DumpPacket(app);
+		return;
+	}
+
+	const PlayerPath_Request *request = reinterpret_cast<const PlayerPath_Request *>(app->pBuffer);
+
+	// FUN_1402f2900 re-arms an active goal and re-sends 0x6fb7 whenever no path is active, so a goal held
+	// across a zone change can keep asking. One accepted request per 500 ms per client keeps that from turning
+	// into a route search loop.
+	if (m_player_path_request_timer.Enabled() && !m_player_path_request_timer.Check()) {
+		LogNetcodeDetail(
+			"OP_PlayerPathRequest [{}] goal kind [{}] id [{}]: rate limited",
+			GetCleanName(),
+			request->goal_kind,
+			request->goal_id
+		);
+		return;
+	}
+
+	const bool goal_is_guid = request->goal_kind == PlayerPathGoalRealEstateItem || request->goal_kind == PlayerPathGoalRealEstatePlot;
+
+	glm::vec3 goal(0.0f, 0.0f, 0.0f);
+	const char *goal_label = "unresolved";
+
+	if (!ResolveFindPathGoal(*request, goal, &goal_label)) {
+		LogNetcodeDetail(
+			"OP_PlayerPathRequest [{}]: nothing in this zone for goal kind [{}] id [{}] via [{}] guid [{:08x}:{:08x}]",
+			GetCleanName(),
+			request->goal_kind,
+			request->goal_id,
+			goal_label,
+			request->guid_low,
+			request->guid_high
+		);
+
+		// A guid goal is never a Find window row, it comes from item/plot tracking we do not implement; staying
+		// silent avoids printing the client's failure message for goals the player never asked about.
+		if (!goal_is_guid) {
+			SendPlayerPathReply({});
+		}
+
+		return;
+	}
+
+	// The request carries the client's own idea of where the player is, in the client's y-then-x order (§6.3 and
+	// §7.9). Pathing from that point is what makes the drawn line match what the client does with it: the client
+	// replaces the Z of every waypoint with a floor probe of its own, and it walks its local player from where it
+	// thinks the player is, which is not necessarily where the zone last recorded him (just zoned in, just used a
+	// portal, mid jump, flying). The zone's own position is kept as a cross check and logged when they differ.
+	const glm::vec3 zone_position(GetX(), GetY(), GetZ());
+	const glm::vec3 reported_position(request->player_x, request->player_y, request->player_z);
+
+	const bool reported_usable = std::isfinite(reported_position.x) && std::isfinite(reported_position.y) && std::isfinite(reported_position.z)
+		&& !(reported_position.x == 0.0f && reported_position.y == 0.0f && reported_position.z == 0.0f);
+
+	const glm::vec3 from = reported_usable ? reported_position : zone_position;
+	const float distance = glm::distance(from, goal);
+
+	// The client generates a segment every SegmentLength units along the line and gives up past 10000, so a
+	// bogus goal coordinate (a stale id, a client supplied point outside the zone) has to be refused here.
+	if (distance > MAX_PLAYER_PATH_DISTANCE) {
+		LogNetcodeDetail(
+			"OP_PlayerPathRequest [{}]: goal via [{}] at [{:.1f} {:.1f} {:.1f}] is [{:.0f}] units away, over the [{:.0f}] limit",
+			GetCleanName(),
+			goal_label,
+			goal.x,
+			goal.y,
+			goal.z,
+			distance,
+			MAX_PLAYER_PATH_DISTANCE
+		);
+		SendPlayerPathReply({});
+		return;
+	}
+
+	const auto route = zone->BuildMysticalPath(from, goal);
+
+	m_player_path_request_timer.Start(500);
+
+	// The route fields are the diagnostic trail for a line that looks wrong in game: source says whether the line
+	// came from the navmesh, crossed a portal connection, stopped short or was refused; nav nodes and portals
+	// bridged describe the raw FindRoute result (FindRoute searches with a 1024 polygon buffer, so a raw node count
+	// near that is a truncated search rather than a disconnected region); the two snaps are how far the navmesh had
+	// to move the player's position and the goal vertically onto a polygon, which is what a line that climbs to
+	// another floor looks like in numbers; goal gap is how far the line ended from the row that was clicked. The
+	// waypoints go out in live order, anchor first and goal last, docs/findwnd.md 7.12.
+	LogNetcodeDetail(
+		"OP_PlayerPathRequest [{}]: goal kind [{}] id [{}] via [{}] from [{:.1f} {:.1f} {:.1f}] ({}) to [{:.1f} {:.1f} {:.1f}] distance [{:.0f}] source [{}] waypoints [{}] goal gap [{:.1f}] start z snap [{:.1f}] goal z snap [{:.1f}] nav nodes [{}] portals bridged [{}]{}{}{}",
+		GetCleanName(),
+		request->goal_kind,
+		request->goal_id,
+		goal_label,
+		from.x,
+		from.y,
+		from.z,
+		reported_usable ? "client reported" : "zone position, client reported no position",
+		goal.x,
+		goal.y,
+		goal.z,
+		distance,
+		route.source,
+		route.waypoints.size(),
+		route.goal_gap,
+		route.start_snap_z,
+		route.goal_snap_z,
+		route.nav_nodes,
+		route.portals_bridged,
+		route.reached_goal ? "" : " short of goal",
+		route.nav_partial ? " navmesh partial" : "",
+		route.nav_stuck ? " navmesh stuck" : ""
+	);
+
+	if (!reported_usable || glm::distance(reported_position, zone_position) > 1.0f) {
+		LogNetcodeDetail(
+			"OP_PlayerPathRequest [{}]: zone has this client at [{:.1f} {:.1f} {:.1f}], reported [{:.1f} {:.1f} {:.1f}]",
+			GetCleanName(),
+			zone_position.x,
+			zone_position.y,
+			zone_position.z,
+			reported_position.x,
+			reported_position.y,
+			reported_position.z
+		);
+	}
+
+	// The polyline itself, because "the line is on the wrong floor" is only interpretable node by node.
+	if (!route.waypoints.empty()) {
+		std::vector<std::string> nodes;
+		nodes.reserve(route.waypoints.size());
+		for (const auto &waypoint : route.waypoints) {
+			nodes.push_back(fmt::format("{:.1f} {:.1f} {:.1f}", waypoint.x, waypoint.y, waypoint.z));
+		}
+
+		LogNetcodeDetail("OP_PlayerPathRequest [{}]: path nodes [{}]", GetCleanName(), Strings::Implode(" | ", nodes));
+	}
+
+	SendPlayerPathReply(route.waypoints);
 }
 
 void Client::Handle_OP_FindPersonRequest(const EQApplicationPacket *app)

@@ -159,6 +159,7 @@ void command_nukeitem(Client *c, const Seperator *sep);
 void command_object(Client *c, const Seperator *sep);
 void command_parcels(Client *c, const Seperator *sep);
 void command_path(Client *c, const Seperator *sep);
+void command_pathtest(Client *c, const Seperator *sep);
 void command_peqzone(Client *c, const Seperator *sep);
 void command_petitems(Client *c, const Seperator *sep);
 void command_picklock(Client *c, const Seperator *sep);

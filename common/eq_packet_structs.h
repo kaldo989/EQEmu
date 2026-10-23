@@ -2516,6 +2516,104 @@ struct ZonePoints {
 /*0004*/	struct	ZonePoint_Entry zpe[0]; // Always add one extra to the end after all zonepoints
 };
 
+// Find window (Ctrl+F) point of interest row, answered on OP_FindLocationsPOIs. See docs/findwnd.md.
+// The strings are fixed size on the emulator side; the patch encoder writes them NUL terminated with
+// no length prefix (the client copies at most 255 bytes, so 254 characters are usable).
+static const uint32 FIND_LOCATION_STRING_MAX = 254;
+
+struct FindLocation_Entry {
+/*0000*/	uint32	id;				// per-zone Find id, echoed by the client as a 16 bit path goal id
+/*0004*/	char	description[255];	// -> Find window Description column
+/*0103*/	char	category[255];	// -> Find window Category column
+};
+
+struct FindLocations {
+/*0000*/	uint32	count;
+/*0004*/	struct	FindLocation_Entry entry[0];
+};
+
+// Find window (Ctrl+F) zone connection row, answered on OP_FindLocationsConnections. The client keeps
+// this record verbatim as 8 consecutive uint32 (MacroQuestLS FindZoneConnectionData). See docs/findwnd.md.
+struct FindZoneConnection_Entry {
+/*0000*/	uint32	type;			// client FindLocationType: 6 = Switch (goal is id), 7 = Location (goal is x/y/z)
+/*0004*/	uint32	id;			// goal id for type 6, EQEmu uses zone_points.number
+/*0008*/	uint32	sub_id;		// no client consumer found, the client's own default is -1
+/*0012*/	uint32	zone_id;		// destination zone id, the client resolves and prints the zone name itself
+/*0016*/	uint32	zone_identifier;	// the client appends " - %d" to the row text when this is not zero
+/*0020*/	float	x;
+/*0024*/	float	y;
+/*0028*/	float	z;
+};
+
+struct FindZoneConnections {
+/*0000*/	uint32	count;
+/*0004*/	struct	FindZoneConnection_Entry entry[0];
+};
+
+// Ctrl+F Find window mystical path goal request, OP_PlayerPathRequest (0x6fb7), client->server, payload is
+// exactly 40 bytes and arrives verbatim from FUN_1402f2e00, so the emulator side and the wire side match.
+// Goal model from pinstPlayerPath (docs/findwnd.md 6.2): the ten setters write goal kind +0x18, goal id
+// +0x1c, a guid pair +0x34/+0x38 and goal xyz +0x3c/40/44, then all of them send this packet.
+enum PlayerPathGoalKind : uint32 {
+	PlayerPathGoalPlayer         = 1, // goal id is a spawn id and 0xffff, SetGoal_Player (FUN_1402f2a60, FUN_1402f2ad0, FUN_1402f2b70)
+	PlayerPathGoalPOI            = 2, // goal id is a per-zone Find id, SetGoal_PoiId (FUN_1402f29f0)
+	PlayerPathGoalRealEstateItem = 3, // guid pair identifies the item, no emulator meaning today
+	PlayerPathGoalRealEstatePlot = 4, // guid low identifies the plot, no emulator meaning today
+	PlayerPathGoalMapPoint       = 5, // goal xyz in this packet is the goal, SetGoal_MapPoint (FUN_1402f2980)
+	PlayerPathGoalSwitch         = 6, // goal id is a port/switch id, SetGoal_SwitchId (FUN_1402f2d50)
+	PlayerPathGoalLocation       = 7, // goal xyz in this packet is the goal, SetGoal_Coords (FUN_1402f2910)
+};
+
+struct PlayerPath_Request {
+/*0000*/	uint32	goal_kind;		// PlayerPathGoalKind
+/*0004*/	uint16	goal_id;		// spawn id, Find id or port id, 0xffff when the goal is a coordinate
+/*0006*/	uint16	goal_id_pad;	// the client leaves these two bytes uninitialised, nothing reads them
+/*0008*/	uint32	guid_low;		// 0xffffffff unless goal_kind is 3 or 4
+/*000c*/	uint32	guid_high;		// 0xffffffff unless goal_kind is 3
+/*0010*/	float	player_y;		// everquest writes positions y first, then x, then z: verified on the wire
+							// 2026-10-22, a capture of a poknowledge Find click carried y -351.77 x 713.83
+							// z -92.87 while the zone's own record for that client read x 713.83 y -351.77
+							// z -92.87 (docs/findwnd.md 7.9). Same order as /loc prints, and the same order as
+							// OP_ClientUpdate's "1st loc value", y_pos.
+/*0014*/	float	player_x;
+/*0018*/	float	player_z;
+/*001c*/	float	goal_y;			// only meaningful for goal_kind 5 and 7: a POI goal is stored with these
+/*0020*/	float	goal_x;			// three cleared to zero by FUN_1402f29f0 (zone/... path object +0x3c, +0x40,
+/*0024*/	float	goal_z;			// +0x44), because a Find window POI row carries an id and two strings and the
+							// client never learns where it is (docs/findwnd.md 7.9).
+};
+
+static_assert(sizeof(PlayerPath_Request) == 40, "PlayerPath_Request has to match the client 0x6fb7 payload");
+
+// The path reply (OP_PlayerPathReply, 0x4d39) has no header at all: the payload is only waypoints and the client
+// counts them as payload size / 12 (FUN_1402f2f90). Two points or more draws the line, fewer is the "Mysterious
+// forces prevent you from finding your destination easily." answer. The client then subdivides every gap at
+// SegmentLength / LODFactor spacing from SpellEffects\Path.ini and gives up above 10000 generated segments, so the
+// point budget bounds our packet and the distance budget bounds the client's work.
+//
+// A waypoint triple is (y, x, z): the order of the request above, the order of FindPerson_Point below, and the
+// order /loc prints. The client copies the payload verbatim into its path object (FUN_1402f2f90 stores the first
+// triple at PlayerPath +0x168 and the rest at +0x174 + index * 12 with no axis swap), then hands the first two
+// slots of each waypoint to __get_bearing together with the local player's own horizontal pair at +0x74 and +0x78
+// (FUN_1402fa000) - the very pair whose average the client writes into this struct's player_y and player_x when it
+// builds the request (FUN_1402f2e00). A waypoint therefore has to arrive with the same two slots filled by the
+// same two axes, or every route is mirrored across the zone (verified against a capture in docs/findwnd.md 7.13).
+struct PlayerPathPoint {
+/*0000*/	float	y;
+/*0004*/	float	x;
+/*0008*/	float	z;
+};
+
+static_assert(sizeof(PlayerPathPoint) == 12, "PlayerPathPoint has to match the client 0x4d39 waypoint stride");
+
+static const uint32 MAX_PLAYER_PATH_POINTS = 64;
+static const float MAX_PLAYER_PATH_DISTANCE = 20000.0f;
+
+// A position the client reports in OP_PlayerPathRequest that is not finite, or an exact zero triple, cannot be a
+// place: the client sends its own coordinates in the request and it is the client that draws the line and walks its
+// local player from them, so they are the honest start point even when the zone's record of that client has fallen
+// behind them (docs/findwnd.md 7.7 and 7.9).
+
 struct SkillUpdate_Struct {
 /*00*/	uint32 skillId;
 /*04*/	uint32 value;

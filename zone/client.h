@@ -391,6 +391,37 @@ public:
 		std::list<void *> *event_details = nullptr
 	);
 	void SendZonePoints();
+	void SendFindLocationsPOIs();
+	void SendFindZoneConnections();
+	// Shared eligibility test for the Ctrl+F rows built from zone_points (docs/findwnd.md 7.2): the row has
+	// to be visible to this client version, and its destination has to be a zone EQEmu knows as a
+	// zone_table.zoneidnumber and that a player can actually stand in (clz/LOAD are transition zones).
+	bool IsFindZonePointUsable(const ZonePoint *data);
+	// Ports whose destination zone the Laurion client has no display name for are sent as POI rows with
+	// server supplied text (docs/findwnd.md 7.2). Their POI ids start at kFindPortPoiIdBase and map to the
+	// port position a path has to reach, which is what Handle_OP_PlayerPathRequest will answer with
+	// (Phase 3). zone_find_locations.number has to stay below this constant.
+	static constexpr uint32 kFindPortPoiIdBase = 0xF000;
+	std::unordered_map<uint32, glm::vec3> m_FindPortPoiGoals;
+	// Find window NPC rows are the Laurion half of what EQEmu already sends pre-Laurion clients on
+	// OP_SendFindableNPCs (0x4613 for RoF2, 0x0000 for Laurion, docs/findwnd.md 7.12): every NPC in the zone whose
+	// npc_types.findable flag is set. Their ids live in their own band so they cannot collide with a
+	// zone_find_locations.number or with a synthetic port POI, and each one maps to the NPC's entity id. That id is
+	// resolved the way Handle_OP_FindPersonRequest resolved a findable NPC on the pre-Laurion side
+	// (zone/client_packet.cpp:6946): look the mob up now and use where it is standing now, not where it was when
+	// the list went out.
+	static constexpr uint32 kFindNpcPoiIdBase = 0xC000;
+	std::unordered_map<uint32, uint32> m_FindNpcPoiEntityIds;
+	// Mystical path (docs/findwnd.md 6.3, 6.4): ResolveFindPathGoal turns the client's goal into a position in
+	// this zone, SendPlayerPathReply answers the waypoint list the client draws as the translucent line. An
+	// empty reply is the client's own "Mysterious forces prevent you from finding your destination easily."
+	// answer, which is better feedback than silence.
+	bool ResolveFindPathGoal(const PlayerPath_Request &request, glm::vec3 &goal, const char **goal_label);
+	void SendPlayerPathReply(const std::vector<glm::vec3> &waypoints);
+	// FUN_1402f2900 re-arms an active goal and re-sends 0x6fb7, so a goal can be requested repeatedly; a
+	// request is accepted at most once per 500 ms per client. The timer starts disabled so the first request
+	// after zoning is never blocked.
+	Timer m_player_path_request_timer{0, false};
 	void SendBulkParcels();
 	void DoParcelCancel();
 	void DoParcelSend(const Parcel_Struct *parcel_in);

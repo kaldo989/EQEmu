@@ -534,6 +534,7 @@ set(repositories
     repositories/tribute_levels_repository.h
     repositories/tributes_repository.h
     repositories/veteran_reward_templates_repository.h
+    repositories/zone_find_locations_repository.h
     repositories/zone_points_repository.h
     repositories/zone_repository.h
 )

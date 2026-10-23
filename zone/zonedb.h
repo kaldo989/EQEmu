@@ -24,6 +24,7 @@
 #include "common/races.h"
 #include "common/repositories/doors_repository.h"
 #include "common/repositories/npc_faction_entries_repository.h"
+#include "common/repositories/zone_find_locations_repository.h"
 #include "common/shareddb.h"
 #include "zone/aa_ability.h"
 #include "zone/bot_database.h"
@@ -552,6 +553,9 @@ public:
 	/* Zone related   */
 	bool		SaveZoneCFG(uint32 zone_id, uint16 instance_version, NewZone_Struct* zd);
 	bool		LoadStaticZonePoints(LinkedList<ZonePoint*>* zone_point_list,const char* zonename, uint32 version);
+	// Ctrl+F Find window POI content (zone_find_locations). Same zone/version/content filter as
+	// LoadStaticZonePoints, rows ordered by `number`. See docs/findwnd.md 8.1.
+	bool		LoadStaticFindLocations(std::vector<ZoneFindLocationsRepository::ZoneFindLocations> &find_location_list, const char *zonename, uint32 version);
 	int			getZoneShutDownDelay(uint32 zoneID, uint32 version);
 
 	/* Spawns and Spawn Points  */

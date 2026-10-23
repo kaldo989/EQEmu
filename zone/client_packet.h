@@ -47,10 +47,8 @@
 	void Handle_0x1bdd(const EQApplicationPacket *app);
 	void Handle_0x2b7c(const EQApplicationPacket *app);
 	void Handle_0x447e(const EQApplicationPacket *app);
-	void Handle_0x59bd(const EQApplicationPacket *app);
 	void Handle_0x5e4a(const EQApplicationPacket *app);
 	void Handle_0x6b80(const EQApplicationPacket *app);
-	void Handle_0x7340(const EQApplicationPacket *app);
 	void Handle_0x798e(const EQApplicationPacket *app);
 	void Handle_0x7a45(const EQApplicationPacket *app);
 	void Handle_OP_AAAction(const EQApplicationPacket *app);
@@ -152,6 +150,11 @@
 	void Handle_OP_FaceChange(const EQApplicationPacket *app);
 	void Handle_OP_FeignDeath(const EQApplicationPacket *app);
 	void Handle_OP_FindItemSearch(const EQApplicationPacket *app);
+	// Find window (Ctrl+F) request pair, see docs/findwnd.md
+	void Handle_OP_FindLocationsRequest(const EQApplicationPacket *app);
+	void Handle_OP_FindLocationsRequest2(const EQApplicationPacket *app);
+	// Ctrl+F row selected: the client sets a PlayerPath goal and asks for a route (docs/findwnd.md 6.3).
+	void Handle_OP_PlayerPathRequest(const EQApplicationPacket *app);
 	void Handle_OP_FindPersonRequest(const EQApplicationPacket *app);
 	void Handle_OP_Fishing(const EQApplicationPacket *app);
 	void Handle_OP_Forage(const EQApplicationPacket *app);

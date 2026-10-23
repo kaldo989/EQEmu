@@ -16,8 +16,10 @@
 	along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 #include "client.h"
+#include "common/patches/laurion_zone_names.h"
 #include "common/patches/laurion_structs.h"
 
+#include "common/classes.h"
 #include "common/data_bucket.h"
 #include "common/data_verification.h"
 #include "common/eqemu_logsys.h"
@@ -7141,6 +7143,547 @@ void Client::SendZonePoints()
 			i++;
 		}
 		iterator.Advance();
+	}
+
+	FastQueuePacket(&outapp);
+}
+
+// Shared eligibility test for the Ctrl+F rows built from zone_points (docs/findwnd.md 7.2).
+bool Client::IsFindZonePointUsable(const ZonePoint *data)
+{
+	if (!data->target_zone_id) {
+		return false;
+	}
+
+	// Transition zones a player never stands in: a Find row pointing at one is noise.
+	if (data->target_zone_id == Zones::CLZ || data->target_zone_id == Zones::LOAD || data->target_zone_id == Zones::LOAD2) {
+		return false;
+	}
+
+	if (!(ClientVersionBit() & data->client_version_mask)) {
+		return false;
+	}
+
+	// zone_points.target_zone_id is a zone_table.zoneidnumber, the same id space the client's own zone
+	// table uses; if EQEmu has no row for it the row cannot be zoned through either.
+	return ZoneName(data->target_zone_id, false) != nullptr;
+}
+
+// How EQEmu decides which NPCs belong in a Find window: npc_types.findable, read into the NPC at spawn time
+// (zone/npc.cpp:181) and exposed as Mob::IsFindable(). EntityList::SendFindableNPCList (zone/entity.cpp:5356) has
+// keyed on exactly that flag since clients had OP_SendFindableNPCs, which is how the Find window was fed before
+// Laurion, and EntityList::UpdateFindableNPCState keeps that list current by pushing an add when such an NPC
+// spawns (zone/entity.cpp:721) and a remove when it despawns or dies (zone/entity.cpp:3164, zone/attack.cpp:3035).
+// Laurion has no OP_SendFindableNPCs (utils/patches/patch_Laurion.conf sets it to 0x0000 together with
+// OP_FindPersonRequest and OP_FindPersonReply) and feeds the Ctrl+F window with OP_FindLocationsPOIs instead, so
+// the same selection is reused here and the naming below reuses the naming that packet carried: the clean name for
+// the row text and the class for the category, which OP_SendFindableNPCs sent as a class byte (FindableNPC_Struct,
+// common/eq_packet_structs.h:5790) and the client rendered as its own class name.
+static bool IsFindNPCCandidate(NPC *npc)
+{
+	// Pets, mercenary minions and spell summons are out: they are already at your feet and their findable flag
+	// came from whatever summoned them rather than from content. Corpses are out the way the pre-Laurion list was
+	// kept clean, by removing the NPC from it when it died instead of leaving a dead row behind.
+	if (!npc || !npc->IsFindable() || npc->IsClient() || npc->IsCorpse() || npc->HasOwner()) {
+		return false;
+	}
+
+	// NPC::SpawnZonePointNodeNPC, SpawnGridNodeNPC and SpawnNodeNPC build geometry and debug anchors out of the
+	// merchant npc_type template (the door box corners in zone/doors.cpp:996, Mob::DrawDebugCoordinateNode in
+	// zone/spells.cpp:7597) and those templates have findable set. A row for "box_corner_three" is not a place a
+	// player was looking for, so the anchors that tag themselves are skipped.
+	if (!npc->GetEntityVariable("node_parent_id").empty()) {
+		return false;
+	}
+
+	return true;
+}
+
+// The Category column text. GetClassIDName (common/classes.cpp) is the name EQEmu already uses for these NPC
+// classes everywhere else: "Banker" for 40, "Merchant" for 41, "Warrior Guildmaster" for a class change master,
+// "Tribute Master", "Adventure Recruiter", "Guild Banker" and the rest of them. Level is deliberately left at 0 so
+// that a townie of a player class reads as its base class, which is what a class byte rendered on the client,
+// instead of one of that class's level titles.
+static const char *FindNPCCategory(NPC *npc)
+{
+	// GetClassIDName builds the Shadow Knight guildmaster name with fmt::format(...).c_str(), a pointer into a
+	// temporary that is gone before the caller reads it (common/classes.cpp:306), so that one class is answered
+	// here instead.
+	if (npc->GetClass() == Class::ShadowKnightGM) {
+		return "Shadow Knight Guildmaster";
+	}
+
+	const char *name = GetClassIDName(npc->GetClass(), 0);
+
+	return (name && *name && strcmp(name, "Unknown") != 0) ? name : "Person";
+}
+
+// Case and punctuation insensitive comparison so a curated zone_find_locations row and the findable NPC of the
+// same name do not both end up in the window. EQ names put an underscore between words and a leading # marks an
+// NPC that is consumed on interaction, and neither belongs in the comparison.
+static std::string NormalizedFindName(const char *name)
+{
+	std::string out;
+
+	for (const char *p = name ? name : ""; *p; ++p) {
+		if (*p == '#' || *p == '_') {
+			out += ' ';
+		}
+		else if (*p >= 'A' && *p <= 'Z') {
+			out += static_cast<char>(*p - 'A' + 'a');
+		}
+		else {
+			out += *p;
+		}
+	}
+
+	while (!out.empty() && out.back() == ' ') {
+		out.pop_back();
+	}
+
+	return out;
+}
+
+// Find window (Ctrl+F) point of interest list, answered on OP_FindLocationsPOIs (0x1aea). Three sources.
+//
+// Findable NPCs (docs/findwnd.md 7.12) are the port of EQEmu's pre-Laurion findable list described above: the
+// client prints the two strings straight out of the packet, the row id lives in the kFindNpcPoiIdBase band, and the
+// position comes from the live NPC when the row is clicked rather than from a table.
+//
+// Curated zone_find_locations rows (Phase 1, docs/findwnd.md 8.1) are notable locations that are not a mob: an inn
+// keeper's building, a dock, a landmark. Their id is the row's per-zone `number` and Phase 3 answers a path to one
+// by looking that number up in zone->zone_find_location_list. A curated row whose name duplicates a findable NPC is
+// skipped here, because the NPC itself is now sent and its position moves with the NPC.
+//
+// The third source is synthetic: zone_points ports whose destination zone the Laurion client has no display name
+// for. A type 6 connection row builds its text from the client's own zone table and prints "Zone Connection Not
+// Found" for those ids (docs/findwnd.md 7.2), so they are sent here instead with names from EQEmu's zone table, ids
+// from kFindPortPoiIdBase up, positions recorded in m_FindPortPoiGoals.
+void Client::SendFindLocationsPOIs()
+{
+	std::set<std::string> npc_names;
+	uint32 npc_rows = 0;
+
+	for (const auto &entry : entity_list.GetNPCList()) {
+		if (IsFindNPCCandidate(entry.second)) {
+			++npc_rows;
+			npc_names.insert(NormalizedFindName(entry.second->GetCleanName()));
+		}
+	}
+
+	// A curated row only counts when no findable NPC of the same name is going to be sent for it.
+	const auto curated_row_shows = [&](const ZoneFindLocationsRepository::ZoneFindLocations &poi) {
+		return (ClientVersionBit() & poi.client_version_mask) && !poi.name.empty()
+			&& npc_names.find(NormalizedFindName(poi.name.c_str())) == npc_names.end();
+	};
+
+	uint32 content_rows = 0;
+	for (const auto &poi : zone->zone_find_location_list) {
+		if (curated_row_shows(poi)) {
+			content_rows++;
+		}
+	}
+
+	uint32 port_rows = 0;
+	LinkedListIterator<ZonePoint *> iterator(zone->zone_point_list);
+	iterator.Reset();
+	while (iterator.MoreElements()) {
+		ZonePoint *data = iterator.GetData();
+
+		if (IsFindZonePointUsable(data) && !LaurionClientZones::ZoneHasClientName(data->target_zone_id)) {
+			port_rows++;
+		}
+
+		iterator.Advance();
+	}
+
+	uint32 count = content_rows + npc_rows + port_rows;
+	uint32 size = sizeof(FindLocations) + (count * sizeof(FindLocation_Entry));
+	auto outapp = new EQApplicationPacket(OP_FindLocationsPOIs, size);
+	FindLocations *fl = (FindLocations *) outapp->pBuffer;
+	fl->count = count;
+
+	m_FindPortPoiGoals.clear();
+	m_FindNpcPoiEntityIds.clear();
+
+	uint32 i = 0;
+
+	for (const auto &poi : zone->zone_find_location_list) {
+		if (curated_row_shows(poi)) {
+			FindLocation_Entry *entry = &fl->entry[i];
+			entry->id = poi.number;
+			snprintf(entry->description, sizeof(entry->description), "%s", poi.name.c_str());
+			snprintf(entry->category, sizeof(entry->category), "%s", poi.category.c_str());
+			i++;
+		}
+	}
+
+	uint32 npc_index = 0;
+	for (const auto &entry : entity_list.GetNPCList()) {
+		NPC *npc = entry.second;
+
+		if (!IsFindNPCCandidate(npc)) {
+			continue;
+		}
+
+		// The goal id is 16 bits on the wire and this band ends at kFindPortPoiIdBase, so a zone can list at most
+		// 12288 findable NPCs before rows have to start being dropped.
+		if (npc_index >= kFindPortPoiIdBase - kFindNpcPoiIdBase) {
+			LogNetcodeDetail(
+				"Find window [{}]: more than [{}] findable NPCs, skipping [{}]",
+				GetCleanName(),
+				kFindPortPoiIdBase - kFindNpcPoiIdBase,
+				npc->GetCleanName()
+			);
+			continue;
+		}
+
+		FindLocation_Entry *row = &fl->entry[i];
+		row->id = kFindNpcPoiIdBase + npc_index;
+		snprintf(row->description, sizeof(row->description), "%s", npc->GetCleanName());
+		snprintf(row->category, sizeof(row->category), "%s", FindNPCCategory(npc));
+
+		m_FindNpcPoiEntityIds[row->id] = npc->GetID();
+		npc_index++;
+		i++;
+	}
+
+	uint32 port_index = 0;
+	iterator.Reset();
+	while (iterator.MoreElements()) {
+		ZonePoint *data = iterator.GetData();
+
+		if (IsFindZonePointUsable(data) && !LaurionClientZones::ZoneHasClientName(data->target_zone_id)) {
+			// The goal id is 16 bits, so a zone can carry at most 4096 of these.
+			if (port_index >= kFindPortPoiIdBase) {
+				LogNetcodeDetail("Find window [{}]: more than [{}] unnamed ports, skipping zone_points number [{}]", GetCleanName(), kFindPortPoiIdBase, data->number);
+				iterator.Advance();
+				continue;
+			}
+
+			const char *zone_name = ZoneLongName(data->target_zone_id, true);
+			const std::string text = fmt::format("{} - {}", zone_name ? zone_name : "Port", data->number);
+
+			FindLocation_Entry *entry = &fl->entry[i];
+			entry->id = kFindPortPoiIdBase + port_index;
+			snprintf(entry->description, sizeof(entry->description), "%s", text.c_str());
+			snprintf(entry->category, sizeof(entry->category), "%s", "Zone Connection");
+
+			m_FindPortPoiGoals[entry->id] = glm::vec3(data->x, data->y, data->z);
+			port_index++;
+			i++;
+		}
+
+		iterator.Advance();
+	}
+
+	// A row with no id is a row the client cannot ask for a path to. The rebuild (FUN_1403af830) hands the record's
+	// id field to AddFindableRow (FUN_1403ae5c0) as the row's goal value, the hash node keeps it, and the row
+	// activation (FUN_1403aeef0) passes it to the POI goal setter (FUN_1402f29f0), so a zero id means the client
+	// asks for kind 2 id 0 and the only possible answer is "Mysterious forces prevent you from finding your
+	// destination easily." Zero is legal in none of the three bands (curated numbers start at 1, NPC rows at
+	// kFindNpcPoiIdBase, ports at kFindPortPoiIdBase), so a zero id here is a broken emission rather than a content
+	// problem and has to say so in the log instead of quietly listing hundreds of rows nobody can click.
+	uint32 zero_ids = 0;
+	for (uint32 check_index = 0; check_index < i; ++check_index) {
+		if (!fl->entry[check_index].id) {
+			zero_ids++;
+		}
+	}
+
+	if (zero_ids) {
+		LogError("Find window [{}]: [{}] of [{}] POI rows were built with id 0 and cannot be resolved", GetCleanName(), zero_ids, i);
+	}
+
+	if (content_rows || npc_rows || port_rows) {
+		LogNetcodeDetail(
+			"Find window [{}]: sending [{}] POIs ([{}] findable NPCs, [{}] zone_find_locations rows, [{}] ports the client has no zone name for)",
+			GetCleanName(),
+			count,
+			npc_rows,
+			content_rows,
+			port_rows
+		);
+	}
+
+	FastQueuePacket(&outapp);
+}
+
+// Find window (Ctrl+F) zone connections, built from the zone's static zone_points rows with the same
+// client version filtering as SendZonePoints(). Only destinations the Laurion client can name are sent
+// here; the rest are sent as POI rows by SendFindLocationsPOIs() (docs/findwnd.md 7.2).
+void Client::SendFindZoneConnections()
+{
+	int count = 0;
+	int dropped = 0;
+	LinkedListIterator<ZonePoint *> iterator(zone->zone_point_list);
+	iterator.Reset();
+	while (iterator.MoreElements()) {
+		ZonePoint *data = iterator.GetData();
+
+		if (IsFindZonePointUsable(data) && LaurionClientZones::ZoneHasClientName(data->target_zone_id)) {
+			count++;
+		}
+		else if (data->target_zone_id && (ClientVersionBit() & data->client_version_mask)) {
+			// Either the destination is unknown to EQEmu (dropped) or the client cannot name it
+			// (SendFindLocationsPOIs covers it with server supplied text).
+			if (IsFindZonePointUsable(data)) {
+				LogNetcodeDetail(
+					"Find window [{}]: zone_points number [{}] destination zone id [{}] ({}) has no name in the client's zone table, sending it as a POI",
+					GetCleanName(),
+					data->number,
+					data->target_zone_id,
+					ZoneLongName(data->target_zone_id, true)
+				);
+			}
+			else {
+				LogNetcodeDetail(
+					"Find window [{}]: dropping zone_points number [{}] with destination zone id [{}]",
+					GetCleanName(),
+					data->number,
+					data->target_zone_id
+				);
+				dropped++;
+			}
+		}
+
+		iterator.Advance();
+	}
+
+	uint32 zpsize = sizeof(FindZoneConnections) + (count * sizeof(FindZoneConnection_Entry));
+	auto outapp = new EQApplicationPacket(OP_FindLocationsConnections, zpsize);
+	FindZoneConnections *fz = (FindZoneConnections *) outapp->pBuffer;
+	fz->count = count;
+
+	int i = 0;
+	iterator.Reset();
+	while (iterator.MoreElements()) {
+		ZonePoint *data = iterator.GetData();
+
+		if (IsFindZonePointUsable(data) && LaurionClientZones::ZoneHasClientName(data->target_zone_id)) {
+			// Client FindLocationType 6 (Switch): the row goal is the id, and the client echoes that id
+			// back on the path request 0x6fb7 as a 16 bit value. zone_points.number is already the number
+			// the client's own port trigger uses (see docs/clientZoneLines.md).
+			fz->entry[i].type = 6;
+			fz->entry[i].id = data->number;
+			// No consumer of sub_id was found in the client; the client's own default is -1.
+			fz->entry[i].sub_id = 0xFFFFFFFF;
+			// The client resolves and prints the destination zone name from this id by itself.
+			fz->entry[i].zone_id = data->target_zone_id;
+			// The client appends " - %d" to the row text when this is not zero, which keeps several ports
+			// to the same destination distinguishable in the list.
+			fz->entry[i].zone_identifier = data->number;
+			// The port location in this zone, which is what a path has to reach before the line is taken.
+			// The client ignores these for type 6 rows (FUN_1402f2d50 sends only the id) and uses them for
+			// type 7 (Location) rows, whose goal is a pointer to this float triple.
+			fz->entry[i].x = data->x;
+			fz->entry[i].y = data->y;
+			fz->entry[i].z = data->z;
+
+			i++;
+		}
+
+		iterator.Advance();
+	}
+
+	LogNetcodeDetail(
+		"Find window [{}]: sending [{}] zone connections, [{}] rows unusable",
+		GetCleanName(),
+		count,
+		dropped
+	);
+
+	FastQueuePacket(&outapp);
+}
+
+// Turn the client's path goal into a position in this zone (docs/findwnd.md 6.1 - 6.3). The kind and the id
+// come straight out of the 0x6fb7 payload and they are the ids we put in the two Find lists:
+//
+//   kind 6 Switch   -> id is zone_points.number of a connection row (SendFindZoneConnections)
+//   kind 2 POI      -> id is zone_find_locations.number below kFindPortPoiIdBase, or a synthetic port id at or
+//                      above it (SendFindLocationsPOIs, docs/findwnd.md 7.2)
+//   kind 7 / kind 5 -> the request itself carries the goal coordinates
+//   kind 1 Player   -> id is a spawn id and 0xffff, entity_list is keyed by exactly that 16 bit id
+//   kind 3 / kind 4 -> real estate item and plot guids, which the emulator has no version of
+// A zone_points row whose own position is a placeholder is bookkeeping, not a place. EQEmu stores rows like this
+// for zoning the client initiates itself (interior doors, campaign portals, zone lines whose trigger the client
+// supplies) where only the destination matters, and the source is left at the origin or at the +/-999999 "anywhere
+// in this zone" sentinel that Zone::GetClosestZonePoint special cases (zone/zone.cpp:2368). 1244 of the 2328 rows
+// in zone_points are like that, across 222 zones, and all 22 of poknowledge's rows including the 16 the Find window
+// lists are at (0, 0, 0). Pathing to one draws a line to a point in the sky, so these rows stay in the list as a
+// directory of where you can go but answer "no path" when clicked.
+static bool IsPlaceholderZonePointPosition(const glm::vec3 &position)
+{
+	if (position.x >= 999998.0f || position.x <= -999998.0f || position.y >= 999998.0f || position.y <= -999998.0f) {
+		return true;
+	}
+
+	return position.x == 0.0f && position.y == 0.0f && position.z == 0.0f;
+}
+
+bool Client::ResolveFindPathGoal(const PlayerPath_Request &request, glm::vec3 &goal, const char **goal_label)
+{
+	switch (request.goal_kind) {
+		case PlayerPathGoalSwitch: {
+			LinkedListIterator<ZonePoint *> iterator(zone->zone_point_list);
+			iterator.Reset();
+			while (iterator.MoreElements()) {
+				ZonePoint *data = iterator.GetData();
+
+				if (data->number == request.goal_id) {
+					goal = glm::vec3(data->x, data->y, data->z);
+
+					if (IsPlaceholderZonePointPosition(goal)) {
+						*goal_label = "zone_points port with no source coordinate";
+						return false;
+					}
+
+					*goal_label = "zone_points port";
+					return true;
+				}
+
+				iterator.Advance();
+			}
+
+			for (const auto &virtual_zone_point : zone->virtual_zone_point_list) {
+				if (virtual_zone_point.number == request.goal_id) {
+					goal = glm::vec3(virtual_zone_point.x, virtual_zone_point.y, virtual_zone_point.z);
+
+					if (IsPlaceholderZonePointPosition(goal)) {
+						*goal_label = "virtual zone_points port with no source coordinate";
+						return false;
+					}
+
+					*goal_label = "virtual zone_points port";
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		case PlayerPathGoalPOI: {
+
+			// A findable NPC row (docs/findwnd.md 7.12): the id is ours but it stands for an entity, and it
+			// resolves the way Handle_OP_FindPersonRequest resolved a pre-Laurion findable NPC
+			// (zone/client_packet.cpp:6946): look the mob up now, answer where it is standing now.
+			if (request.goal_id >= kFindNpcPoiIdBase && request.goal_id < kFindPortPoiIdBase) {
+				auto poi_it = m_FindNpcPoiEntityIds.find(request.goal_id);
+
+				if (poi_it == m_FindNpcPoiEntityIds.end()) {
+					return false;
+				}
+
+				Mob *target = entity_list.GetMob(poi_it->second);
+
+				if (!target || !target->IsNPC()) {
+					// The NPC despawned or died since the list went out. The next Find request will not carry the
+					// row at all, because the list is rebuilt from the live npc_list every time it is asked for.
+					return false;
+				}
+
+				goal = glm::vec3(target->GetX(), target->GetY(), target->GetZ());
+				*goal_label = target->GetCleanName();
+				return true;
+			}
+			if (request.goal_id >= kFindPortPoiIdBase) {
+				auto it = m_FindPortPoiGoals.find(request.goal_id);
+
+				if (it != m_FindPortPoiGoals.end()) {
+					goal = it->second;
+
+					// The synthetic POIs are built from the same zone_points rows, so they inherit their positions.
+					if (IsPlaceholderZonePointPosition(goal)) {
+						*goal_label = "synthetic port POI with no source coordinate";
+						return false;
+					}
+
+					*goal_label = "synthetic port POI";
+					return true;
+				}
+
+				return false;
+			}
+
+			for (const auto &poi : zone->zone_find_location_list) {
+				if (poi.number == request.goal_id) {
+					goal = glm::vec3(poi.x, poi.y, poi.z);
+					*goal_label = "zone_find_locations POI";
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		case PlayerPathGoalLocation:
+		case PlayerPathGoalMapPoint: {
+			goal = glm::vec3(request.goal_x, request.goal_y, request.goal_z);
+
+			// Kind 7 is a type 7 (Location) connection row, whose goal the client stores as a pointer to the
+			// record's float triple (FUN_1402f2910); kind 5 is a map point marker.
+			*goal_label = request.goal_kind == PlayerPathGoalLocation ? "connection row coordinates" : "client map point";
+			return true;
+		}
+
+		case PlayerPathGoalPlayer: {
+			// FUN_1402f2a60 writes spawnId & 0xffff, and EntityList keys mob_list by that same 16 bit id.
+			if (request.goal_id == 0xFFFF) {
+				return false;
+			}
+
+			auto it = entity_list.GetMobList().find(request.goal_id);
+
+			if (it == entity_list.GetMobList().end()) {
+				return false;
+			}
+
+			Mob *target = it->second;
+			goal = glm::vec3(target->GetX(), target->GetY(), target->GetZ());
+			*goal_label = target->IsClient() ? "client spawn" : "npc spawn";
+			return true;
+		}
+
+		default:
+			// PlayerPathGoalRealEstateItem / PlayerPathGoalRealEstatePlot and anything unrecognised.
+			return false;
+	}
+}
+
+// Ctrl+F Find window mystical path reply, answered on OP_PlayerPathReply (0x4d39). The payload carries nothing
+// but the waypoints, the client computes the count as payload size / 12 (FUN_1402f2f90), so there is no count
+// field and no header. Two or more points draws the line and starts the client side auto follow; fewer is the
+// client's "Mysterious forces prevent you from finding your destination easily." answer.
+void Client::SendPlayerPathReply(const std::vector<glm::vec3> &waypoints)
+{
+	const uint32 count = std::min<uint32>(static_cast<uint32>(waypoints.size()), MAX_PLAYER_PATH_POINTS);
+	const uint32 size = count * sizeof(PlayerPathPoint);
+
+	auto outapp = new EQApplicationPacket(OP_PlayerPathReply, size);
+
+	if (size) {
+		// Written exactly as BuildMysticalPath assembled it, which is the order live sends (docs/findwnd.md 7.12):
+		// point 0 is the far end of the walk, which FUN_1402f2f90 keeps to itself at path+0x168/16c/170 as the
+		// path's own anchor, and points 1 through count-1 are the polyline, starting where the player is and ending
+		// at the row that was clicked. Client::SendPath documents and builds the same shape for the pre-Laurion
+		// OP_FindPersonRequest, which is what the open question of §7.10 and §7.11 turned out to be.
+		// Each waypoint goes out (y, x, z), the same axis order as OP_PlayerPathRequest, not (x, y, z). The client
+		// copies this payload straight into its waypoint array with no axis swap (FUN_1402f2f90 stores the first
+		// triple at path +0x168/16c/170 and the rest at +0x174 + index * 12), then averages points 1 through
+		// count-1 and passes the pair to __get_bearing together with the local player's own horizontal pair at
+		// +0x74 and +0x78 to pick the heading the character turns to (FUN_1402fa000). That pair is the very one the
+		// client writes into player_y and player_x when it builds the request (FUN_1402f2e00), so a waypoint slot
+		// has to hold the same axis as the matching request slot or the whole route is mirrored across the zone.
+		// Writing x first did exactly that: the capture in docs/findwnd.md 7.13 drew a 92 unit walk to Dogle Pitt
+		// as a line to x -305 y 944 z -93, off the map and up in the air.
+		PlayerPathPoint *out = reinterpret_cast<PlayerPathPoint *>(outapp->pBuffer);
+		for (uint32 i = 0; i < count; ++i) {
+			const glm::vec3 &point = waypoints[i];
+			out->y = point.y;
+			out->x = point.x;
+			out->z = point.z;
+			++out;
+		}
 	}
 
 	FastQueuePacket(&outapp);

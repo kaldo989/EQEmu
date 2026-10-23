@@ -38,6 +38,7 @@
 #include "common/repositories/player_titlesets_repository.h"
 #include "common/repositories/skill_caps_repository.h"
 #include "common/repositories/spawn2_disabled_repository.h"
+#include "common/repositories/zone_find_locations_repository.h"
 #include "common/repositories/zone_points_repository.h"
 #include "common/repositories/zone_state_spawns_repository.h"
 #include "common/rulesys.h"
@@ -95,6 +96,25 @@ struct ZoneClientAuth_Struct {
 struct ZoneEXPModInfo {
 	float ExpMod;
 	float AAExpMod;
+};
+
+// What Zone::BuildMysticalPath returns (docs/findwnd.md 6.4, 7.6 and 7.12). waypoints is the polyline to hand the
+// client, already in the order OP_PlayerPathReply wants it: the anchor point first, then where the player is, then
+// the rest of the walk with the goal last. Empty means "no path" and the client then prints its own failure line.
+// The rest is diagnostic, because a route that climbs onto another floor looks fine as a point count and only
+// shows up in these numbers: how far the navmesh had to snap each endpoint vertically onto a polygon, how far the
+// line stopped short of the goal, and whether it crossed a portal connection.
+struct ZoneMysticalPathRoute {
+	std::vector<glm::vec3> waypoints;
+	const char *source        = "none";
+	bool        reached_goal  = false;
+	bool        nav_partial   = false;
+	bool        nav_stuck     = false;
+	int         portals_bridged = 0;
+	int         nav_nodes       = 0;   // node count FindRoute returned, before portal markers are dropped and decimation
+	float       goal_gap        = 0.0f;
+	float       start_snap_z  = 0.0f;
+	float       goal_snap_z   = 0.0f;
 };
 
 class Client;
@@ -207,11 +227,27 @@ public:
 	void SetVariable(const std::string& variable_name, const std::string& variable_value);
 	bool VariableExists(const std::string& variable_name);
 
+	// Waypoints for the Ctrl+F Find window mystical path (docs/findwnd.md 6.4). Uses the zone navmesh when one
+	// was loaded (Maps/nav/<map>.nav via IPathfinder::Load) so the line follows walkable ground, otherwise a
+	// straight sampled line. The caller bounds the distance; sending fewer than MAX_PLAYER_PATH_POINTS points
+	// is deliberate because the client subdivides every gap itself at SegmentLength spacing.
+
+	// Waypoints for the Ctrl+F Find window mystical path (docs/findwnd.md 6.4 and 7.6). Navmesh route when there
+	// is one and both endpoints snap onto walkable ground, otherwise an empty route (the client prints its
+	// "Mysterious forces..." line) or a straight line for a short hop in a zone without a navmesh. Fewer than
+	// MAX_PLAYER_PATH_POINTS points is deliberate, the client subdivides every gap itself at SegmentLength
+	// spacing.
+	ZoneMysticalPathRoute BuildMysticalPath(const glm::vec3 &from, const glm::vec3 &to) const;
+
 	IPathfinder                                   *pathing;
 	std::vector<NPC_Emote_Struct *>               npc_emote_list;
 	LinkedList<Spawn2 *>                          spawn2_list;
 	LinkedList<ZonePoint *>                       zone_point_list;
 	std::vector<ZonePointsRepository::ZonePoints> virtual_zone_point_list;
+	// Ctrl+F Find window point of interest content (zone_find_locations table, docs/findwnd.md 8.1). Sent on
+	// OP_FindLocationsPOIs by Client::SendFindLocationsPOIs(); `number` is the goal id the client echoes back
+	// on OP_PlayerPathRequest and has to stay below Client::kFindPortPoiIdBase.
+	std::vector<ZoneFindLocationsRepository::ZoneFindLocations> zone_find_location_list;
 
 	Map                   *zonemap;
 	MercTemplate *GetMercTemplate(uint32 template_id);

@@ -1489,6 +1489,10 @@ bool Zone::Init(bool is_static) {
 
 	content_db.LoadStaticZonePoints(&zone_point_list, short_name, GetInstanceVersion());
 
+	if (!content_db.LoadStaticFindLocations(zone_find_location_list, short_name, GetInstanceVersion())) {
+		LogError("Loading zone find locations failed");
+	}
+
 	if (!content_db.LoadSpawnGroups(short_name, GetInstanceVersion(), &spawn_group_list)) {
 		LogError("Loading spawn groups failed");
 		return false;
@@ -1544,6 +1548,10 @@ void Zone::ReloadStaticData() {
 
 	if (!content_db.LoadStaticZonePoints(&zone_point_list, GetShortName(), GetInstanceVersion())) {
 		LogError("Loading static zone points failed");
+	}
+
+	if (!content_db.LoadStaticFindLocations(zone_find_location_list, GetShortName(), GetInstanceVersion())) {
+		LogError("Reloading zone find locations failed");
 	}
 
 	LogInfo("Reloading traps");
@@ -2498,6 +2506,225 @@ bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint *> *zone_point_list
 	LogInfo("Loaded [{}] zone_points", Strings::Commify(std::to_string(zone_points.size())));
 
 	return true;
+}
+
+// Ctrl+F Find window point of interest content (docs/findwnd.md 8.1). The rows are the notable NPC and
+// notable location list the client shows in the Find window; Client::SendFindLocationsPOIs() turns them into
+// OP_FindLocationsPOIs records. Rows are selected exactly like zone_points: this zone, this instance version
+// or -1 for every version, plus the expansion/content flag filter. Ordered by number so the list a player
+// sees is stable across edits.
+bool ZoneDatabase::LoadStaticFindLocations(std::vector<ZoneFindLocationsRepository::ZoneFindLocations> &find_location_list, const char *zonename, uint32 version)
+{
+	find_location_list.clear();
+
+	auto find_locations = ZoneFindLocationsRepository::GetZoneRows(
+		content_db,
+		zonename,
+		version,
+		ContentFilterCriteria::apply()
+	);
+
+	for (const auto &find_location : find_locations) {
+		// Three id bands share the 16 bit goal id the client echoes back on OP_PlayerPathRequest: curated numbers
+		// below Client::kFindNpcPoiIdBase, findable NPC rows from Client::kFindNpcPoiIdBase to
+		// Client::kFindPortPoiIdBase (SendFindLocationsPOIs), and the synthetic port POIs of docs/findwnd.md 7.2 from
+		// Client::kFindPortPoiIdBase up. ResolveFindPathGoal reads the request id in that order, so a curated row
+		// outside its band is unreachable rather than merely confusing: it answers as an NPC row or as a port. Zero is
+		// illegal in every band, and a row with no id is a row the client cannot ask a path to.
+		if (find_location.number == 0 || find_location.number >= Client::kFindNpcPoiIdBase) {
+			LogError(
+				"zone_find_locations [{}] zone [{}] version [{}] number [{}]: numbers start at 1 and must stay below [{}], skipping",
+				find_location.id,
+				zonename,
+				find_location.version,
+				find_location.number,
+				Client::kFindNpcPoiIdBase
+			);
+			continue;
+		}
+
+		find_location_list.push_back(find_location);
+	}
+
+	LogInfo("Loaded [{}] zone_find_locations", Strings::Commify(std::to_string(find_location_list.size())));
+
+	return true;
+}
+
+// Keep both endpoints and space the rest evenly, so a long navmesh route still fits in one path reply packet.
+static void DecimateMysticalPathPoints(std::vector<glm::vec3> &into, const std::vector<glm::vec3> &all)
+{
+	into.clear();
+
+	if (all.size() <= MAX_PLAYER_PATH_POINTS) {
+		into = all;
+		return;
+	}
+
+	into.reserve(MAX_PLAYER_PATH_POINTS);
+	for (uint32 i = 0; i < MAX_PLAYER_PATH_POINTS; ++i) {
+		into.push_back(all[static_cast<size_t>(i) * (all.size() - 1) / (MAX_PLAYER_PATH_POINTS - 1)]);
+	}
+}
+
+// Ctrl+F Find window mystical path (docs/findwnd.md 6.4, 7.6 and 7.12). The client only needs a polyline: it draws
+// it, hides the Find window, then walks the local player along it on its own side, replacing the Z of every point
+// with its own floor probe unless the player is flying. So the server only has to decide where the line goes
+// horizontally and vertically through walkable ground, which is what the navmesh is for.
+//
+// The first path drawn in poknowledge on 2026-10-22 climbed to a higher platform and then cut through a wall out
+// into empty space, and both halves of that came from how the navmesh resolves endpoints and portal crossings
+// (docs/findwnd.md 7.6): an endpoint with no polygon near it snaps onto the nearest one, possibly a floor above,
+// and an off-mesh connection whose source polygon carries PathingPortal adds a node with teleport = true whose pos
+// is never set, so it reads as (0, 0, 0). A node at the origin is a waypoint 1000+ units from everything, which is
+// the wall crossing leg. Zone-line polygons stay excluded the way every other EQEmu caller excludes them
+// (zone/npc.cpp:3904, zone/mob_movement_manager.cpp:1100, zone/fearpath.cpp:274) because a line through a cross
+// zone teleport is meaningless, while portal polygons have to stay: poknowledge joins its walkable regions through
+// them, and excluding them left the search 436 units short of the goal (7.7).
+//
+// The search is PathfinderNavmesh::FindRoute, the call Client::SendPath already uses for the pre-Laurion
+// OP_FindPersonRequest (zone/client.cpp:12838). It searches with a 1024 polygon buffer instead of FindPath's 256,
+// smooths with DT_STRAIGHTPATH_AREA_CROSSINGS so a corner is added wherever the route changes walkable area, and
+// it is the call whose result live is known to answer with, which is what the point order below copies.
+ZoneMysticalPathRoute Zone::BuildMysticalPath(const glm::vec3 &from, const glm::vec3 &to) const
+{
+	// How far the navmesh is allowed to move an endpoint vertically before the route is considered to belong to
+	// another floor. Standing on the poknowledge terrace next to Dogle Pitt measured -92.87 while his spawn row
+	// says -93.75, and the live route snapped the player by 2.9 and the goal by 1.6, so honest ground snapping is a
+	// couple of units: 25 leaves room for a slope or a step and still refuses a snap onto a floor above.
+	static const float Z_SNAP_LIMIT = 25.0f;
+	// How close to the goal the route has to get before the line counts as reaching it, and how far short it may
+	// stop before the request is refused. A line that ends just outside a door is useful, a line that ends 400
+	// units away is a different region of the zone and only looks like a broken path.
+	static const float GOAL_GAP_LIMIT  = 60.0f;
+	static const float GOAL_GAP_REFUSE = 150.0f;
+	// Without a navmesh route, a straight line is only honest for a short hop; a long one walks through geometry.
+	static const float STRAIGHT_LINE_LIMIT = 150.0f;
+
+	ZoneMysticalPathRoute result;
+
+	if (pathing) {
+		bool partial = false;
+		bool stuck   = false;
+		auto route   = pathing->FindRoute(from, to, partial, stuck, PathingNotDisabled ^ PathingZoneLine);
+
+		result.nav_partial = partial;
+		result.nav_stuck   = stuck;
+		result.nav_nodes   = static_cast<int>(route.size());
+
+		// FindRoute interleaves the route with positionless portal markers: it pushes the landing corner and then
+		// pushes a marker for a polygon whose flags carry 512. Markers are dropped and counted, which leaves a
+		// chain of real ground positions that already crosses portals.
+		std::vector<glm::vec3> chain;
+		chain.reserve(route.size());
+
+		bool crossed_portal = false;
+
+		for (const auto &node : route) {
+			if (node.teleport) {
+				crossed_portal = true;
+				++result.portals_bridged;
+				continue;
+			}
+
+			chain.push_back(node.pos);
+		}
+
+		if (chain.size() >= 2) {
+			const glm::vec3 ground_start = chain.front();
+			const glm::vec3 nav_end      = chain.back();
+
+			result.start_snap_z = std::fabs(ground_start.z - from.z);
+			result.goal_snap_z  = std::fabs(nav_end.z - to.z);
+			result.goal_gap     = glm::distance(nav_end, to);
+
+			if (result.start_snap_z > Z_SNAP_LIMIT) {
+				result.source = "navmesh snapped the player onto another floor";
+				return result;
+			}
+
+			// The goal snap is only judged when the route got near the goal. A route that stops short has a large
+			// height difference for the ordinary reason that its end is a different place.
+			if (result.goal_gap <= GOAL_GAP_REFUSE && result.goal_snap_z > Z_SNAP_LIMIT) {
+				result.source = "navmesh snapped the goal onto another floor";
+				return result;
+			}
+
+			if (result.goal_gap > GOAL_GAP_REFUSE) {
+				result.source = "navmesh never reaches the goal";
+				return result;
+			}
+
+			// Point order copied from what live sends for this feature on pre-Laurion clients, Client::SendPath
+			// (zone/client.cpp:12845), whose own comment records it: final destination, current position, rest of
+			// the points. The pre-Laurion packet OP_FindPersonReply is a destination field plus a point array whose
+			// last element has to equal that destination (common/eq_packet_structs.h:4558); Laurion's
+			// OP_PlayerPathReply has no header, so both ends are in the array: point 0 is the anchor the client
+			// keeps to itself at path+0x168/16c/170, points 1 through n are the polyline it draws and walks,
+			// starting where the player is and ending at the row that was clicked. Handing it the player's position
+			// first, which is what this function used to do, makes the player the anchor and draws the polyline from
+			// the goal back to the player, which is the line that looked far longer than the distance and up in the
+			// air (docs/findwnd.md 7.11 and 7.12).
+			std::vector<glm::vec3> all;
+			all.reserve(chain.size() + 2);
+
+			all.push_back(nav_end);
+			all.push_back(from);
+
+			for (size_t i = 1; i + 1 < chain.size(); ++i) {
+				all.push_back(chain[i]);
+			}
+
+			// Live appends the target position only when the route did not run into a teleporter. When the chain
+			// already ends at the goal the append repeats the last point, when it stops at a portal the line stops
+			// at the portal instead of drawing a straight segment over everything in between.
+			if (!crossed_portal) {
+				all.push_back(to);
+			}
+
+			DecimateMysticalPathPoints(result.waypoints, all);
+			result.reached_goal = result.goal_gap <= GOAL_GAP_LIMIT;
+
+			if (result.reached_goal) {
+				result.source = crossed_portal ? "navmesh through a portal" : "navmesh";
+			}
+			else {
+				result.source = "navmesh stopped short";
+			}
+
+			return result;
+		}
+	}
+
+	// No navmesh for this zone (IPathfinder::Load returns PathfinderNull when Maps/nav/<map>.nav is missing), or
+	// the search found nothing. A straight line is only drawn for a short hop, otherwise the answer is the client's
+	// own "Mysterious forces prevent you from finding your destination easily." line, which is honest, while a long
+	// straight line is the wrong-path complaint the live test produced. Same point order as the navmesh branch:
+	// anchor at the far end, then where the player is, then the walk.
+	const float distance = glm::distance(from, to);
+
+	if (distance > STRAIGHT_LINE_LIMIT) {
+		result.source = pathing ? "navmesh found no route" : "no navmesh and too far for a straight line";
+		return result;
+	}
+
+	uint32 points = static_cast<uint32>(distance / 20.0f) + 2;
+
+	if (points > MAX_PLAYER_PATH_POINTS) {
+		points = MAX_PLAYER_PATH_POINTS;
+	}
+
+	result.waypoints.reserve(points + 1);
+	result.waypoints.push_back(to);
+
+	for (uint32 i = 0; i < points; ++i) {
+		const float factor = static_cast<float>(i) / static_cast<float>(points - 1);
+		result.waypoints.push_back(from + (to - from) * factor);
+	}
+
+	result.source       = "straight line";
+	result.reached_goal = true;
+	return result;
 }
 
 bool ZoneDatabase::GetDecayTimes(npcDecayTimes_Struct *npcCorpseDecayTimes)

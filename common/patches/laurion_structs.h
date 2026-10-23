@@ -491,6 +491,32 @@ namespace Laurion {
 			/*04*/ struct ZonePoint_Entry zpe[0]; // Always add one extra to the end after all zonepoints
 		};
 
+		// Find window (Ctrl+F) OP_FindLocationsPOIs wire: uint32 count followed by count * (uint32 id +
+		// two NUL terminated strings with no length prefix, -> Description column then Category column).
+		// The client reads it with CUnSerializeBuffer in FUN_1403af400, see docs/findwnd.md.
+		struct FindLocationsPOIs {
+			/*00*/ uint32 count;
+			/*04*/ uint8 data[0];
+		};
+
+		// Find window (Ctrl+F) OP_FindLocationsConnections wire: uint32 count followed by count * 8 x uint32.
+		// The client stores each entry verbatim (MacroQuestLS FindZoneConnectionData, FUN_1403af0b0).
+		struct FindZoneConnection_Entry {
+			/*00*/ uint32 type;		// client FindLocationType: 6 = Switch (goal is id), 7 = Location (goal is x/y/z)
+			/*04*/ uint32 id;		// goal id for type 6, EQEmu uses zone_points.number
+			/*08*/ uint32 sub_id;	// no client consumer found, client default is -1
+			/*0c*/ uint32 zone_id;	// destination zone id, the client prints its own zone name
+			/*10*/ uint32 zone_identifier;	// row text gets " - %d" appended when this is not zero
+			/*14*/ float x;
+			/*18*/ float y;
+			/*1c*/ float z;
+		};
+
+		struct FindZoneConnections {
+			/*00*/ uint32 count;
+			/*04*/ struct FindZoneConnection_Entry entry[0];
+		};
+
 		struct EnterWorld_Struct {
 			/*000*/	char	name[64];
 			/*064*/	int32	unknown1;

@@ -3382,6 +3382,99 @@ namespace Laurion
 		FINISH_ENCODE();
 	}
 
+	// Find window (Ctrl+F) point of interest list, answered on OP_FindLocationsPOIs (docs/findwnd.md).
+	// The emulator side uses fixed 255 byte strings, the wire uses NUL terminated strings with no length
+	// prefix, so the outbound length has to be computed from the string contents. The client (FUN_1403af400)
+	// copies min(strlen + 1, 0xFF) bytes per string, which caps what it can display at 254 characters.
+	ENCODE(OP_FindLocationsPOIs)
+	{
+		SETUP_VAR_ENCODE(FindLocations);
+
+		// bounded strlen: the client's reader copies at most 255 bytes per string (254 usable characters)
+		const auto capped_len = [](const char *s) -> uint32 {
+			uint32 len = 0;
+			while (len < FIND_LOCATION_STRING_MAX && s[len]) {
+				++len;
+			}
+			return len;
+		};
+
+		uint32 wire_size = sizeof(uint32);
+		for (uint32 i = 0; i < emu->count; ++i) {
+			wire_size += sizeof(uint32) + capped_len(emu->entry[i].description) + 1
+				+ capped_len(emu->entry[i].category) + 1;
+		}
+
+		ALLOC_LEN_ENCODE(wire_size);
+		uint8 *out = __packet->pBuffer;
+
+		memcpy(out, &emu->count, sizeof(uint32));
+		out += sizeof(uint32);
+		for (uint32 i = 0; i < emu->count; ++i) {
+			memcpy(out, &emu->entry[i].id, sizeof(uint32));
+			out += sizeof(uint32);
+			uint32 len = capped_len(emu->entry[i].description);
+			memcpy(out, emu->entry[i].description, len);
+			out[len] = 0;
+			out += len + 1;
+			len = capped_len(emu->entry[i].category);
+			memcpy(out, emu->entry[i].category, len);
+			out[len] = 0;
+			out += len + 1;
+		}
+
+		FINISH_ENCODE();
+	}
+
+	// Find window (Ctrl+F) zone connections, answered on OP_FindLocationsConnections (docs/findwnd.md).
+	// Fixed size records: uint32 count followed by count * 8 x uint32, identical on both sides.
+	ENCODE(OP_FindLocationsConnections)
+	{
+		SETUP_VAR_ENCODE(FindZoneConnections);
+		ALLOC_VAR_ENCODE(structs::FindZoneConnections, sizeof(structs::FindZoneConnections) + sizeof(structs::FindZoneConnection_Entry) * emu->count);
+
+		eq->count = emu->count;
+		for (uint32 i = 0; i < emu->count; ++i) {
+			eq->entry[i].type = emu->entry[i].type;
+			eq->entry[i].id = emu->entry[i].id;
+			eq->entry[i].sub_id = emu->entry[i].sub_id;
+			eq->entry[i].zone_id = emu->entry[i].zone_id;
+			eq->entry[i].zone_identifier = emu->entry[i].zone_identifier;
+			eq->entry[i].x = emu->entry[i].x;
+			eq->entry[i].y = emu->entry[i].y;
+			eq->entry[i].z = emu->entry[i].z;
+		}
+
+		FINISH_ENCODE();
+	}
+
+	// Find window (Ctrl+F) mystical path reply, OP_PlayerPathReply (docs/findwnd.md 6.4). The payload is nothing
+	// but float3 waypoints and there is no header, the client counts them as payload size / 12, so the emulator
+	// packet already is the wire packet and this encoder only validates and copies it. A zero size payload is
+	// the deliberate "no path" answer: the client then prints "Mysterious forces prevent you from finding your
+	// destination easily." and clears the goal, which is better feedback than saying nothing at all.
+	ENCODE(OP_PlayerPathReply)
+	{
+		EQApplicationPacket *__packet = *p;
+		*p = nullptr;
+		unsigned char *__emu_buffer = __packet->pBuffer;
+
+		const uint32 wire_size = __packet->size;
+
+		if (wire_size % 12) {
+			LogNetcode("Outbound OP_PlayerPathReply payload [{}] is not a whole number of float3 waypoints", wire_size);
+			FAIL_ENCODE();
+			return;
+		}
+
+		ALLOC_LEN_ENCODE(wire_size);
+		if (wire_size) {
+			memcpy(__packet->pBuffer, __emu_buffer, wire_size);
+		}
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_ShopPlayerBuy)
 	{
 		ENCODE_LENGTH_EXACT(Merchant_Sell_Struct);

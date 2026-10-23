@@ -26,10 +26,8 @@ N(OP_0x06e0),
 N(OP_0x1bdd),
 N(OP_0x2b7c),
 N(OP_0x447e),
-N(OP_0x59bd),
 N(OP_0x5e4a),
 N(OP_0x6b80),
-N(OP_0x7340),
 N(OP_0x798e),
 N(OP_0x7a45),
 N(OP_AAAction),
@@ -208,6 +206,10 @@ N(OP_FeignDeath),
 N(OP_FeatureList),
 N(OP_FellowshipUpdate),
 N(OP_FindItemSearch),
+N(OP_FindLocationsConnections),	// SoF x64: Laurion Find window (Ctrl+F) zone connection list 0x4eea, server->client only
+N(OP_FindLocationsPOIs),	// SoF x64: Laurion Find window (Ctrl+F) point of interest list 0x1aea, server->client only
+N(OP_FindLocationsRequest),	// SoF x64: Laurion Find window data request 0x7340, client->server only
+N(OP_FindLocationsRequest2),	// SoF x64: Laurion Find window data request 0x59bd, client->server only
 N(OP_FindPersonReply),
 N(OP_FindPersonRequest),
 N(OP_FinishTrade),
@@ -496,6 +498,8 @@ N(OP_PetitionUpdate),
 N(OP_PickPocket),
 N(OP_PickZone),
 N(OP_PickZoneWindow),
+N(OP_PlayerPathReply),	// SoF x64: Laurion mystical path waypoint list 0x4d39, server->client only (docs/findwnd.md)
+N(OP_PlayerPathRequest),	// SoF x64: Laurion mystical path goal request 0x6fb7, client->server only (docs/findwnd.md)
 N(OP_PlayerProfile),
 N(OP_PlayerStateAdd),
 N(OP_PlayerStateRemove),
