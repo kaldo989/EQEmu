@@ -34,12 +34,14 @@
 #include "common/repositories/buyer_buy_lines_repository.h"
 #include "common/repositories/character_corpses_repository.h"
 #include "common/repositories/character_instance_safereturns_repository.h"
+#include "common/repositories/character_pet_inventory_repository.h"
 #include "common/repositories/character_pet_name_repository.h"
 #include "common/repositories/character_stats_record_repository.h"
 #include "common/repositories/criteria/content_filter_criteria.h"
 #include "common/repositories/guild_tributes_repository.h"
 #include "common/repositories/tradeskill_recipe_entries_repository.h"
 #include "common/rulesys.h"
+#include "common/say_link.h"
 #include "common/shared_tasks.h"
 #include "zone/advloot.h"
 #include "zone/bot.h"
@@ -4970,6 +4972,26 @@ void Client::Handle_OP_ClickDoor(const EQApplicationPacket *app)
 				Saylink::Silent("#door edit")
 			).c_str()
 		);
+
+		// TEMPORARY Laurion saylink diagnostic (remove after one door test).
+		// The line above renders as "Door (98) [0FFFFF...#door edit]" in the Laurion chat window: the client
+		// strips the two ETX markers but never converts the tag, so the 91 character body is printed raw
+		// (six such lines are in build/bin/Release/logs/eqlog_Joka_BT.txt from 2026-10-23 21:56 to 21:59).
+		// Saylink::Silent() with no label reuses the command text as the link label, so this link's label is
+		// literally "#door edit". Two variables can explain it and one door click separates them: the label
+		// starts with '#', or the tag is glued straight onto a '['. Read the result in eqlog_<name>_BT.txt:
+		// a converted link prints only its label, an unconverted link prints the hex body.
+		//   A brackets + plain label   -> clean if '#' is the problem
+		//   B no brackets + '#' label  -> clean if '[' is the problem
+		//   C no brackets + plain label-> control, must always be clean
+		//   D brackets + '#' label     == the shape above, must always be raw
+		Message(Chat::White, fmt::format("SL-A [{}]", Saylink::Silent("#door edit", "Edit Door")).c_str());
+		Message(Chat::White, fmt::format("SL-B {}", Saylink::Silent("#door edit", "#door edit")).c_str());
+		Message(Chat::White, fmt::format("SL-C {}", Saylink::Silent("#door edit", "Edit Door")).c_str());
+		Message(Chat::White, fmt::format("SL-D [{}]", Saylink::Silent("#door edit")).c_str());
+		//   E bracket not adjacent to the link -> separates "a bracket somewhere in the line" from
+		//     "a bracket glued to the opening ETX".
+		Message(Chat::White, fmt::format("SL-E [Door {}] {}", currentdoor->GetDoorID(), Saylink::Silent("#door edit", "Edit Door")).c_str());
 	}
 
 	// don't spam scripts with client controlled doors if not within distance
@@ -13473,6 +13495,16 @@ void Client::Handle_OP_PetBuffWindow(const EQApplicationPacket *app)
 }
 
 
+// /pet get lost and the two /pet inventory commands apply no matter how the pet is currently being
+// controlled: they only read or clear what the pet wears, they never touch its combat state.
+static bool PetCommandAppliesToAnyPet(uint32 command)
+{
+	return command == PET_HEALTHREPORT
+		|| command == PET_GETLOST
+		|| command == PET_INVENTORY_CHECK
+		|| command == PET_INVENTORY_DESTROY;
+}
+
 void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 {
 	if (app->size != sizeof(PetCommand_Struct)) {
@@ -13501,11 +13533,11 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 		return;
 	}
 
-	if (mypet->GetPetType() == petTargetLock && (pet->command != PET_HEALTHREPORT && pet->command != PET_GETLOST))
+	if (mypet->GetPetType() == petTargetLock && !PetCommandAppliesToAnyPet(pet->command))
 		return;
 
-	// just let the command "/pet get lost" work for familiars
-	if (mypet->GetPetType() == petFamiliar && pet->command != PET_GETLOST)
+	// "/pet get lost" and the inventory commands also work on familiars
+	if (mypet->GetPetType() == petFamiliar && !PetCommandAppliesToAnyPet(pet->command))
 		return;
 
 	uint32 PetCommand = pet->command;
@@ -14125,11 +14157,134 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 		}
 		break;
 	}
+	case PET_INVENTORY_CHECK: {
+		HandlePetInventoryCheck(mypet);
+		break;
+	}
+	case PET_INVENTORY_DESTROY: {
+		// the slot the client resolved travels in the same field every other command uses for a target
+		HandlePetInventoryDestroy(mypet, pet->target);
+		break;
+	}
+	case PET_SWARM:
+	case PET_QSWARM:
+	case PET_RESUME:
+	case PET_RESUME_ON:
+	case PET_RESUME_OFF:
+	case PET_SWARM_LEAVE: {
+		// These are decided against pet state the client is already tracking for itself, and the
+		// command packet carries nothing for us to act on. Recorded instead of silently dropped so
+		// they can be implemented against the swarm and undo rules they actually need.
+		LogInfo(
+			"Client {} sent pet command {} ({}) that this server does not implement",
+			GetCleanName(),
+			pet->command,
+			::PetCommand::GetName(pet->command)
+		);
+		break;
+	}
 	default:
-		printf("Client attempted to use a unknown pet command:\n");
+		LogInfo(
+			"Client attempted to use a unknown pet command: {} ({}) from {}",
+			pet->command,
+			::PetCommand::GetName(pet->command),
+			GetCleanName()
+		);
 		break;
 	}
 }
+
+void Client::HandlePetInventoryCheck(Mob *mypet)
+{
+	const bool worn_by_pet = mypet->IsNPC() && mypet->CastToNPC()->GetPetType() != petTargetLock;
+
+	// A pet that is actually out wears its items on itself, which is the array the client draws on
+	// the model and reads back when you name an item instead of a slot. A pet that is suspended
+	// behind a /pet target placeholder only exists in the record we kept for it.
+	const PetInfo *pet_info = GetPetInfo(worn_by_pet ? PetInfoType::Current : PetInfoType::Suspended);
+	int listed = 0;
+
+	for (int slot_id = EQ::invslot::EQUIPMENT_BEGIN; slot_id <= EQ::invslot::EQUIPMENT_END; slot_id++) {
+		const uint32 item_id = worn_by_pet
+			? mypet->CastToNPC()->GetWornItem(static_cast<int16>(slot_id))
+			: pet_info->Items[slot_id];
+
+		if (!item_id)
+			continue;
+
+		if (!listed++)
+			MessageString(Chat::PetResponse, PET_INVENTORY_EQUIPPED);
+
+		const char *slot_name = EQ::invslot::GetInvPossessionsSlotName(static_cast<int16>(slot_id));
+		const EQ::ItemData *item = database.GetItem(item_id);
+
+		if (!item) {
+			MessageString(Chat::PetResponse, PET_INVENTORY_LINE, slot_name, "an unknown item");
+			continue;
+		}
+
+		// The item travels as a saylink in the %2 substitution: SayLinkEngine builds the canonical
+		// RoF2 link body and Laurion's OP_FormattedMessage encoder rewrites every argument through
+		// ServerToLaurionConvertLinks, which is what turns the name in chat into a clickable link.
+		EQ::SayLinkEngine linker;
+		linker.SetLinkType(EQ::saylink::SayLinkItemData);
+		linker.SetItemData(item);
+
+		const std::string &item_link = linker.GenerateLink();
+		MessageString(
+			Chat::PetResponse,
+			PET_INVENTORY_LINE,
+			slot_name,
+			linker.LinkError() ? item->Name : item_link.c_str()
+		);
+	}
+
+	if (!listed)
+		MessageString(Chat::PetResponse, PET_INVENTORY_EMPTY);
+}
+
+void Client::HandlePetInventoryDestroy(Mob *mypet, uint32 inv_slot)
+{
+	const bool worn_by_pet = mypet->IsNPC() && mypet->CastToNPC()->GetPetType() != petTargetLock;
+	const int pet_info_type = worn_by_pet ? PetInfoType::Current : PetInfoType::Suspended;
+
+	// The client clamps the slot to its own equipment band before it sends, so anything past that is
+	// a slot no pet can wear.
+	if (inv_slot > static_cast<uint32>(EQ::invslot::EQUIPMENT_END)) {
+		MessageString(Chat::PetResponse, PET_INVENTORY_EMPTY_SLOT);
+		return;
+	}
+
+	const int16 slot_id = static_cast<int16>(inv_slot);
+	uint32 item_id = 0;
+
+	if (worn_by_pet) {
+		item_id = mypet->CastToNPC()->DestroyWornItem(slot_id);
+	} else {
+		PetInfo *pet_info = GetPetInfo(pet_info_type);
+		item_id = pet_info->Items[slot_id];
+		pet_info->Items[slot_id] = 0;
+	}
+
+	if (!item_id) {
+		MessageString(Chat::PetResponse, PET_INVENTORY_EMPTY_SLOT);
+		return;
+	}
+
+	// Clear just this slot from storage: the rest of the pet record is rewritten from the living pet
+	// the next time the character saves, so this is the only row that has to change right now.
+	CharacterPetInventoryRepository::DeleteWhere(
+		database,
+		fmt::format("`char_id` = {} AND `pet` = {} AND `slot` = {}", CharacterID(), pet_info_type, slot_id)
+	);
+
+	MessageString(
+		Chat::PetResponse,
+		PET_INVENTORY_DESTROYED,
+		EQ::invslot::GetInvPossessionsSlotName(slot_id)
+	);
+}
+
 void Client::Handle_OP_Petition(const EQApplicationPacket *app)
 {
 	if (app->size <= 1)

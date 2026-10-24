@@ -563,6 +563,12 @@ public:
 
 	void SetPetCommandState(uint8 button, uint8 state);
 
+	// Laurion /pet inventory: the client works out the equipment slot itself (a typed number, or the
+	// name of something the pet is wearing) and sends it in the target field of the pet command
+	// packet, so the packet already carries everything the server needs to answer it.
+	void HandlePetInventoryCheck(Mob *mypet);
+	void HandlePetInventoryDestroy(Mob *mypet, uint32 inv_slot);
+
 	bool AutoAttackEnabled() const { return auto_attack; }
 	bool AutoFireEnabled() const { return auto_fire; }
 

@@ -617,3 +617,12 @@
 #define GAIN_XP_BONUS				14541	//You gain experience (with a bonus)!
 #define GAIN_XP_PENALTY				14542	//You gain experience (with a penalty)!
 #define GENERIC_MISS				15041	//%1 missed %2
+
+// Laurion /pet inventory. The client owns the wording (it reads these from its own eqstr file),
+// the server only fills in the substitutions, so only the strings we actually send are named here.
+// 10033 through 10035 are the /pet inventory usage text the client prints by itself.
+#define PET_INVENTORY_LINE			10028	//%1: %2
+#define PET_INVENTORY_EQUIPPED		10029	//Your pet has the following items equipped:
+#define PET_INVENTORY_EMPTY			10032	//Your pet does not have any items equipped currently.
+#define PET_INVENTORY_DESTROYED		10036	//Your pet's %1 has been destroyed.
+#define PET_INVENTORY_EMPTY_SLOT		10037	//Your pet doesn't have anything equipped in that slot.

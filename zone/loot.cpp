@@ -708,6 +708,39 @@ LootItem *NPC::GetItem(int slot_id)
 	return (nullptr);
 }
 
+uint32 NPC::GetWornItem(int16 inv_slot) const
+{
+	if (inv_slot < EQ::invslot::EQUIPMENT_BEGIN || inv_slot > EQ::invslot::EQUIPMENT_END)
+		return 0;
+
+	return equipment[inv_slot];
+}
+
+uint32 NPC::DestroyWornItem(int16 inv_slot)
+{
+	const uint32 item_id = GetWornItem(inv_slot);
+	if (!item_id)
+		return 0;
+
+	// what the mob wears is also a loot entry with equip_slot set, so dropping that entry is what
+	// keeps /loot and the inventory we just reported looking at the same item the client sees
+	RemoveItem(item_id);
+
+	equipment[inv_slot] = 0;
+	CalcBonuses();
+
+	int8 material_slot = EQ::textures::textureInvalid;
+	if (inv_slot == EQ::invslot::slotPrimary)
+		material_slot = EQ::textures::weaponPrimary;
+	else if (inv_slot == EQ::invslot::slotSecondary)
+		material_slot = EQ::textures::weaponSecondary;
+
+	if (material_slot != EQ::textures::textureInvalid)
+		SendWearChange(material_slot);
+
+	return item_id;
+}
+
 void NPC::RemoveItem(uint32 item_id, uint16 quantity, uint16 slot)
 {
 	LootItems::iterator cur, end;

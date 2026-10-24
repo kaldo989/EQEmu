@@ -186,6 +186,11 @@ public:
 
 	void	GetPetState(SpellBuff_Struct *buffs, uint32 *items, char *name);
 	void	SetPetState(SpellBuff_Struct *buffs, uint32 *items);
+
+	// What this mob is actually wearing, read and cleared one slot at a time. A pet's worn items
+	// live in the loot list as well as in this array, so only this pair should touch them.
+	uint32 GetWornItem(int16 inv_slot) const;
+	uint32 DestroyWornItem(int16 inv_slot);
 	virtual void SpellProcess();
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
 

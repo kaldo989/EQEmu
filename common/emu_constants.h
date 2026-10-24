@@ -907,7 +907,15 @@ namespace PetCommand {
 	constexpr uint8 Regroup        = 31; // /pet regroup, acts like classic hold
 	constexpr uint8 RegroupOn      = 32; // /pet regroup on
 	constexpr uint8 RegroupOff     = 33; // /pet regroup off
-	constexpr uint8 Max            = 34;
+	constexpr uint8 Swarm          = 34; // 0x22 - /pet swarm
+	constexpr uint8 QSwarm         = 35; // 0x23 - /pet qswarm
+	constexpr uint8 Resume         = 36; // 0x24 - /pet resume, undo the last hold style command
+	constexpr uint8 ResumeOn       = 37; // 0x25 - /pet resume on
+	constexpr uint8 ResumeOff      = 38; // 0x26 - /pet resume off
+	constexpr uint8 SwarmLeave     = 39; // 0x27 - /pet swarmleave
+	constexpr uint8 Inventory      = 40; // 0x28 - /pet inventory check
+	constexpr uint8 InventorySlot  = 41; // 0x29 - /pet inventory destroy, the slot rides in the target field
+	constexpr uint8 Max            = 42; // 0x2a - what the client falls back to when it cannot resolve a command
 
 	static std::map<uint8, std::string> pet_commands = {
 		{ PetCommand::HealthReport,   "Health Report" },
@@ -944,6 +952,14 @@ namespace PetCommand {
 		{ PetCommand::Regroup,        "Regroup" },
 		{ PetCommand::RegroupOn,      "Regroup On" },
 		{ PetCommand::RegroupOff,     "Regroup Off" },
+		{ PetCommand::Swarm,          "Swarm" },
+		{ PetCommand::QSwarm,         "QSwarm" },
+		{ PetCommand::Resume,         "Resume" },
+		{ PetCommand::ResumeOn,       "Resume On" },
+		{ PetCommand::ResumeOff,      "Resume Off" },
+		{ PetCommand::SwarmLeave,     "Swarm Leave" },
+		{ PetCommand::Inventory,      "Pet Inventory Check" },
+		{ PetCommand::InventorySlot,  "Pet Inventory Destroy" },
 		{ PetCommand::Max,            "Max" }
 	};
 

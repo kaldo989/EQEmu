@@ -5762,6 +5762,8 @@ namespace Laurion
 		SETUP_DIRECT_DECODE(PetCommand_Struct, structs::PetCommands_Struct);
 
 		emu->command = eq->Command;
+		// Target holds an entity id for the commands that act on something, and holds the equipment
+		// slot for /pet inventory destroy, where it is a slot number rather than an entity.
 		emu->target = eq->Target;
 		// the trailing 4 bytes have no EQEmu equivalent
 

@@ -906,7 +906,15 @@ struct DataBucketCache
 #define PET_REGROUP			31	// 0x1f - /pet regroup, acts like classic hold. Stops attack and moves back to guard/you but doesn't clear hate list
 #define PET_REGROUP_ON		32	// 0x20 - /pet regroup on, turns on regroup
 #define PET_REGROUP_OFF		33	// 0x21 - /pet regroup off, turns off regroup
-#define PET_MAXCOMMANDS		PET_REGROUP_OFF + 1
+#define PET_SWARM			34	// 0x22 - /pet swarm, attacks without breaking off
+#define PET_QSWARM			35	// 0x23 - /pet qswarm, queue a swarmed attack
+#define PET_RESUME			36	// 0x24 - /pet resume, undo the last hold style command
+#define PET_RESUME_ON			37	// 0x25 - /pet resume on, arm that undo without undoing yet
+#define PET_RESUME_OFF			38	// 0x26 - /pet resume off, disarm that undo
+#define PET_SWARM_LEAVE			39	// 0x27 - /pet swarmleave, stop a swarm
+#define PET_INVENTORY_CHECK		40	// 0x28 - /pet inventory check, lists what the pet wears
+#define PET_INVENTORY_DESTROY		41	// 0x29 - /pet inventory destroy <slot>, target field carries the slot
+#define PET_MAXCOMMANDS		PET_INVENTORY_DESTROY + 1
 
 // can change the state of these buttons with a packet
 #define PET_BUTTON_SIT			0

@@ -2030,8 +2030,8 @@ namespace Laurion {
 		struct PetCommands_Struct {
 			/*000*/	uint32	Command;
 			/*004*/	uint32	Target;
-			/*008*/	uint8	Param4;
-			/*009*/	uint8	Param5;
+			/*008*/	uint8	TargetValid;      /* 1 when the client had an entity selected for Target */
+			/*009*/	uint8	Arg009;           /* 1 in every packet this client has been seen to send */
 			/*010*/	uint16	Stale010;         /* never written by the sender */
 			/*012*/
 		};
