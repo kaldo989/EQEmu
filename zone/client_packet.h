@@ -235,6 +235,11 @@
 	void Handle_OP_ItemLinkClick(const EQApplicationPacket *app);
 	void Handle_OP_ItemLinkInspect(const EQApplicationPacket *app);
 	void Handle_OP_ItemLinkResponse(const EQApplicationPacket *app);
+	void Handle_OP_SayLinkClick(const EQApplicationPacket *app);
+	// Shared body of the three item link requests. They arrive on different opcodes and are not answered
+	// on the opcode they arrived on: only the 0x0497 receive case opens a display window, and a chat
+	// saylink click never arms one. See Client::HandleItemLinkRequest in zone/client_packet.cpp.
+	void HandleItemLinkRequest(const EQApplicationPacket *app, EmuOpcode preview_opcode);
 	void Handle_OP_ItemName(const EQApplicationPacket *app);
 	void Handle_OP_ItemPreview(const EQApplicationPacket *app);
 	void Handle_OP_ItemPreviewRequest(const EQApplicationPacket *app);

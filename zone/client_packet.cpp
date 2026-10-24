@@ -313,11 +313,13 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_InstillDoubt] = &Client::Handle_OP_InstillDoubt;
 	ConnectedOpcodes[OP_ItemLinkClick] = &Client::Handle_OP_ItemLinkClick;
 	// 0x1e67, the client's "the player clicked this saylink" packet. laurion.cpp rebuilds its 84 byte
-	// record into ItemViewRequest_Struct, so the same handler runs. For the silent links EQEmu generates
-	// (Saylink::Silent("#si 12345", "X")) the item id is SAYLINK_ITEM_ID, the handler reads the stored
-	// phrase out of the saylink table and hands it to ChannelMessageReceived on the say channel, which
-	// dispatches it as a # command and sends no reply - correct, because 0x1e67 has no receive case.
-	ConnectedOpcodes[OP_SayLinkClick] = &Client::Handle_OP_ItemLinkClick;
+	// record into ItemViewRequest_Struct, so the same request handling runs. For the silent links EQEmu
+	// generates (Saylink::Silent("#si 12345", "X")) the item id is SAYLINK_ITEM_ID, the handler reads the
+	// stored phrase out of the saylink table and hands it to ChannelMessageReceived on the say channel,
+	// which dispatches it as a # command and sends nothing back - 0x1e67 has no receive case. A click on a
+	// real item link is answered on 0x0497, because that is the only item request reply whose receive case
+	// opens the display window the chat window cannot open itself.
+	ConnectedOpcodes[OP_SayLinkClick] = &Client::Handle_OP_SayLinkClick;
 	ConnectedOpcodes[OP_ItemLinkInspect] = &Client::Handle_OP_ItemLinkInspect;
 	ConnectedOpcodes[OP_ItemLinkResponse] = &Client::Handle_OP_ItemLinkResponse;
 	ConnectedOpcodes[OP_ItemName] = &Client::Handle_OP_ItemName;
@@ -9856,11 +9858,29 @@ void Client::Handle_OP_InstillDoubt(const EQApplicationPacket *app)
 	return;
 }
 
-void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
+// Three client requests ask for an item to be shown, and they are not all answered on the opcode they
+// arrived on - only one of the client's receive cases actually opens a window.
+//
+// 0x6159 (OP_ItemLinkClick), AdvLoot alt+right-click. CAdvancedLootWnd arms the Object Preview window
+//   (DAT_140d83170) locally before it sends through FUN_14046C5C0, and the matching receive case
+//   FUN_1401E2C28 deserializes the reply into an ItemBase and hands it to FUN_14046C730, which installs
+//   it on that already armed window. Answering on 0x6159 is correct here.
+// 0x0497 (OP_ItemLinkInspect), AdvLoot alt+left-click. Its receive case FUN_140200390 (called from
+//   ZonePacket__dispatchRecv at 0x1401d9120) reads {i32 luck, i32 charges, u32 display_flags}, runs
+//   ItemClient__CreateItemClient, then CItemDisplayManager::ShowItem (FUN_140410DE0), which finds or
+//   creates a display window, calls CItemDisplayWnd::SetItem and shows it. It is the only item request
+//   receive case that creates a window.
+// 0x1e67 (OP_SayLinkClick), a saylink click. CChatWindow__WndNotification (FUN_1403948D0) parses the 90
+//   character data block with FUN_1402357E0, sends the 84 byte record, and stops there: ShowItem has 27
+//   callers in eqgame.exe and none of them is in the chat window, and 0x1e67 has no receive case at all.
+//   The chat window cannot open an item display by itself, so answering a chat click on 0x6159 filled a
+//   window that was never armed and the click looked dead - which is exactly what clicking the item name
+//   in a #find item result did. It is answered on 0x0497, the one reply that opens the window.
+void Client::HandleItemLinkRequest(const EQApplicationPacket *app, EmuOpcode preview_opcode)
 {
 	if (app->size != sizeof(ItemViewRequest_Struct)) {
-		LogError("Wrong size on OP_ItemLinkClick. Got: [{}], Expected: [{}]", app->size,
-			sizeof(ItemViewRequest_Struct));
+		LogError("Wrong size on [{}]. Got: [{}], Expected: [{}]", OpcodeManager::EmuToName(preview_opcode),
+			app->size, sizeof(ItemViewRequest_Struct));
 		DumpPacket(app);
 		return;
 	}
@@ -9918,17 +9938,32 @@ void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
 		database.CreateItem(item, item->MaxCharges, ivrs->augments[0], ivrs->augments[1], ivrs->augments[2],
 			ivrs->augments[3], ivrs->augments[4], ivrs->augments[5]);
 	if (inst) {
-		// Laurion answers 0x6159 on 0x6159: the client deserializes the reply into an ItemBase and hands
-		// it to the Object Preview window. The 0x609c view link it used to get back only enriches a
-		// display window that already holds a matching item, so the window came up empty.
+		// Laurion gets the item itself back on a preview opcode. The 0x609c view link it used to send only
+		// enriches a display window that already holds a matching item (FUN_1401FB540 -> FUN_140410B20), so
+		// the window came up on "No item preview available".
 		if (ClientVersion() == EQ::versions::ClientVersion::Laurion) {
-			SendItemPreview(inst, OP_ItemLinkClick);
+			SendItemPreview(inst, preview_opcode);
 		}
 		else {
 			SendItemPacket(0, inst, ItemPacketViewLink);
 		}
 		safe_delete(inst);
 	}
+}
+
+void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
+{
+	HandleItemLinkRequest(app, OP_ItemLinkClick);
+}
+
+// 0x1e67: the client's saylink click. laurion.cpp rebuilds its 84 byte record into ItemViewRequest_Struct
+// so this shares the AdvLoot inspect handling. Silent links (Saylink::Silent("#si 12345", "X"), item id
+// SAYLINK_ITEM_ID with the saylink row id in augments[1]) resolve to the stored phrase and return before
+// any reply is sent, which is right: 0x1e67 has no receive case, so the command dispatch is the whole
+// exchange. A real item link is answered on OP_ItemLinkInspect - see HandleItemLinkRequest.
+void Client::Handle_OP_SayLinkClick(const EQApplicationPacket *app)
+{
+	HandleItemLinkRequest(app, OP_ItemLinkInspect);
 }
 
 void Client::Handle_OP_ItemLinkInspect(const EQApplicationPacket *app)
